@@ -3,7 +3,6 @@ import express, { NextFunction, Request, Response } from "express";
 import rateLimit from "express-rate-limit";
 import http from "http";
 import ipAnonymize from "ip-anonymize";
-import { RateLimiter } from "limiter";
 import path from "path";
 import { fileURLToPath } from "url";
 import { WebSocket, WebSocketServer } from "ws";
@@ -301,16 +300,7 @@ export async function startWorker() {
   // WebSocket handling
   wss.on("connection", (ws: WebSocket, req) => {
     ws.on("message", async (message: string) => {
-      const forwarded = req.headers["x-forwarded-for"];
-      const ip = Array.isArray(forwarded)
-        ? forwarded[0]
-        : // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
-          forwarded || req.socket.remoteAddress || "unknown";
-
-      if (!getWsIpLimiter(ip).tryRemoveTokens(1)) {
-        ws.close(1008, "Rate limit exceeded");
-        return;
-      }
+      const ip = getClientIp(req);
 
       try {
         // Parse and handle client messages
@@ -640,20 +630,8 @@ function generateGameIdForWorker(): GameID | null {
   return null;
 }
 
-// Per-IP rate limiter for pre-join WebSocket messages.
-// Prevents unauthenticated connections from spamming messages
-// (e.g. pings) before joining a game.
-const wsIpLimiters = new Map<string, RateLimiter>();
-function getWsIpLimiter(ip: string): RateLimiter {
-  let limiter = wsIpLimiters.get(ip);
-  if (!limiter) {
-    limiter = new RateLimiter({
-      tokensPerInterval: 5,
-      interval: "second",
-    });
-    wsIpLimiters.set(ip, limiter);
-  }
-  return limiter;
+function getClientIp(req: http.IncomingMessage): string {
+  const cfIp = req.headers["cf-connecting-ip"];
+  if (typeof cfIp === "string" && cfIp) return cfIp;
+  return req.socket.remoteAddress ?? "unknown";
 }
-// Clean up stale IP limiters every 10 minutes
-setInterval(() => wsIpLimiters.clear(), 10 * 60 * 1000);
