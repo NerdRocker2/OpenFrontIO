@@ -187,6 +187,10 @@ export async function startWorker() {
 
     // Pass creatorPersistentID to createGame
     const game = gm.createGame(id, gc, creatorPersistentID);
+    if (game === null) {
+      log.warn(`cannot create game, id ${id} already exists`);
+      return res.status(409).json({ error: "Game ID already exists" });
+    }
 
     log.info(
       `Worker ${workerId}: IP ${ipAnonymize(clientIP)} creating ${game.isPublic() ? GameType.Public : GameType.Private}${gc?.gameMode ? ` ${gc.gameMode}` : ""} game with id ${id}${creatorPersistentID ? `, creator: ${creatorPersistentID.substring(0, 8)}...` : ""}`,
@@ -587,12 +591,15 @@ async function startMatchmakingPolling(gm: GameManager) {
         log.info(`Lobby poll successful:`, data);
 
         if (data.assignment) {
-          gm.createGame(
+          const game = gm.createGame(
             gameId,
             playlist.get1v1Config(),
             undefined,
             Date.now() + 7000,
           );
+          if (game === null) {
+            log.warn(`Failed to create matchmaking game ${gameId}`);
+          }
         }
       } catch (error) {
         if (error instanceof Error && error.name === "AbortError") {
