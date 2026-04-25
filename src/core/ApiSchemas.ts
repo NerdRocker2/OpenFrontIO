@@ -43,8 +43,18 @@ export const TokenPayloadSchema = z.object({
   iss: z.string(),
   aud: z.string(),
   exp: z.number(),
+  role: z
+    .enum(["root", "admin", "mod", "flagged", "banned"])
+    // In case new roles are added in the future.
+    .or(z.string())
+    .optional(),
 });
 export type TokenPayload = z.infer<typeof TokenPayloadSchema>;
+
+export const ADMIN_ROLES = ["admin", "root"] as const;
+export function isAdminRole(role: string | null | undefined): boolean {
+  return role === "admin" || role === "root";
+}
 
 export const DiscordUserSchema = z.object({
   id: z.string(),
@@ -67,7 +77,6 @@ export const UserMeResponseSchema = z.object({
   }),
   player: z.object({
     publicId: z.string(),
-    roles: z.string().array().optional(),
     flares: z.string().array().optional(),
     achievements: z.object({
       singleplayerMap: z.array(SingleplayerMapAchievementSchema),
@@ -79,6 +88,12 @@ export const UserMeResponseSchema = z.object({
             elo: z.number().optional(),
           })
           .optional(),
+      })
+      .optional(),
+    currency: z
+      .object({
+        soft: z.coerce.number(),
+        hard: z.coerce.number(),
       })
       .optional(),
   }),
@@ -191,3 +206,13 @@ export const RankedLeaderboardResponseSchema = z.object({
 export type RankedLeaderboardResponse = z.infer<
   typeof RankedLeaderboardResponseSchema
 >;
+
+export const NewsItemSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  description: z.string().optional(),
+  descriptionTranslationKey: z.string().optional(),
+  url: z.string().nullable().optional(),
+  type: z.enum(["tournament", "tutorial", "announcement"]).or(z.string()),
+});
+export type NewsItem = z.infer<typeof NewsItemSchema>;

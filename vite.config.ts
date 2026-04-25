@@ -1,15 +1,17 @@
 import tailwindcss from "@tailwindcss/vite";
+import fs from "fs";
+import { lookup as lookupMime } from "mrmime";
 import path from "path";
 import { fileURLToPath } from "url";
-import { defineConfig, loadEnv } from "vite";
+import { defineConfig, loadEnv, type Plugin } from "vite";
 import { createHtmlPlugin } from "vite-plugin-html";
-import { viteStaticCopy } from "vite-plugin-static-copy";
 import tsconfigPaths from "vite-tsconfig-paths";
 import { type AssetManifest, buildAssetUrl } from "./src/core/AssetUrls";
 import {
   buildPublicAssetManifest,
   copyRootPublicFiles,
   createHashedPublicAssetFiles,
+  getProprietaryDir,
   getResourcesDir,
   writePublicAssetManifestModule,
 } from "./src/server/PublicAssetManifest";
@@ -18,12 +20,42 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+function serveProprietaryDir(
+  proprietaryDir: string,
+  resourcesDir: string,
+): Plugin {
+  return {
+    name: "serve-proprietary-dir",
+    configureServer(server) {
+      // Must run before Vite's htmlFallback; skip when resources/ has the file
+      // so publicDir keeps precedence.
+      server.middlewares.use((req, res, next) => {
+        if (!req.url) return next();
+        const rel = decodeURIComponent(
+          new URL(req.url, "http://x").pathname,
+        ).replace(/^\//, "");
+        if (rel.includes("..")) return next();
+        if (fs.existsSync(path.join(resourcesDir, rel))) return next();
+        const filePath = path.join(proprietaryDir, rel);
+        if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile())
+          return next();
+        const mime = lookupMime(filePath);
+        if (mime) res.setHeader("Content-Type", mime);
+        res.setHeader("Cache-Control", "no-store");
+        fs.createReadStream(filePath).pipe(res);
+      });
+    },
+  };
+}
+
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
   const isProduction = mode === "production";
   const resourcesDir = getResourcesDir(__dirname);
+  const proprietaryDir = getProprietaryDir(__dirname);
+  const sourceDirs = [resourcesDir, proprietaryDir];
   const assetManifest: AssetManifest = isProduction
-    ? buildPublicAssetManifest(resourcesDir)
+    ? buildPublicAssetManifest(sourceDirs)
     : {};
   const htmlAssetData = {
     assetManifest: JSON.stringify(assetManifest),
@@ -35,8 +67,8 @@ export default defineConfig(({ mode }) => {
       assetManifest,
     ),
     backgroundImageUrl: buildAssetUrl("images/background.webp", assetManifest),
-    desktopLogoImageUrl: buildAssetUrl("images/OpenFront.webp", assetManifest),
-    mobileLogoImageUrl: buildAssetUrl("images/OF.webp", assetManifest),
+    desktopLogoImageUrl: buildAssetUrl("images/OpenFront.png", assetManifest),
+    mobileLogoImageUrl: buildAssetUrl("images/OF.png", assetManifest),
   };
 
   const syncHashedPublicAssets = () => ({
@@ -45,7 +77,7 @@ export default defineConfig(({ mode }) => {
     closeBundle() {
       const outDir = path.join(__dirname, "static");
       copyRootPublicFiles(resourcesDir, outDir);
-      createHashedPublicAssetFiles(resourcesDir, outDir, assetManifest);
+      createHashedPublicAssetFiles(sourceDirs, outDir, assetManifest);
       writePublicAssetManifestModule(outDir, assetManifest);
     },
   });
@@ -91,6 +123,9 @@ export default defineConfig(({ mode }) => {
 
     plugins: [
       tsconfigPaths(),
+      ...(!isProduction
+        ? [serveProprietaryDir(proprietaryDir, resourcesDir)]
+        : []),
       ...(isProduction
         ? []
         : [
@@ -106,14 +141,6 @@ export default defineConfig(({ mode }) => {
               },
             }),
           ]),
-      viteStaticCopy({
-        targets: [
-          {
-            src: "proprietary/*",
-            dest: ".",
-          },
-        ],
-      }),
       ...(isProduction ? [syncHashedPublicAssets()] : []),
       tailwindcss(),
     ],
