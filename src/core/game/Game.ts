@@ -147,6 +147,8 @@ export enum GameMapType {
   Mediterranean = "Mediterranean",
   Dyslexdria = "Dyslexdria",
   GreatLakes = "Great Lakes",
+  hillbillyhead = "Hillbilly Head",
+  aintnobodyherebutuschickens = "Ain't Nobody Here But Us Chickens",
 }
 
 export type GameMapName = keyof typeof GameMapType;
@@ -162,6 +164,8 @@ export const mapCategories: Record<string, GameMapType[]> = {
     GameMapType.Asia,
     GameMapType.Africa,
     GameMapType.Oceania,
+    GameMapType.hillbillyhead,
+    GameMapType.aintnobodyherebutuschickens,
   ],
   regional: [
     GameMapType.BritanniaClassic,

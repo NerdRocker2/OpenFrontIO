@@ -18,3 +18,7 @@ src/assets/
 *.log
 *debug*.txt
 eslint_out.txt
+
+#My Maps
+resources/maps/aintnobodyherebutuschickens/
+resources/maps/hillbillyhead/
