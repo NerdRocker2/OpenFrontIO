@@ -20,10 +20,10 @@ export type SoundEffect =
 
 export const soundEffectUrls: ReadonlyMap<SoundEffect, string> = new Map([
   ["ka-ching", assetUrl("sounds/effects/ka-ching.mp3")],
-  ["atom-hit", assetUrl("sounds/effects/atom-hit.mp3")],
-  ["atom-launch", assetUrl("sounds/effects/atom-launch.mp3")],
-  ["hydrogen-hit", assetUrl("sounds/effects/hydrogen-hit.mp3")],
-  ["hydrogen-launch", assetUrl("sounds/effects/hydrogen-launch.mp3")],
+  ["atom-hit", assetUrl("sounds/effects/null-sound.mp3")],
+  ["atom-launch", assetUrl("sounds/effects/null-sound.mp3")],
+  ["hydrogen-hit", assetUrl("sounds/effects/null-sound.mp3")],
+  ["hydrogen-launch", assetUrl("sounds/effects/null-sound.mp3")],
   ["mirv-launch", assetUrl("sounds/effects/mirv-launch.mp3")],
   ["alliance-suggested", assetUrl("sounds/effects/alliance-suggested.mp3")],
   ["alliance-broken", assetUrl("sounds/effects/alliance-broken.mp3")],
