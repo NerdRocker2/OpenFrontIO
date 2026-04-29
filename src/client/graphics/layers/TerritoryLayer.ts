@@ -1,5 +1,5 @@
 import { PriorityQueue } from "@datastructures-js/priority-queue";
-import { Colord } from "colord";
+import { Colord, colord } from "colord";
 import { Theme } from "../../../core/configuration/Config";
 import { EventBus } from "../../../core/EventBus";
 import {
@@ -30,6 +30,7 @@ export class TerritoryLayer implements Layer {
   private borderAnimTime = 0;
 
   private cachedTerritoryPatternsEnabled: boolean | undefined;
+  private isPaused = false;
 
   private tileToRenderQueue: PriorityQueue<{
     tile: TileRef;
@@ -81,6 +82,27 @@ export class TerritoryLayer implements Layer {
       this.spawnHighlight();
     }
 
+    // Check for GamePaused updates
+    const updates = this.game.updatesSinceLastTick();
+    if (updates !== null) {
+      const pauseUpdates = updates[GameUpdateType.GamePaused];
+      if (pauseUpdates && pauseUpdates.length > 0) {
+        const wasPaused = this.isPaused;
+        this.isPaused = pauseUpdates[pauseUpdates.length - 1].paused;
+        // If pause state changed, redraw all nation territories
+        if (wasPaused !== this.isPaused) {
+          this.game.forEachTile((t) => {
+            if (this.game.hasOwner(t)) {
+              const owner = this.game.owner(t);
+              if (owner instanceof PlayerView && owner.type() === PlayerType.Nation) {
+                this.enqueueTile(t);
+              }
+            }
+          });
+        }
+      }
+    }
+
     this.game.recentlyUpdatedTiles().forEach((t) => {
       this.enqueueTile(t);
       // Immediately clear territory overlay for water tiles so old
@@ -89,7 +111,6 @@ export class TerritoryLayer implements Layer {
         this.clearTile(t);
       }
     });
-    const updates = this.game.updatesSinceLastTick();
     const unitUpdates = updates !== null ? updates[GameUpdateType.Unit] : [];
     unitUpdates.forEach((update) => {
       if (update.unitType === UnitType.DefensePost) {
@@ -167,10 +188,6 @@ export class TerritoryLayer implements Layer {
   }
 
   private spawnHighlight() {
-    if (this.game.ticks() % 5 === 0) {
-      return;
-    }
-
     this.highlightContext.clearRect(
       0,
       0,
@@ -536,6 +553,14 @@ export class TerritoryLayer implements Layer {
       for (const neighbor of this.game.neighbors(tile)) {
         this.paintTerritory(neighbor, true);
       }
+
+      // Re-enqueue nation tiles while game is paused to keep them blinking
+      if (this.isPaused && this.game.hasOwner(tile)) {
+        const owner = this.game.owner(tile);
+        if (owner instanceof PlayerView && owner.type() === PlayerType.Nation) {
+          this.enqueueTile(tile);
+        }
+      }
     }
   }
 
@@ -565,6 +590,9 @@ export class TerritoryLayer implements Layer {
       this.highlightedTerritory.id() === owner.id();
     const myPlayer = this.game.myPlayer();
 
+    const isNation = owner.type() === PlayerType.Nation;
+    const shouldBlink = this.isPaused && isNation;
+
     if (this.game.isBorder(tile)) {
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const playerIsFocused = owner && this.game.focusedPlayer() === owner;
@@ -579,18 +607,34 @@ export class TerritoryLayer implements Layer {
         owner.id(),
       );
 
+      const borderColor = shouldBlink && this.shouldShowWhite()
+        ? colord("white")
+        : owner.borderColor(tile, isDefended);
       this.paintTile(
         this.imageData,
         tile,
-        owner.borderColor(tile, isDefended),
+        borderColor,
         255,
       );
     } else {
       // Alternative view only shows borders.
       this.clearAlternativeTile(tile);
 
-      this.paintTile(this.imageData, tile, owner.territoryColor(tile), 150);
+      const territoryColor = shouldBlink && this.shouldShowWhite()
+        ? colord("white")
+        : owner.territoryColor(tile);
+      this.paintTile(this.imageData, tile, territoryColor, 150);
     }
+  }
+
+  private shouldShowWhite(): boolean {
+    // Blink every second (1000ms cycle)
+    const cycleTime = 1000;
+    const currentTime = Date.now();
+    const cyclePosition = currentTime % cycleTime;
+    
+    // Show white for the first half of each second
+    return cyclePosition < cycleTime / 2;
   }
 
   alternateViewColor(other: PlayerView): Colord {
