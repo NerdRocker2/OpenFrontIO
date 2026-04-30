@@ -29,7 +29,7 @@ export const soundEffectUrls: ReadonlyMap<SoundEffect, string> = new Map([
   ["alliance-broken", assetUrl("sounds/effects/alliance-broken.mp3")],
   ["build-port", assetUrl("sounds/effects/build-port.mp3")],
   ["build-city", assetUrl("sounds/effects/null-sound.mp3")],
-  ["build-defense-post", assetUrl("sounds/effects/build-defense-post.mp3")],
+  ["build-defense-post", assetUrl("sounds/effects/null-sound.mp3")],
   ["build-warship", assetUrl("sounds/effects/build-warship.mp3")],
   ["sam-built", assetUrl("sounds/effects/sam-built.mp3")],
   ["message", assetUrl("sounds/effects/message.mp3")],
