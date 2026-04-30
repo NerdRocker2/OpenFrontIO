@@ -14,6 +14,7 @@ export class ShowReplayPanelEvent {
   constructor(
     public visible: boolean = true,
     public isSingleplayer: boolean = false,
+    public currentSpeed: ReplaySpeedMultiplier = defaultReplaySpeedMultiplier,
   ) {}
 }
 
@@ -40,6 +41,8 @@ export class ReplayPanel extends LitElement implements Layer {
       this.eventBus.on(ShowReplayPanelEvent, (event: ShowReplayPanelEvent) => {
         this.visible = event.visible;
         this.isSingleplayer = event.isSingleplayer;
+        this._replaySpeedMultiplier = event.currentSpeed;
+        this.requestUpdate();
       });
       this.eventBus.on(
         ReplaySpeedChangeEvent,
@@ -63,6 +66,7 @@ export class ReplayPanel extends LitElement implements Layer {
   onReplaySpeedChange(value: ReplaySpeedMultiplier) {
     this._replaySpeedMultiplier = value;
     this.eventBus?.emit(new ReplaySpeedChangeEvent(value));
+    this.requestUpdate();
   }
 
   renderLayer(_ctx: CanvasRenderingContext2D) {}
@@ -83,7 +87,9 @@ export class ReplayPanel extends LitElement implements Layer {
             ? translateText("replay_panel.replay_speed")
             : translateText("replay_panel.game_speed")}
         </label>
-        <div class="grid grid-cols-4 gap-2">
+        <div class="grid grid-cols-6 gap-2">
+          ${this.renderSpeedButton(ReplaySpeedMultiplier.slowest, "×0.1")}
+          ${this.renderSpeedButton(ReplaySpeedMultiplier.verySlow, "×0.25")}
           ${this.renderSpeedButton(ReplaySpeedMultiplier.slow, "×0.5")}
           ${this.renderSpeedButton(ReplaySpeedMultiplier.normal, "×1")}
           ${this.renderSpeedButton(ReplaySpeedMultiplier.fast, "×2")}
