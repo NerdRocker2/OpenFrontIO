@@ -87,12 +87,14 @@ export class ReplayPanel extends LitElement implements Layer {
             ? translateText("replay_panel.replay_speed")
             : translateText("replay_panel.game_speed")}
         </label>
-        <div class="grid grid-cols-6 gap-2">
+        <div class="grid grid-cols-4 gap-2">
           ${this.renderSpeedButton(ReplaySpeedMultiplier.slowest, "×0.1")}
           ${this.renderSpeedButton(ReplaySpeedMultiplier.verySlow, "×0.25")}
           ${this.renderSpeedButton(ReplaySpeedMultiplier.slow, "×0.5")}
           ${this.renderSpeedButton(ReplaySpeedMultiplier.normal, "×1")}
           ${this.renderSpeedButton(ReplaySpeedMultiplier.fast, "×2")}
+          ${this.renderSpeedButton(ReplaySpeedMultiplier.veryFast, "×5")}
+          ${this.renderSpeedButton(ReplaySpeedMultiplier.superFast, "×10")}
           ${this.renderSpeedButton(
             ReplaySpeedMultiplier.fastest,
             translateText("replay_panel.fastest_game_speed"),
@@ -105,6 +107,7 @@ export class ReplayPanel extends LitElement implements Layer {
   private renderSpeedButton(value: ReplaySpeedMultiplier, label: string) {
     const backgroundColor =
       this._replaySpeedMultiplier === value ? "bg-blue-400" : "";
+//      this._replaySpeedMultiplier === value ? "bg-malibu-blue" : "";
 
     return html`
       <button

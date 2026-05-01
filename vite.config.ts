@@ -173,7 +173,8 @@ export default defineConfig(({ mode }) => {
 
     server: {
       port: 9000,
-	  allowedHosts: ["jeffsslopoke.chickenkiller.com"],
+	  allowedHosts: ["jeffsslopoke.chickenkiller.com", 
+      "openfront.jefflawlor.com"],
       // Automatically open the browser when the server starts
       open: process.env.SKIP_BROWSER_OPEN !== "true",
       proxy: {
