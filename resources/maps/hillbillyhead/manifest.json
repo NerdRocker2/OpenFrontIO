@@ -1,0 +1,97 @@
+{
+  "name": "Hillbilly Head",
+  "nations": [
+    {
+      "name": "Wacky Toads",
+      "flag": "us",
+      "coordinates": [
+        1204,
+        996
+      ]
+    },
+    {
+      "name": "Funky Wombats",
+      "flag": "us",
+      "coordinates": [
+        2551,
+        2740
+      ]
+    },
+    {
+      "name": "Grand Goblins",
+      "flag": "us",
+      "coordinates": [
+        4394,
+        2047
+      ]
+    },
+    {
+      "name": "Mighty Potatoes",
+      "flag": "us",
+      "coordinates": [
+        3673,
+        4328
+      ]
+    },
+    {
+      "name": "Crispy Yetis",
+      "flag": "us",
+      "coordinates": [
+        2028,
+        3470
+      ]
+    },
+    {
+      "name": "Wobbly Rascals",
+      "flag": "us",
+      "coordinates": [
+        3272,
+        2122
+      ]
+    },
+    {
+      "name": "Ancient Beavers",
+      "flag": "us",
+      "coordinates": [
+        1986,
+        2104
+      ]
+    },
+    {
+      "name": "Grand Rascals",
+      "flag": "us",
+      "coordinates": [
+        2858,
+        3861
+      ]
+    },
+    {
+      "name": "Fluffy Parrots",
+      "flag": "us",
+      "coordinates": [
+        4436,
+        3423
+      ]
+    }
+  ],
+  "metadata": {
+    "author": "Jeff Lawlor",
+    "description": "My very first map"
+  },
+  "generatedAt": "2026-04-05T03:36:57.588Z",
+  "map": {
+    "width": 5000,
+    "height": 5000,
+    "num_land_tiles": 3000154
+  },
+  "map4x": {
+    "width": 2500,
+    "height": 2500,
+    "num_land_tiles": 741762
+  },
+  "map16x": {
+    "width": 1250,
+    "height": 1250,
+    "num_land_tiles": 181518
+  }
+}

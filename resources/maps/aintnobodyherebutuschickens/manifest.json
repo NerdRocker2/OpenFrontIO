@@ -1,0 +1,361 @@
+{
+  "name": "Aint Nobody Here But Us Chickens",
+  "nations": [
+    {
+      "name": "Ancient Wombats",
+      "flag": "us",
+      "coordinates": [
+        266,
+        172
+      ]
+    },
+    {
+      "name": "Legendary Sloths",
+      "flag": "us",
+      "coordinates": [
+        840,
+        320
+      ]
+    },
+    {
+      "name": "Crispy Beavers",
+      "flag": "us",
+      "coordinates": [
+        1011,
+        609
+      ]
+    },
+    {
+      "name": "Glamorous Sloths",
+      "flag": "us",
+      "coordinates": [
+        1437,
+        868
+      ]
+    },
+    {
+      "name": "Hollow Noodles",
+      "flag": "us",
+      "coordinates": [
+        1675,
+        984
+      ]
+    },
+    {
+      "name": "Wobbly Bananas",
+      "flag": "us",
+      "coordinates": [
+        1797,
+        941
+      ]
+    },
+    {
+      "name": "Chunky Hedgehogs",
+      "flag": "us",
+      "coordinates": [
+        1772,
+        1283
+      ]
+    },
+    {
+      "name": "Infinite Krakens",
+      "flag": "us",
+      "coordinates": [
+        2068,
+        1304
+      ]
+    },
+    {
+      "name": "Fluffy Wombats",
+      "flag": "us",
+      "coordinates": [
+        2324,
+        1430
+      ]
+    },
+    {
+      "name": "Legendary Goblins",
+      "flag": "us",
+      "coordinates": [
+        2561,
+        1500
+      ]
+    },
+    {
+      "name": "Fancy Vikings",
+      "flag": "us",
+      "coordinates": [
+        2812,
+        1634
+      ]
+    },
+    {
+      "name": "Rusty Ninjas",
+      "flag": "us",
+      "coordinates": [
+        2989,
+        1698
+      ]
+    },
+    {
+      "name": "Funky Krakens",
+      "flag": "us",
+      "coordinates": [
+        3251,
+        1755
+      ]
+    },
+    {
+      "name": "Chunky Donkeys",
+      "flag": "us",
+      "coordinates": [
+        1408,
+        583
+      ]
+    },
+    {
+      "name": "Grumpy Ducks",
+      "flag": "us",
+      "coordinates": [
+        217,
+        1149
+      ]
+    },
+    {
+      "name": "Turbo Capybaras",
+      "flag": "us",
+      "coordinates": [
+        209,
+        569
+      ]
+    },
+    {
+      "name": "Soggy Toads",
+      "flag": "us",
+      "coordinates": [
+        421,
+        1767
+      ]
+    },
+    {
+      "name": "Crispy Vikings",
+      "flag": "us",
+      "coordinates": [
+        1019,
+        1623
+      ]
+    },
+    {
+      "name": "Cosmic Parrots",
+      "flag": "us",
+      "coordinates": [
+        2177,
+        1786
+      ]
+    },
+    {
+      "name": "Glamorous Toads",
+      "flag": "us",
+      "coordinates": [
+        3001,
+        943
+      ]
+    },
+    {
+      "name": "Funky Penguins",
+      "flag": "us",
+      "coordinates": [
+        3238,
+        869
+      ]
+    },
+    {
+      "name": "Mystical Narwhals",
+      "flag": "us",
+      "coordinates": [
+        2231,
+        660
+      ]
+    },
+    {
+      "name": "Hollow Narwhals",
+      "flag": "us",
+      "coordinates": [
+        1781,
+        203
+      ]
+    },
+    {
+      "name": "Chunky Donkeys",
+      "flag": "us",
+      "coordinates": [
+        1709,
+        422
+      ]
+    },
+    {
+      "name": "Wacky Muffins",
+      "flag": "us",
+      "coordinates": [
+        2026,
+        561
+      ]
+    },
+    {
+      "name": "Cosmic Sloths",
+      "flag": "us",
+      "coordinates": [
+        2883,
+        580
+      ]
+    },
+    {
+      "name": "Grand Ducks",
+      "flag": "us",
+      "coordinates": [
+        1456,
+        1861
+      ]
+    },
+    {
+      "name": "Fancy Goblins",
+      "flag": "us",
+      "coordinates": [
+        1442,
+        1620
+      ]
+    },
+    {
+      "name": "Wobbly Bananas",
+      "flag": "us",
+      "coordinates": [
+        2430,
+        886
+      ]
+    },
+    {
+      "name": "Radical Narwhals",
+      "flag": "us",
+      "coordinates": [
+        2615,
+        1025
+      ]
+    },
+    {
+      "name": "Wacky Salamanders",
+      "flag": "us",
+      "coordinates": [
+        1502,
+        1063
+      ]
+    },
+    {
+      "name": "Fluffy Axolotls",
+      "flag": "us",
+      "coordinates": [
+        1358,
+        1362
+      ]
+    },
+    {
+      "name": "Fancy Hedgehogs",
+      "flag": "us",
+      "coordinates": [
+        3449,
+        180
+      ]
+    },
+    {
+      "name": "Supreme Bananas",
+      "flag": "us",
+      "coordinates": [
+        3182,
+        422
+      ]
+    },
+    {
+      "name": "Jolly Yetis",
+      "flag": "us",
+      "coordinates": [
+        2649,
+        120
+      ]
+    },
+    {
+      "name": "Rusty Capybaras",
+      "flag": "us",
+      "coordinates": [
+        2577,
+        589
+      ]
+    },
+    {
+      "name": "Supreme Ferrets",
+      "flag": "us",
+      "coordinates": [
+        3445,
+        1230
+      ]
+    },
+    {
+      "name": "Ancient Yetis",
+      "flag": "us",
+      "coordinates": [
+        3523,
+        1428
+      ]
+    },
+    {
+      "name": "Wacky Potatoes",
+      "flag": "us",
+      "coordinates": [
+        2121,
+        867
+      ]
+    },
+    {
+      "name": "Supreme Parrots",
+      "flag": "us",
+      "coordinates": [
+        3512,
+        1860
+      ]
+    },
+    {
+      "name": "Worm",
+      "flag": "no",
+      "coordinates": [
+        3304,
+        1918
+      ]
+    },
+    {
+      "name": "Egg",
+      "flag": "za",
+      "coordinates": [
+        873,
+        843
+      ]
+    }
+  ],
+  "metadata": {
+    "author": "Louis Jordan",
+    "description": "One night farmer Brown was takin' the air\nLocked up the barnyard with the greatest of care\nDown in the hen house, somethin' stirred\nWhen he shouted, \"Who's there?\"\nThis is what he heard\n\nThere ain't nobody here but us chickens\nThere ain't nobody here at all\nSo calm yourself, and stop that fuss\nThere ain't nobody here but us\nWe chickens tryin' to sleep and you bust in\nAnd hobble hobble hobble hobble with your chin\n\nThere ain't nobody here but us chickens\nThere ain't nobody here at all\nYou're stompin' around and shakin' the ground\nYou're kickin' up an awful fuss\nWe chickens tryin' to sleep and you bust in\nAnd hobble, hobble hobble hobble, it's a sin\n\nTomorrow is a busy day\nWe got things to do, we got eggs to lay\nWe got ground to dig and worms to scratch\nIt takes a lot of settin', gettin' chicks to hatch\n\nThere ain't nobody here but us chickens\nThere ain't nobody here at all\nSo quiet yourself, and stop that fuss\nThere ain't nobody here but us\nKindly point that gun the other way\nAnd hobble, hobble, hobble off and hit the hay\nYou might also like\nLet the Good Times Roll\nB.B. King\nIf 6 Was 9\nThe Jimi Hendrix Experience\nRock of All Ages\nBadfinger\n[Instrumental Break]\n\nTomorrow is a busy day\nWe got things to do, we got eggs to lay\nWe got ground to dig and worms to scratch\nIt takes a lot of settin', gettin' chicks to hatch\n\nThere ain't nobody here but us chickens\nThere ain't nobody here at all\nSo quiet yourself, and stop that fuss\nThere ain't nobody here but us\nAnd kindly point that gun the other way\nAnd hobble, hobble, hobble off and hit the hay\n\nHey, hey, boss man, what do ya say?\nIt's easy pickins'\nThere ain't nobody here but us chickens"
+  },
+  "generatedAt": "2026-04-07T04:20:10.892Z",
+  "map": {
+    "width": 3840,
+    "height": 2060,
+    "num_land_tiles": 2999721
+  },
+  "map4x": {
+    "width": 1920,
+    "height": 1030,
+    "num_land_tiles": 738809
+  },
+  "map16x": {
+    "width": 960,
+    "height": 515,
+    "num_land_tiles": 179344
+  }
+}
