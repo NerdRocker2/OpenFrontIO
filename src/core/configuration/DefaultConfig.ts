@@ -912,7 +912,7 @@ export class DefaultConfig implements Config {
   }
 
   defaultNukeSpeed(): number {
-    return 6;
+    return 8;
   }
 
   defaultNukeTargetableRange(): number {
