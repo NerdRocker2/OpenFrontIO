@@ -23,3 +23,6 @@ eslint_out.txt
 #My Maps
 resources/maps/aintnobodyherebutuschickens/
 resources/maps/hillbillyhead/
+
+#Resilio Sync
+.sync/
