@@ -78,29 +78,17 @@ export class TerritoryLayer implements Layer {
   }
 
   tick() {
-    if (this.game.inSpawnPhase()) {
-      this.spawnHighlight();
-    }
-
-    // Check for GamePaused updates
+    // Check for GamePaused updates BEFORE drawing highlights
     const updates = this.game.updatesSinceLastTick();
     if (updates !== null) {
       const pauseUpdates = updates[GameUpdateType.GamePaused];
       if (pauseUpdates && pauseUpdates.length > 0) {
-        const wasPaused = this.isPaused;
         this.isPaused = pauseUpdates[pauseUpdates.length - 1].paused;
-        // If pause state changed, redraw all nation territories
-        if (wasPaused !== this.isPaused) {
-          this.game.forEachTile((t) => {
-            if (this.game.hasOwner(t)) {
-              const owner = this.game.owner(t);
-              if (owner instanceof PlayerView && owner.type() === PlayerType.Nation) {
-                this.enqueueTile(t);
-              }
-            }
-          });
-        }
       }
+    }
+
+    if (this.game.inSpawnPhase()) {
+      this.spawnHighlight();
     }
 
     this.game.recentlyUpdatedTiles().forEach((t) => {
@@ -197,6 +185,9 @@ export class TerritoryLayer implements Layer {
 
     this.drawFocusedPlayerHighlight();
 
+    // Draw black highlights around AI nations during spawn phase
+    this.drawSpawningNationHighlights();
+
     const humans = this.game
       .playerViews()
       .filter((p) => p.type() === PlayerType.Human);
@@ -286,6 +277,46 @@ export class TerritoryLayer implements Layer {
 
     // Draw breathing rings for teammates in team games (helps colorblind players identify teammates)
     this.drawTeammateHighlights(minRad, maxRad, radius);
+  }
+
+  private drawSpawningNationHighlights() {
+    const nations = this.game
+      .playerViews()
+      .filter((p) => p.type() === PlayerType.Nation);
+
+    const myPlayer = this.game.myPlayer();
+    const radius = 12; // Radius of black highlight around spawning nations
+    const blackColor = colord("black").alpha(0.6); // Semi-transparent black
+
+    for (const nation of nations) {
+      // Skip the player's own nation and human players
+      if (myPlayer && nation.id() === myPlayer.id()) {
+        continue;
+      }
+      if (nation.type() === PlayerType.Human) {
+        continue;
+      }
+
+      const center = nation.nameLocation();
+      if (!center) {
+        continue;
+      }
+
+      const centerTile = this.game.ref(center.x, center.y);
+      if (!centerTile) {
+        continue;
+      }
+
+      // Paint black highlight tiles in a radius around the nation
+      for (const tile of this.game.bfs(
+        centerTile,
+        euclDistFN(centerTile, radius, true),
+      )) {
+        if (!this.game.hasOwner(tile)) {
+          this.paintHighlightTile(tile, blackColor, 150);
+        }
+      }
+    }
   }
 
   private drawTeammateHighlights(
@@ -553,14 +584,6 @@ export class TerritoryLayer implements Layer {
       for (const neighbor of this.game.neighbors(tile)) {
         this.paintTerritory(neighbor, true);
       }
-
-      // Re-enqueue nation tiles while game is paused to keep them blinking
-      if (this.isPaused && this.game.hasOwner(tile)) {
-        const owner = this.game.owner(tile);
-        if (owner instanceof PlayerView && owner.type() === PlayerType.Nation) {
-          this.enqueueTile(tile);
-        }
-      }
     }
   }
 
@@ -590,9 +613,6 @@ export class TerritoryLayer implements Layer {
       this.highlightedTerritory.id() === owner.id();
     const myPlayer = this.game.myPlayer();
 
-    const isNation = owner.type() === PlayerType.Nation;
-    const shouldBlink = this.isPaused && isNation;
-
     if (this.game.isBorder(tile)) {
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const playerIsFocused = owner && this.game.focusedPlayer() === owner;
@@ -607,9 +627,7 @@ export class TerritoryLayer implements Layer {
         owner.id(),
       );
 
-      const borderColor = shouldBlink && this.shouldShowWhite()
-        ? colord("white")
-        : owner.borderColor(tile, isDefended);
+      const borderColor = owner.borderColor(tile, isDefended);
       this.paintTile(
         this.imageData,
         tile,
@@ -620,21 +638,9 @@ export class TerritoryLayer implements Layer {
       // Alternative view only shows borders.
       this.clearAlternativeTile(tile);
 
-      const territoryColor = shouldBlink && this.shouldShowWhite()
-        ? colord("white")
-        : owner.territoryColor(tile);
+      const territoryColor = owner.territoryColor(tile);
       this.paintTile(this.imageData, tile, territoryColor, 150);
     }
-  }
-
-  private shouldShowWhite(): boolean {
-    // Blink every second (1000ms cycle)
-    const cycleTime = 1000;
-    const currentTime = Date.now();
-    const cyclePosition = currentTime % cycleTime;
-    
-    // Show white for the first half of each second
-    return cyclePosition < cycleTime / 2;
   }
 
   alternateViewColor(other: PlayerView): Colord {
