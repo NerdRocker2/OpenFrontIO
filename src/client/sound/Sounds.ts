@@ -19,7 +19,7 @@ export type SoundEffect =
   | "click";
 
 export const soundEffectUrls: ReadonlyMap<SoundEffect, string> = new Map([
-  ["ka-ching", assetUrl("sounds/effects/ka-ching.mp3")],
+  ["ka-ching", assetUrl("sounds/effects/ka-ching-GeneralsZeroHour-CratePickup.mp3")],
   ["atom-hit", assetUrl("sounds/effects/null-sound.mp3")],
   ["atom-launch", assetUrl("sounds/effects/null-sound.mp3")],
   ["hydrogen-hit", assetUrl("sounds/effects/null-sound.mp3")],
@@ -27,8 +27,8 @@ export const soundEffectUrls: ReadonlyMap<SoundEffect, string> = new Map([
   ["mirv-launch", assetUrl("sounds/effects/mirv-launch.mp3")],
   ["alliance-suggested", assetUrl("sounds/effects/alliance-suggested.mp3")],
   ["alliance-broken", assetUrl("sounds/effects/alliance-broken.mp3")],
-  ["build-port", assetUrl("sounds/effects/build-port.mp3")],
-  ["build-city", assetUrl("sounds/effects/null-sound.mp3")],
+  ["build-port", assetUrl("build-port-GeneralsZeroHour-BuildingChineseEmpire.mp3")],
+  ["build-city", assetUrl("sounds/effects/build-city-GeneralsZeroHour-LetsBuild.mp3")],
   ["build-defense-post", assetUrl("sounds/effects/null-sound.mp3")],
   ["build-warship", assetUrl("sounds/effects/build-warship.mp3")],
   ["sam-built", assetUrl("sounds/effects/sam-built.mp3")],
