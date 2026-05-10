@@ -94,6 +94,8 @@ export const ColoredTeams: Record<string, Team> = {
 } as const;
 
 export enum GameMapType {
+  hillbillyhead = "Hillbilly Head",
+  aintnobodyherebutuschickens = "Ain't Nobody Here But Us Chickens",
   World = "World",
   GiantWorldMap = "Giant World Map",
   Europe = "Europe",
@@ -187,6 +189,8 @@ export const mapCategories: Record<string, GameMapType[]> = {
     GameMapType.Africa,
     GameMapType.Oceania,
     GameMapType.Antarctica,
+    GameMapType.hillbillyhead,
+    GameMapType.aintnobodyherebutuschickens,
   ],
   regional: [
     GameMapType.BritanniaClassic,

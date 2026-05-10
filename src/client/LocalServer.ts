@@ -29,11 +29,15 @@ import {
   ReplaySpeedMultiplier,
 } from "./utilities/ReplaySpeedMultiplier";
 
-// Order: 0.5, 1, 2, max (same as ReplayPanel)
+// Order: 0.1, 0.25, 0.5, 1, 2, 5, 10, max (same as ReplayPanel)
 const SPEED_ORDER: ReplaySpeedMultiplier[] = [
+  ReplaySpeedMultiplier.slowest,
+  ReplaySpeedMultiplier.verySlow,
   ReplaySpeedMultiplier.slow,
   ReplaySpeedMultiplier.normal,
   ReplaySpeedMultiplier.fast,
+  ReplaySpeedMultiplier.veryFast,
+  ReplaySpeedMultiplier.superFast,
   ReplaySpeedMultiplier.fastest,
 ];
 

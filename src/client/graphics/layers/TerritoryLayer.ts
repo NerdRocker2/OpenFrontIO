@@ -1,5 +1,5 @@
 import { PriorityQueue } from "@datastructures-js/priority-queue";
-import { Colord } from "colord";
+import { Colord, colord } from "colord";
 import { Theme } from "../../../core/configuration/Config";
 import { EventBus } from "../../../core/EventBus";
 import {
@@ -30,6 +30,7 @@ export class TerritoryLayer implements Layer {
   private borderAnimTime = 0;
 
   private cachedTerritoryPatternsEnabled: boolean | undefined;
+  private isPaused = false;
 
   private tileToRenderQueue: PriorityQueue<{
     tile: TileRef;
@@ -77,6 +78,15 @@ export class TerritoryLayer implements Layer {
   }
 
   tick() {
+    // Check for GamePaused updates BEFORE drawing highlights
+    const updates = this.game.updatesSinceLastTick();
+    if (updates !== null) {
+      const pauseUpdates = updates[GameUpdateType.GamePaused];
+      if (pauseUpdates && pauseUpdates.length > 0) {
+        this.isPaused = pauseUpdates[pauseUpdates.length - 1].paused;
+      }
+    }
+
     if (this.game.inSpawnPhase()) {
       this.spawnHighlight();
     }
@@ -89,7 +99,6 @@ export class TerritoryLayer implements Layer {
         this.clearTile(t);
       }
     });
-    const updates = this.game.updatesSinceLastTick();
     const unitUpdates = updates !== null ? updates[GameUpdateType.Unit] : [];
     unitUpdates.forEach((update) => {
       if (update.unitType === UnitType.DefensePost) {
@@ -175,6 +184,9 @@ export class TerritoryLayer implements Layer {
     );
 
     this.drawFocusedPlayerHighlight();
+
+    // Draw black highlights around AI nations during spawn phase
+    this.drawSpawningNationHighlights();
 
     const humans = this.game
       .playerViews()
@@ -265,6 +277,46 @@ export class TerritoryLayer implements Layer {
 
     // Draw breathing rings for teammates in team games (helps colorblind players identify teammates)
     this.drawTeammateHighlights(minRad, maxRad, radius);
+  }
+
+  private drawSpawningNationHighlights() {
+    const nations = this.game
+      .playerViews()
+      .filter((p) => p.type() === PlayerType.Nation);
+
+    const myPlayer = this.game.myPlayer();
+    const radius = 12; // Radius of black highlight around spawning nations
+    const blackColor = colord("black").alpha(0.6); // Semi-transparent black
+
+    for (const nation of nations) {
+      // Skip the player's own nation and human players
+      if (myPlayer && nation.id() === myPlayer.id()) {
+        continue;
+      }
+      if (nation.type() === PlayerType.Human) {
+        continue;
+      }
+
+      const center = nation.nameLocation();
+      if (!center) {
+        continue;
+      }
+
+      const centerTile = this.game.ref(center.x, center.y);
+      if (!centerTile) {
+        continue;
+      }
+
+      // Paint black highlight tiles in a radius around the nation
+      for (const tile of this.game.bfs(
+        centerTile,
+        euclDistFN(centerTile, radius, true),
+      )) {
+        if (!this.game.hasOwner(tile)) {
+          this.paintHighlightTile(tile, blackColor, 150);
+        }
+      }
+    }
   }
 
   private drawTeammateHighlights(
@@ -575,17 +627,19 @@ export class TerritoryLayer implements Layer {
         owner.id(),
       );
 
+      const borderColor = owner.borderColor(tile, isDefended);
       this.paintTile(
         this.imageData,
         tile,
-        owner.borderColor(tile, isDefended),
+        borderColor,
         255,
       );
     } else {
       // Alternative view only shows borders.
       this.clearAlternativeTile(tile);
 
-      this.paintTile(this.imageData, tile, owner.territoryColor(tile), 150);
+      const territoryColor = owner.territoryColor(tile);
+      this.paintTile(this.imageData, tile, territoryColor, 150);
     }
   }
 

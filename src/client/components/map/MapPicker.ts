@@ -18,6 +18,8 @@ const featuredMaps: GameMapType[] = [
   GameMapType.Asia,
   GameMapType.Africa,
   GameMapType.Japan,
+  GameMapType.hillbillyhead,
+  GameMapType.aintnobodyherebutuschickens,
 ];
 
 @customElement("map-picker")

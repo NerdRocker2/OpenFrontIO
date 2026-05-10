@@ -20,3 +20,6 @@ src/assets/
 *.log
 *debug*.txt
 eslint_out.txt
+
+#Resilio Sync
+.sync/

@@ -411,6 +411,8 @@
     "no_winner": "This game ended with no winner (or a Nation won)"
   },
   "map": {
+    "aintnobodyherebutuschickens": "Ain't Nobody Here But Us Chickens",
+    "hillbillyhead": "Hillbilly Head",
     "map": "Map",
     "featured": "Featured",
     "all": "All",
