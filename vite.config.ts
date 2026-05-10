@@ -4,6 +4,7 @@ import { lookup as lookupMime } from "mrmime";
 import path from "path";
 import { fileURLToPath } from "url";
 import { defineConfig, loadEnv, type Plugin } from "vite";
+import tsconfigPaths from "vite-tsconfig-paths";
 import { createHtmlPlugin } from "vite-plugin-html";
 import {
   type AssetManifest,
@@ -154,13 +155,13 @@ export default defineConfig(({ mode }) => {
     publicDir: isProduction ? false : "resources",
 
     resolve: {
-      tsconfigPaths: true,
       alias: {
         resources: path.resolve(__dirname, "resources"),
       },
     },
 
     plugins: [
+      tsconfigPaths(),
       ...(!isProduction
         ? [serveProprietaryDir(proprietaryDir, resourcesDir)]
         : []),
