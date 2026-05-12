@@ -23,3 +23,6 @@ eslint_out.txt
 
 #Resilio Sync
 .sync/
+
+# No CI for now
+.github/workflows/
