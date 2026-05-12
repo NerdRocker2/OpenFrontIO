@@ -41,6 +41,7 @@ import {
   DoRequestAllianceEvent,
   DoRetaliateAttackEvent,
   InputHandler,
+  PauseAfterSpawnFreezeEvent,
   MouseMoveEvent,
   MouseUpEvent,
   TickMetricsEvent,
@@ -301,6 +302,7 @@ async function createClientGame(
 export class ClientGameRunner {
   private myPlayer: PlayerView | null = null;
   private isActive = false;
+  private pauseAfterSpawnFreezeEmitted = false;
 
   private turnsSeen = 0;
   private lastMousePosition: { x: number; y: number } | null = null;
@@ -433,6 +435,22 @@ export class ClientGameRunner {
       });
       this.gameView.update(gu);
       this.renderer.tick();
+
+      // Freeze the game at the end of spawn phase so the human can place their nation.
+      // We freeze one tick before numSpawnPhaseTurns so that SpawnExecution has one
+      // more tick (at numSpawnPhaseTurns) to run within the spawn phase.
+      if (
+        !this.pauseAfterSpawnFreezeEmitted &&
+        !this.lobby.gameRecord &&
+        (this.lobby.gameStartInfo?.config.pauseAfterSpawn ?? false) &&
+        !this.gameView.config().isRandomSpawn() &&
+        this.gameView.ticks() ===
+          this.gameView.config().numSpawnPhaseTurns() - 1 &&
+        !this.gameView.myPlayer()?.hasSpawned()
+      ) {
+        this.pauseAfterSpawnFreezeEmitted = true;
+        this.eventBus.emit(new PauseAfterSpawnFreezeEvent());
+      }
 
       // Emit tick metrics event for performance overlay
       this.eventBus.emit(
