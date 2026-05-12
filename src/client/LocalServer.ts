@@ -22,7 +22,6 @@ import { LobbyConfig } from "./ClientGameRunner";
 import {
   GameSpeedDownIntentEvent,
   GameSpeedUpIntentEvent,
-  PauseAfterSpawnFreezeEvent,
   ReplaySpeedChangeEvent,
 } from "./InputHandler";
 import {
@@ -55,7 +54,6 @@ export class LocalServer {
   private startedAt: number;
 
   private paused = false;
-  private waitingForInstaspawn = false;
   private replaySpeedMultiplier = defaultReplaySpeedMultiplier;
 
   private clientID: ClientID | undefined;
@@ -129,10 +127,6 @@ export class LocalServer {
           new ReplaySpeedChangeEvent(this.replaySpeedMultiplier),
         );
       });
-
-      this.eventBus.on(PauseAfterSpawnFreezeEvent, () => {
-        this.waitingForInstaspawn = true;
-      });
     }
 
     this.startedAt = Date.now();
@@ -192,14 +186,6 @@ export class LocalServer {
         }
         return;
       }
-      // Allow spawn intent to unfreeze instaspawn pause
-      if (stampedIntent.type === "spawn" && this.waitingForInstaspawn) {
-        this.waitingForInstaspawn = false;
-        this.intents.push(stampedIntent);
-        this.endTurn();
-        return;
-      }
-
       // Don't process non-pause intents during replays or while paused
       if (this.lobbyConfig.gameRecord || this.paused) {
         return;
@@ -258,7 +244,7 @@ export class LocalServer {
   // endTurn in this context means the server has collected all the intents
   // and will send the turn to the client.
   private endTurn() {
-    if (this.paused || this.waitingForInstaspawn) {
+    if (this.paused) {
       return;
     }
     if (this.replayTurns.length > 0) {

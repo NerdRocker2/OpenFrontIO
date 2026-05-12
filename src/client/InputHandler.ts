@@ -173,8 +173,6 @@ export class GameSpeedUpIntentEvent implements GameEvent {}
 
 export class GameSpeedDownIntentEvent implements GameEvent {}
 
-export class PauseAfterSpawnFreezeEvent implements GameEvent {}
-
 export class CenterCameraEvent implements GameEvent {
   constructor() {}
 }
