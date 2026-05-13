@@ -2,7 +2,7 @@
   "name": "Aint Nobody Here But Us Chickens",
   "nations": [
     {
-      "name": "Ancient Wombats",
+      "name": "Road Crossers",
       "flag": "us",
       "coordinates": [
         266,
@@ -10,7 +10,7 @@
       ]
     },
     {
-      "name": "Legendary Sloths",
+      "name": "Coop Flyers",
       "flag": "us",
       "coordinates": [
         840,
@@ -18,7 +18,7 @@
       ]
     },
     {
-      "name": "Crispy Beavers",
+      "name": "Chick Filets",
       "flag": "us",
       "coordinates": [
         1011,
@@ -26,7 +26,7 @@
       ]
     },
     {
-      "name": "Glamorous Sloths",
+      "name": "Farmer Brown's Barn",
       "flag": "us",
       "coordinates": [
         1437,
@@ -34,7 +34,7 @@
       ]
     },
     {
-      "name": "Hollow Noodles",
+      "name": "Rooster Creek",
       "flag": "us",
       "coordinates": [
         1675,
@@ -42,7 +42,7 @@
       ]
     },
     {
-      "name": "Wobbly Bananas",
+      "name": "Embryonic Chick",
       "flag": "us",
       "coordinates": [
         1797,
@@ -50,7 +50,7 @@
       ]
     },
     {
-      "name": "Chunky Hedgehogs",
+      "name": "Hot Chicks",
       "flag": "us",
       "coordinates": [
         1772,
@@ -58,7 +58,7 @@
       ]
     },
     {
-      "name": "Infinite Krakens",
+      "name": "Spicy Chickens",
       "flag": "us",
       "coordinates": [
         2068,
@@ -66,7 +66,7 @@
       ]
     },
     {
-      "name": "Fluffy Wombats",
+      "name": "Lickin' Chicken",
       "flag": "us",
       "coordinates": [
         2324,
@@ -74,7 +74,7 @@
       ]
     },
     {
-      "name": "Legendary Goblins",
+      "name": "Quick Chicks",
       "flag": "us",
       "coordinates": [
         2561,
@@ -82,7 +82,7 @@
       ]
     },
     {
-      "name": "Fancy Vikings",
+      "name": "Wicked Chickens",
       "flag": "us",
       "coordinates": [
         2812,
@@ -90,7 +90,7 @@
       ]
     },
     {
-      "name": "Rusty Ninjas",
+      "name": "Bok Bok Bok",
       "flag": "us",
       "coordinates": [
         2989,
@@ -98,7 +98,7 @@
       ]
     },
     {
-      "name": "Funky Krakens",
+      "name": "Lucky Clucks",
       "flag": "us",
       "coordinates": [
         3251,
@@ -106,7 +106,7 @@
       ]
     },
     {
-      "name": "Chunky Donkeys",
+      "name": "Drumsticks and Wings",
       "flag": "us",
       "coordinates": [
         1408,
@@ -114,7 +114,7 @@
       ]
     },
     {
-      "name": "Grumpy Ducks",
+      "name": "Pecking Order",
       "flag": "us",
       "coordinates": [
         217,
@@ -122,7 +122,7 @@
       ]
     },
     {
-      "name": "Turbo Capybaras",
+      "name": "Foster Farms",
       "flag": "us",
       "coordinates": [
         209,
@@ -130,7 +130,7 @@
       ]
     },
     {
-      "name": "Soggy Toads",
+      "name": "Poke's No Joke",
       "flag": "us",
       "coordinates": [
         421,
@@ -138,7 +138,7 @@
       ]
     },
     {
-      "name": "Crispy Vikings",
+      "name": "Feckless Peckers",
       "flag": "us",
       "coordinates": [
         1019,
@@ -162,7 +162,7 @@
       ]
     },
     {
-      "name": "Funky Penguins",
+      "name": "Funky Chickens",
       "flag": "us",
       "coordinates": [
         3238,
@@ -170,7 +170,7 @@
       ]
     },
     {
-      "name": "Mystical Narwhals",
+      "name": "Chicken Dancers",
       "flag": "us",
       "coordinates": [
         2231,
@@ -178,7 +178,7 @@
       ]
     },
     {
-      "name": "Hollow Narwhals",
+      "name": "Chin Hobble Hobble Hobblers",
       "flag": "us",
       "coordinates": [
         1781,
@@ -186,7 +186,7 @@
       ]
     },
     {
-      "name": "Chunky Donkeys",
+      "name": "Fuss Kickers",
       "flag": "us",
       "coordinates": [
         1709,
@@ -194,7 +194,7 @@
       ]
     },
     {
-      "name": "Wacky Muffins",
+      "name": "Tryin' to Sleep Chickens",
       "flag": "us",
       "coordinates": [
         2026,
@@ -202,7 +202,7 @@
       ]
     },
     {
-      "name": "Cosmic Sloths",
+      "name": "Worm Scratchers",
       "flag": "us",
       "coordinates": [
         2883,
@@ -210,7 +210,7 @@
       ]
     },
     {
-      "name": "Grand Ducks",
+      "name": "Yolk Folks",
       "flag": "us",
       "coordinates": [
         1456,
@@ -218,7 +218,7 @@
       ]
     },
     {
-      "name": "Fancy Goblins",
+      "name": "The Hatched Batch",
       "flag": "us",
       "coordinates": [
         1442,
@@ -226,7 +226,7 @@
       ]
     },
     {
-      "name": "Wobbly Bananas",
+      "name": "Hay Hitters",
       "flag": "us",
       "coordinates": [
         2430,
@@ -234,7 +234,7 @@
       ]
     },
     {
-      "name": "Radical Narwhals",
+      "name": "Bustin' In Bosses",
       "flag": "us",
       "coordinates": [
         2615,
@@ -242,7 +242,7 @@
       ]
     },
     {
-      "name": "Wacky Salamanders",
+      "name": "Hard Boiled Hens",
       "flag": "us",
       "coordinates": [
         1502,
@@ -250,7 +250,7 @@
       ]
     },
     {
-      "name": "Fluffy Axolotls",
+      "name": "Walking Bokers",
       "flag": "us",
       "coordinates": [
         1358,
@@ -258,7 +258,7 @@
       ]
     },
     {
-      "name": "Fancy Hedgehogs",
+      "name": "The Broken Shells",
       "flag": "us",
       "coordinates": [
         3449,
@@ -266,7 +266,7 @@
       ]
     },
     {
-      "name": "Supreme Bananas",
+      "name": "Boosted Roosters",
       "flag": "us",
       "coordinates": [
         3182,
@@ -274,7 +274,7 @@
       ]
     },
     {
-      "name": "Jolly Yetis",
+      "name": "Guarding Foxes",
       "flag": "us",
       "coordinates": [
         2649,
@@ -282,7 +282,7 @@
       ]
     },
     {
-      "name": "Rusty Capybaras",
+      "name": "The Broken Dozen",
       "flag": "us",
       "coordinates": [
         2577,
@@ -290,7 +290,7 @@
       ]
     },
     {
-      "name": "Supreme Ferrets",
+      "name": "Chickens Came First",
       "flag": "us",
       "coordinates": [
         3445,
@@ -298,7 +298,7 @@
       ]
     },
     {
-      "name": "Ancient Yetis",
+      "name": "Eggs Came First",
       "flag": "us",
       "coordinates": [
         3523,
@@ -306,7 +306,7 @@
       ]
     },
     {
-      "name": "Wacky Potatoes",
+      "name": "Empty Shells",
       "flag": "us",
       "coordinates": [
         2121,
@@ -314,7 +314,7 @@
       ]
     },
     {
-      "name": "Supreme Parrots",
+      "name": "The Tastes Like Chickens",
       "flag": "us",
       "coordinates": [
         3512,
