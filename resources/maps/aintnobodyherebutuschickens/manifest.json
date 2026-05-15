@@ -351,11 +351,11 @@
   "map4x": {
     "width": 1920,
     "height": 1030,
-    "num_land_tiles": 738809
+    "num_land_tiles": 738669
   },
   "map16x": {
     "width": 960,
     "height": 515,
-    "num_land_tiles": 179344
+    "num_land_tiles": 179343
   }
 }
