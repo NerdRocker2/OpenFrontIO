@@ -636,18 +636,23 @@ export class ClientGameRunner {
       return;
     }
     if (this.pauseAfterSpawnFreezeEmitted && this.gameView.inSpawnPhase()) {
-      const owner = this.gameView.owner(tile);
-      if (
-        this.gameView.isLand(tile) &&
-        owner.isPlayer() &&
-        owner.type() === PlayerType.Nation &&
-        !this.pendingEliminations.has(owner.id())
-      ) {
-        const nationID = owner.id();
-        this.pendingEliminations.add(nationID);
-        this.eventBus.emit(new EliminateNationAnimationEvent(nationID));
-        this.eventBus.emit(new SendEliminateNationIntentEvent(nationID));
-        return;
+      const maxEliminations =
+        this.gameView.config().gameConfig().eliminateNations ?? 0;
+      if (maxEliminations > 0) {
+        const owner = this.gameView.owner(tile);
+        if (
+          this.gameView.isLand(tile) &&
+          owner.isPlayer() &&
+          owner.type() === PlayerType.Nation &&
+          this.pendingEliminations.size < maxEliminations &&
+          !this.pendingEliminations.has(owner.id())
+        ) {
+          const nationID = owner.id();
+          this.pendingEliminations.add(nationID);
+          this.eventBus.emit(new EliminateNationAnimationEvent(nationID));
+          this.eventBus.emit(new SendEliminateNationIntentEvent(nationID));
+          return;
+        }
       }
     }
     if (this.gameView.inSpawnPhase()) {

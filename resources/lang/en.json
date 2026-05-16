@@ -218,7 +218,11 @@
     "gold_multiplier": "Gold multiplier",
     "gold_multiplier_placeholder": "2.0x",
     "starting_gold": "Starting Gold (Millions)",
-    "starting_gold_placeholder": "5"
+    "starting_gold_placeholder": "5",
+    "eliminate_nation": "Elimi-nation",
+    "max_nations": "Max Nations",
+    "max_nations_placeholder": "1",
+    "eliminate_nations_requires_pause": "Requires Pause After Spawn"
   },
   "token_login_modal": {
     "title": "Logging in...",

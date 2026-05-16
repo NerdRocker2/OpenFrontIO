@@ -36,6 +36,9 @@ export class ToggleInputCard extends LitElement {
   @property({ attribute: false }) onInput?: (e: Event) => void;
   @property({ attribute: false }) onChange?: (e: Event) => void;
   @property({ attribute: false }) onKeyDown?: (e: KeyboardEvent) => void;
+  @property({ type: Boolean, attribute: false }) disabledCheckbox = false;
+  @property({ attribute: false }) disabledMessage = "";
+  @property({ attribute: false }) inputLabel = "";
 
   createRenderRoot() {
     return this;
@@ -98,25 +101,35 @@ export class ToggleInputCard extends LitElement {
   }
 
   private handleCardClick = () => {
+    if (this.disabledCheckbox) return;
     this.emitToggle();
   };
 
   render() {
+    const effectiveActive = this.checked && !this.disabledCheckbox;
+    const showDisabledMsg = this.disabledCheckbox && !!this.disabledMessage;
+    const showOverlay = effectiveActive || showDisabledMsg;
+
     return html`
-      <div class="${cardClass(this.checked, "relative overflow-hidden")}">
+      <div class="${cardClass(effectiveActive, "relative overflow-hidden")}">
         <button
           type="button"
-          aria-pressed=${this.checked}
+          aria-pressed=${effectiveActive}
           @click=${this.handleCardClick}
-          class="w-full h-full p-3 flex flex-col items-center justify-between gap-2 focus:outline-none"
+          class="w-full h-full p-3 flex flex-col items-center justify-between gap-2 focus:outline-none${
+            this.disabledCheckbox ? " cursor-not-allowed" : ""
+          }"
         >
           <div
-            class="w-5 h-5 rounded border flex items-center justify-center transition-colors mt-1 ${this
-              .checked
-              ? "bg-blue-500 border-blue-500"
-              : "border-white/20 bg-white/5"}"
+            class="w-5 h-5 rounded border flex items-center justify-center transition-colors mt-1 ${
+              this.disabledCheckbox
+                ? "border-white/10 bg-white/5"
+                : this.checked
+                  ? "bg-blue-500 border-blue-500"
+                  : "border-white/20 bg-white/5"
+            }"
           >
-            ${this.checked
+            ${effectiveActive
               ? html`<svg
                   xmlns="http://www.w3.org/2000/svg"
                   class="h-3 w-3 text-white"
@@ -132,12 +145,12 @@ export class ToggleInputCard extends LitElement {
               : ""}
           </div>
 
-          ${this.checked
+          ${showOverlay
             ? html`<div class="h-[30px] my-1"></div>`
             : html`<div class="h-[2px] w-4 rounded my-3 bg-white/10"></div>`}
 
           <span
-            class="${CARD_LABEL_CLASS} text-center ${this.checked
+            class="${CARD_LABEL_CLASS} text-center ${effectiveActive
               ? "text-white"
               : "text-white/60"}"
           >
@@ -145,11 +158,18 @@ export class ToggleInputCard extends LitElement {
           </span>
         </button>
 
-        ${this.checked
+        ${effectiveActive
           ? html`
               <div
                 class="absolute left-3 right-3 top-1/2 -translate-y-1/2 z-10"
               >
+                ${this.inputLabel
+                  ? html`<p
+                      class="text-white/60 text-[10px] uppercase font-bold tracking-wider text-center mb-1"
+                    >
+                      ${this.inputLabel}
+                    </p>`
+                  : nothing}
                 <input
                   type=${this.inputType}
                   id=${this.inputId ?? nothing}
@@ -166,7 +186,19 @@ export class ToggleInputCard extends LitElement {
                 />
               </div>
             `
-          : nothing}
+          : showDisabledMsg
+            ? html`
+                <div
+                  class="absolute left-3 right-3 top-1/2 -translate-y-1/2 z-10 pointer-events-none"
+                >
+                  <p
+                    class="text-white/35 text-[10px] text-center leading-tight italic"
+                  >
+                    ${this.disabledMessage}
+                  </p>
+                </div>
+              `
+            : nothing}
       </div>
     `;
   }

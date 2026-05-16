@@ -60,6 +60,8 @@ const DEFAULT_OPTIONS = {
   disableAlliances: false,
   waterNukes: false,
   pauseAfterSpawn: true,
+  eliminateNationsEnabled: true,
+  eliminateNationsMax: 1,
 } as const;
 
 @customElement("single-player-modal")
@@ -97,6 +99,10 @@ export class SinglePlayerModal extends BaseModal {
   @state() private disableAlliances: boolean = DEFAULT_OPTIONS.disableAlliances;
   @state() private waterNukes: boolean = DEFAULT_OPTIONS.waterNukes;
   @state() private pauseAfterSpawn: boolean = DEFAULT_OPTIONS.pauseAfterSpawn;
+  @state() private eliminateNationsEnabled: boolean =
+    DEFAULT_OPTIONS.eliminateNationsEnabled;
+  @state() private eliminateNationsMax: number =
+    DEFAULT_OPTIONS.eliminateNationsMax;
 
   private mapLoader = terrainMapFileLoader;
 
@@ -223,6 +229,27 @@ export class SinglePlayerModal extends BaseModal {
         .onToggle=${this.handleStartingGoldToggle}
         .onChange=${this.handleStartingGoldValueChanges}
         .onKeyDown=${this.handleStartingGoldValueKeyDown}
+      ></toggle-input-card>`,
+      html`<toggle-input-card
+        .labelKey=${"single_modal.eliminate_nation"}
+        .checked=${this.eliminateNationsEnabled}
+        .disabledCheckbox=${!this.pauseAfterSpawn}
+        .disabledMessage=${translateText(
+          "single_modal.eliminate_nations_requires_pause",
+        )}
+        .inputId=${"eliminate-nations-max"}
+        .inputMin=${1}
+        .inputMax=${20}
+        .inputValue=${this.eliminateNationsMax}
+        .inputAriaLabel=${translateText("single_modal.max_nations")}
+        .inputPlaceholder=${translateText(
+          "single_modal.max_nations_placeholder",
+        )}
+        .defaultInputValue=${1}
+        .minValidOnEnable=${1}
+        .onToggle=${this.handleEliminateNationsToggle}
+        .onInput=${this.handleEliminateNationsMaxChanges}
+        .onKeyDown=${this.handleEliminateNationsMaxKeyDown}
       ></toggle-input-card>`,
     ];
 
@@ -399,7 +426,9 @@ export class SinglePlayerModal extends BaseModal {
       this.disableAlliances !== DEFAULT_OPTIONS.disableAlliances ||
       this.waterNukes !== DEFAULT_OPTIONS.waterNukes ||
       this.pauseAfterSpawn !== DEFAULT_OPTIONS.pauseAfterSpawn ||
-      this.disabledUnits.length > 0
+      this.disabledUnits.length > 0 ||
+      this.eliminateNationsEnabled !== DEFAULT_OPTIONS.eliminateNationsEnabled ||
+      this.eliminateNationsMax !== DEFAULT_OPTIONS.eliminateNationsMax
     );
   }
 
@@ -428,6 +457,8 @@ export class SinglePlayerModal extends BaseModal {
     this.disableAlliances = DEFAULT_OPTIONS.disableAlliances;
     this.waterNukes = DEFAULT_OPTIONS.waterNukes;
     this.pauseAfterSpawn = DEFAULT_OPTIONS.pauseAfterSpawn;
+    this.eliminateNationsEnabled = DEFAULT_OPTIONS.eliminateNationsEnabled;
+    this.eliminateNationsMax = DEFAULT_OPTIONS.eliminateNationsMax;
   }
 
   protected onOpen(): void {
@@ -632,6 +663,33 @@ export class SinglePlayerModal extends BaseModal {
     }
   };
 
+  private handleEliminateNationsToggle = (
+    checked: boolean,
+    value: number | string | undefined,
+  ) => {
+    this.eliminateNationsEnabled = checked;
+    const n = toOptionalNumber(value);
+    if (n !== undefined) {
+      this.eliminateNationsMax = n;
+    }
+  };
+
+  private handleEliminateNationsMaxKeyDown = (e: KeyboardEvent) => {
+    preventDisallowedKeys(e, ["-", "+", "e", "E", "."]);
+  };
+
+  private handleEliminateNationsMaxChanges = (e: Event) => {
+    const input = e.target as HTMLInputElement;
+    const value = parseBoundedIntegerFromInput(input, {
+      min: 1,
+      max: 20,
+      stripPattern: /[e+\-.]/gi,
+    });
+    if (value !== undefined) {
+      this.eliminateNationsMax = value;
+    }
+  };
+
   private handleGameModeSelection(value: GameMode) {
     this.gameMode = value;
   }
@@ -725,6 +783,9 @@ export class SinglePlayerModal extends BaseModal {
               ...(this.disableAlliances ? { disableAlliances: true } : {}),
               ...(this.waterNukes ? { waterNukes: true } : {}),
               ...(!this.pauseAfterSpawn ? {} : { pauseAfterSpawn: true }),
+              ...(this.eliminateNationsEnabled && this.pauseAfterSpawn
+                ? { eliminateNations: this.eliminateNationsMax }
+                : {}),
             },
             lobbyCreatedAt: Date.now(), // ms; server should be authoritative in MP
           },
