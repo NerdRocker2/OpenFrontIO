@@ -67,6 +67,10 @@ export class SendSpawnIntentEvent implements GameEvent {
   constructor(public readonly tile: TileRef) {}
 }
 
+export class SendEliminateNationIntentEvent implements GameEvent {
+  constructor(public readonly targetID: PlayerID) {}
+}
+
 export class SendAttackIntentEvent implements GameEvent {
   constructor(
     public readonly targetID: PlayerID | null,
@@ -212,6 +216,9 @@ export class Transport {
     );
     this.eventBus.on(SendSpawnIntentEvent, (e) =>
       this.onSendSpawnIntentEvent(e),
+    );
+    this.eventBus.on(SendEliminateNationIntentEvent, (e) =>
+      this.onSendEliminateNationIntent(e),
     );
     this.eventBus.on(SendAttackIntentEvent, (e) => this.onSendAttackIntent(e));
     this.eventBus.on(SendUpgradeStructureIntentEvent, (e) =>
@@ -474,6 +481,13 @@ export class Transport {
     this.sendIntent({
       type: "spawn",
       tile: event.tile,
+    });
+  }
+
+  private onSendEliminateNationIntent(event: SendEliminateNationIntentEvent) {
+    this.sendIntent({
+      type: "eliminate_nation",
+      targetID: event.targetID,
     });
   }
 

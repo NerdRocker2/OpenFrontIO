@@ -40,6 +40,7 @@ import {
   DoGroundAttackEvent,
   DoRequestAllianceEvent,
   DoRetaliateAttackEvent,
+  EliminateNationAnimationEvent,
   InputHandler,
   PauseAfterSpawnFreezeEvent,
   MouseMoveEvent,
@@ -53,6 +54,7 @@ import {
   SendAttackIntentEvent,
   SendBoatAttackIntentEvent,
   SendBreakAllianceIntentEvent,
+  SendEliminateNationIntentEvent,
   SendHashEvent,
   SendSpawnIntentEvent,
   SendUpgradeStructureIntentEvent,
@@ -303,6 +305,7 @@ export class ClientGameRunner {
   private myPlayer: PlayerView | null = null;
   private isActive = false;
   private pauseAfterSpawnFreezeEmitted = false;
+  private pendingEliminations = new Set<string>();
 
   private turnsSeen = 0;
   private lastMousePosition: { x: number; y: number } | null = null;
@@ -629,7 +632,23 @@ export class ClientGameRunner {
       !this.gameView.config().isRandomSpawn()
     ) {
       this.eventBus.emit(new SendSpawnIntentEvent(tile));
+      this.pendingEliminations.clear();
       return;
+    }
+    if (this.pauseAfterSpawnFreezeEmitted && this.gameView.inSpawnPhase()) {
+      const owner = this.gameView.owner(tile);
+      if (
+        this.gameView.isLand(tile) &&
+        owner.isPlayer() &&
+        owner.type() === PlayerType.Nation &&
+        !this.pendingEliminations.has(owner.id())
+      ) {
+        const nationID = owner.id();
+        this.pendingEliminations.add(nationID);
+        this.eventBus.emit(new EliminateNationAnimationEvent(nationID));
+        this.eventBus.emit(new SendEliminateNationIntentEvent(nationID));
+        return;
+      }
     }
     if (this.gameView.inSpawnPhase()) {
       return;

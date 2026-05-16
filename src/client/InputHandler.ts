@@ -175,6 +175,10 @@ export class GameSpeedDownIntentEvent implements GameEvent {}
 
 export class PauseAfterSpawnFreezeEvent implements GameEvent {}
 
+export class EliminateNationAnimationEvent implements GameEvent {
+  constructor(public readonly targetID: string) {}
+}
+
 export class CenterCameraEvent implements GameEvent {
   constructor() {}
 }

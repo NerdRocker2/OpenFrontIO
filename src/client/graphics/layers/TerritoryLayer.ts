@@ -16,6 +16,7 @@ import { PseudoRandom } from "../../../core/PseudoRandom";
 import {
   AlternateViewEvent,
   DragEvent,
+  EliminateNationAnimationEvent,
   MouseOverEvent,
 } from "../../InputHandler";
 import { FrameProfiler } from "../FrameProfiler";
@@ -28,6 +29,8 @@ export class TerritoryLayer implements Layer {
   private imageData: ImageData;
   private alternativeImageData: ImageData;
   private borderAnimTime = 0;
+
+  private static readonly ELIMINATION_ANIM_DURATION_MS = 500;
 
   private cachedTerritoryPatternsEnabled: boolean | undefined;
   private isPaused = false;
@@ -56,6 +59,7 @@ export class TerritoryLayer implements Layer {
   private lastRefresh = 0;
 
   private lastFocusedPlayer: PlayerView | null = null;
+  private eliminatingNations = new Map<string, number>();
 
   constructor(
     private game: GameView,
@@ -285,8 +289,9 @@ export class TerritoryLayer implements Layer {
       .filter((p) => p.type() === PlayerType.Nation);
 
     const myPlayer = this.game.myPlayer();
-    const radius = 12; // Radius of black highlight around spawning nations
+    const maxRadius = 12; // Radius of black highlight around spawning nations
     const blackColor = colord("black").alpha(0.6); // Semi-transparent black
+    const now = performance.now();
 
     for (const nation of nations) {
       // Skip the player's own nation and human players
@@ -305,6 +310,21 @@ export class TerritoryLayer implements Layer {
       const centerTile = this.game.ref(center.x, center.y);
       if (!centerTile) {
         continue;
+      }
+
+      // Determine effective radius (shrinks to 0 for nations being eliminated)
+      let radius = maxRadius;
+      const animStart = this.eliminatingNations.get(nation.id());
+      if (animStart !== undefined) {
+        const elapsed = now - animStart;
+        const progress = Math.min(
+          elapsed / TerritoryLayer.ELIMINATION_ANIM_DURATION_MS,
+          1,
+        );
+        radius = maxRadius * (1 - progress);
+        if (radius <= 0) {
+          continue;
+        }
       }
 
       // Paint black highlight tiles in a radius around the nation
@@ -380,6 +400,9 @@ export class TerritoryLayer implements Layer {
     this.eventBus.on(DragEvent, (e) => {
       // TODO: consider re-enabling this on mobile or low end devices for smoother dragging.
       // this.lastDragTime = Date.now();
+    });
+    this.eventBus.on(EliminateNationAnimationEvent, (e) => {
+      this.eliminatingNations.set(e.targetID, performance.now());
     });
     this.redraw();
   }
@@ -550,6 +573,12 @@ export class TerritoryLayer implements Layer {
     );
     FrameProfiler.end("TerritoryLayer:drawCanvas", drawCanvasStart);
     if (this.game.inSpawnPhase()) {
+      // If elimination animations are running, redraw the highlight canvas every
+      // frame so the shrink animation plays smoothly even when the game is frozen
+      // (no tick events during the pause-after-spawn phase).
+      if (this.eliminatingNations.size > 0) {
+        this.spawnHighlight();
+      }
       const highlightDrawStart = FrameProfiler.start();
       context.drawImage(
         this.highlightCanvas,
