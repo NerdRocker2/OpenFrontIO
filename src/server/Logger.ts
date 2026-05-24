@@ -50,7 +50,7 @@ const addSeverityFormat = winston.format((info) => {
 
 // Define your base/parent logger
 const logger = winston.createLogger({
-  level: "info",
+  level: process.env.LOG_LEVEL ?? "warn",
   format: winston.format.combine(
     winston.format.timestamp(),
     addSeverityFormat(),
