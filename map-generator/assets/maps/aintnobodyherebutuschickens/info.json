@@ -1,0 +1,361 @@
+{
+  "name": "Aint Nobody Here But Us Chickens",
+  "nations": [
+    {
+      "name": "Baby Chicks",
+      "flag": "us",
+      "coordinates": [
+        677,
+        270
+      ]
+    },
+    {
+      "name": "The Hatched",
+      "flag": "us",
+      "coordinates": [
+        877,
+        465
+      ]
+    },
+    {
+      "name": "Angry Chickens",
+      "flag": "us",
+      "coordinates": [
+        1300,
+        552
+      ]
+    },
+    {
+      "name": "Cold Bokkers",
+      "flag": "us",
+      "coordinates": [
+        1461,
+        806
+      ]
+    },
+    {
+      "name": "Road Crossers",
+      "flag": "us",
+      "coordinates": [
+        266,
+        172
+      ]
+    },
+    {
+      "name": "Rooster Creek",
+      "flag": "us",
+      "coordinates": [
+        1675,
+        984
+      ]
+    },
+    {
+      "name": "Embryonic Chick",
+      "flag": "us",
+      "coordinates": [
+        1797,
+        941
+      ]
+    },
+    {
+      "name": "Hot Chicks",
+      "flag": "us",
+      "coordinates": [
+        1772,
+        1283
+      ]
+    },
+    {
+      "name": "Spicy Chickens",
+      "flag": "us",
+      "coordinates": [
+        2068,
+        1304
+      ]
+    },
+    {
+      "name": "Finger Lickin' Chickens",
+      "flag": "us",
+      "coordinates": [
+        2324,
+        1430
+      ]
+    },
+    {
+      "name": "The Bok Blockers",
+      "flag": "us",
+      "coordinates": [
+        2561,
+        1500
+      ]
+    },
+    {
+      "name": "Wicked Chickens",
+      "flag": "us",
+      "coordinates": [
+        2812,
+        1634
+      ]
+    },
+    {
+      "name": "The Bok Bok Boks",
+      "flag": "us",
+      "coordinates": [
+        2989,
+        1698
+      ]
+    },
+    {
+      "name": "Lucky Clucks",
+      "flag": "us",
+      "coordinates": [
+        3251,
+        1755
+      ]
+    },
+    {
+      "name": "Pecking Order",
+      "flag": "us",
+      "coordinates": [
+        217,
+        1149
+      ]
+    },
+    {
+      "name": "Foster Farms",
+      "flag": "us",
+      "coordinates": [
+        209,
+        569
+      ]
+    },
+    {
+      "name": "Poke's No Joke",
+      "flag": "us",
+      "coordinates": [
+        421,
+        1767
+      ]
+    },
+    {
+      "name": "Feckless Peckers",
+      "flag": "us",
+      "coordinates": [
+        1019,
+        1623
+      ]
+    },
+    {
+      "name": "Wicked Chickens",
+      "flag": "us",
+      "coordinates": [
+        2177,
+        1786
+      ]
+    },
+    {
+      "name": "Bickerin' Chickens",
+      "flag": "us",
+      "coordinates": [
+        3001,
+        943
+      ]
+    },
+    {
+      "name": "Funky Chickens",
+      "flag": "us",
+      "coordinates": [
+        3238,
+        869
+      ]
+    },
+    {
+      "name": "Chicken Dancers",
+      "flag": "us",
+      "coordinates": [
+        2231,
+        660
+      ]
+    },
+    {
+      "name": "Hobble Hobble Hobblers",
+      "flag": "us",
+      "coordinates": [
+        1781,
+        203
+      ]
+    },
+    {
+      "name": "Fuss Kickers",
+      "flag": "us",
+      "coordinates": [
+        1709,
+        422
+      ]
+    },
+    {
+      "name": "Tryin' to Sleep Chickens",
+      "flag": "us",
+      "coordinates": [
+        2026,
+        561
+      ]
+    },
+    {
+      "name": "Worm Scratchers",
+      "flag": "us",
+      "coordinates": [
+        2883,
+        580
+      ]
+    },
+    {
+      "name": "Yolk Folks",
+      "flag": "us",
+      "coordinates": [
+        1456,
+        1861
+      ]
+    },
+    {
+      "name": "The Hatched Batch",
+      "flag": "us",
+      "coordinates": [
+        1442,
+        1620
+      ]
+    },
+    {
+      "name": "Hay Hitters",
+      "flag": "us",
+      "coordinates": [
+        2430,
+        886
+      ]
+    },
+    {
+      "name": "Bustin' In Bosses",
+      "flag": "us",
+      "coordinates": [
+        2615,
+        1025
+      ]
+    },
+    {
+      "name": "Hard Boiled Hens",
+      "flag": "us",
+      "coordinates": [
+        1502,
+        1063
+      ]
+    },
+    {
+      "name": "Walking Bokers",
+      "flag": "us",
+      "coordinates": [
+        1358,
+        1362
+      ]
+    },
+    {
+      "name": "The Broken Shells",
+      "flag": "us",
+      "coordinates": [
+        3449,
+        180
+      ]
+    },
+    {
+      "name": "Boosted Roosters",
+      "flag": "us",
+      "coordinates": [
+        3182,
+        422
+      ]
+    },
+    {
+      "name": "Guarding Foxes",
+      "flag": "us",
+      "coordinates": [
+        2649,
+        120
+      ]
+    },
+    {
+      "name": "The Broken Dozen",
+      "flag": "us",
+      "coordinates": [
+        2577,
+        589
+      ]
+    },
+    {
+      "name": "Chickens Came First",
+      "flag": "us",
+      "coordinates": [
+        3445,
+        1230
+      ]
+    },
+    {
+      "name": "Eggs Came First",
+      "flag": "us",
+      "coordinates": [
+        3523,
+        1428
+      ]
+    },
+    {
+      "name": "Empty Shells",
+      "flag": "us",
+      "coordinates": [
+        2121,
+        867
+      ]
+    },
+    {
+      "name": "Chicken Filets",
+      "flag": "us",
+      "coordinates": [
+        3512,
+        1860
+      ]
+    },
+    {
+      "name": "Worm",
+      "flag": "no",
+      "coordinates": [
+        3304,
+        1918
+      ]
+    },
+    {
+      "name": "Egg",
+      "flag": "za",
+      "coordinates": [
+        873,
+        843
+      ]
+    }
+  ],
+  "metadata": {
+    "author": "Louis Jordan",
+    "description": "One night farmer Brown was takin' the air\nLocked up the barnyard with the greatest of care\nDown in the hen house, somethin' stirred\nWhen he shouted, \"Who's there?\"\nThis is what he heard\n\nThere ain't nobody here but us chickens\nThere ain't nobody here at all\nSo calm yourself, and stop that fuss\nThere ain't nobody here but us\nWe chickens tryin' to sleep and you bust in\nAnd hobble hobble hobble hobble with your chin\n\nThere ain't nobody here but us chickens\nThere ain't nobody here at all\nYou're stompin' around and shakin' the ground\nYou're kickin' up an awful fuss\nWe chickens tryin' to sleep and you bust in\nAnd hobble, hobble hobble hobble, it's a sin\n\nTomorrow is a busy day\nWe got things to do, we got eggs to lay\nWe got ground to dig and worms to scratch\nIt takes a lot of settin', gettin' chicks to hatch\n\nThere ain't nobody here but us chickens\nThere ain't nobody here at all\nSo quiet yourself, and stop that fuss\nThere ain't nobody here but us\nKindly point that gun the other way\nAnd hobble, hobble, hobble off and hit the hay\nYou might also like\nLet the Good Times Roll\nB.B. King\nIf 6 Was 9\nThe Jimi Hendrix Experience\nRock of All Ages\nBadfinger\n[Instrumental Break]\n\nTomorrow is a busy day\nWe got things to do, we got eggs to lay\nWe got ground to dig and worms to scratch\nIt takes a lot of settin', gettin' chicks to hatch\n\nThere ain't nobody here but us chickens\nThere ain't nobody here at all\nSo quiet yourself, and stop that fuss\nThere ain't nobody here but us\nAnd kindly point that gun the other way\nAnd hobble, hobble, hobble off and hit the hay\n\nHey, hey, boss man, what do ya say?\nIt's easy pickins'\nThere ain't nobody here but us chickens"
+  },
+  "generatedAt": "2026-04-07T04:20:10.892Z",
+  "map": {
+    "width": 3840,
+    "height": 2060,
+    "num_land_tiles": 2999721
+  },
+  "map4x": {
+    "width": 1920,
+    "height": 1030,
+    "num_land_tiles": 738669
+  },
+  "map16x": {
+    "width": 960,
+    "height": 515,
+    "num_land_tiles": 179343
+  }
+}
