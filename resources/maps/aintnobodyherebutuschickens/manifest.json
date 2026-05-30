@@ -2,35 +2,43 @@
   "name": "Aint Nobody Here But Us Chickens",
   "nations": [
     {
+      "name": "Baby Chicks",
+      "flag": "us",
+      "coordinates": [
+        677,
+        270
+      ]
+    },
+    {
+      "name": "The Hatched",
+      "flag": "us",
+      "coordinates": [
+        877,
+        465
+      ]
+    },
+    {
+      "name": "Angry Chickens",
+      "flag": "us",
+      "coordinates": [
+        1300,
+        552
+      ]
+    },
+    {
+      "name": "Cold Bokkers",
+      "flag": "us",
+      "coordinates": [
+        1461,
+        806
+      ]
+    },
+    {
       "name": "Road Crossers",
       "flag": "us",
       "coordinates": [
         266,
         172
-      ]
-    },
-    {
-      "name": "Coop Flyers",
-      "flag": "us",
-      "coordinates": [
-        840,
-        320
-      ]
-    },
-    {
-      "name": "Chick Filets",
-      "flag": "us",
-      "coordinates": [
-        1011,
-        609
-      ]
-    },
-    {
-      "name": "Farmer Brown's Barn",
-      "flag": "us",
-      "coordinates": [
-        1437,
-        868
       ]
     },
     {
@@ -106,14 +114,6 @@
       ]
     },
     {
-      "name": "Drumsticks and Wings",
-      "flag": "us",
-      "coordinates": [
-        1408,
-        583
-      ]
-    },
-    {
       "name": "Pecking Order",
       "flag": "us",
       "coordinates": [
@@ -178,7 +178,7 @@
       ]
     },
     {
-      "name": "Chin Hobble Hobble Hobblers",
+      "name": "Hobble Hobble Hobblers",
       "flag": "us",
       "coordinates": [
         1781,
@@ -314,7 +314,7 @@
       ]
     },
     {
-      "name": "The Tastes Like Chickens",
+      "name": "Chicken Filets",
       "flag": "us",
       "coordinates": [
         3512,
