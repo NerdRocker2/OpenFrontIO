@@ -2,17 +2,17 @@
   "generatedAt": "2026-04-07T04:20:10.892Z",
   "map": {
     "height": 2060,
-    "num_land_tiles": 2992885,
+    "num_land_tiles": 2996459,
     "width": 3840
   },
   "map16x": {
     "height": 515,
-    "num_land_tiles": 178681,
+    "num_land_tiles": 178484,
     "width": 960
   },
   "map4x": {
     "height": 1030,
-    "num_land_tiles": 736681,
+    "num_land_tiles": 737061,
     "width": 1920
   },
   "metadata": {

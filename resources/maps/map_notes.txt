@@ -1,0 +1,15 @@
+0   Light Green
+140 Medium Green
+154 Dark Green
+
+159 Dark Brown
+166 Medium Brown
+172 Light Brown
+
+
+
+
+
+
+
+166 - 255 White
