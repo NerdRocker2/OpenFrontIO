@@ -18,6 +18,7 @@ const featuredMaps: GameMapType[] = [
   GameMapType.Asia,
   GameMapType.Africa,
   GameMapType.Japan,
+  GameMapType.Dynamite,
   GameMapType.hillbillyhead,
   GameMapType.aintnobodyherebutuschickens,
 ];

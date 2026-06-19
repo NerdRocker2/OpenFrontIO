@@ -1,0 +1,23 @@
+I'd like to create a new OpenFront.ai map in this workspace based on the attached image. Here's what I'd like:
+* Map/image dimensions should be 3840 x 2160 px
+* Use Dynamite.png as a reference but we are going to rearrange the large TNT box and small background TNT boxes to fill the larger dimensions and to make the map more compelling. Here's the layout:
+-- Large TNT box should take roughly 1/3 of available space, width wise
+-- Small TNT boxes should be spaced and sized such that you can fit ~8 across and 5 to 6 down
+-- Small TNT boxes should be arranged in the same interleaving pattering seen in Dynamite.png
+-- Small boxes should be complete; not cut off by the edges of the map
+-- Any small box that would overlap the large box shouldn't be drawn. This includes a healthy margin around the large box.
+* Change the colors of the TNT boxes from Dynamite.png, utilizing OpenFront's blue channel coloring scheme. Here are the color changes:
+-- Black border color should be darkest green available in OpenFront
+-- For the "TNT" label:
++++ The background wrap should be a gradient from the brighest white at the top down to the darkest white at the bottom. The gradient should be 75% white and 25% gradient to dark white
++++ The letters TNT should be transparent, making it a water in OpenFront
++++ Attached minecraft jpg shows the white TNT label gradient
+* The rectanges above and below the TNT label should alternate between the lightest green and medium green
+* The squares on the top should alternate between the brightest brown and the lightest brown
+* Be sure the number of land pixels doesn't exceed tile limit
+* Place nations:
+-- One nation in the center of each small TNT box
+-- Three nations in the large TNT box: Top center, center of row above TNT label, center of row below TNT label
+-- Generate fun nation names that are based the following: Dynamite, explosion, craters, gun powder, ignition switches, Wile E Coyote
+
+What else should I consider before we start?

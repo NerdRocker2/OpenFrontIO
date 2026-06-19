@@ -1,0 +1,244 @@
+{
+  "map": {
+    "height": 2160,
+    "num_land_tiles": 3877797,
+    "width": 3840
+  },
+  "map16x": {
+    "height": 540,
+    "num_land_tiles": 236755,
+    "width": 960
+  },
+  "map4x": {
+    "height": 1080,
+    "num_land_tiles": 962293,
+    "width": 1920
+  },
+  "name": "Dynamite",
+  "nations": [
+    {
+      "coordinates": [
+        370,
+        378
+      ],
+      "flag": "",
+      "name": "Kaboom"
+    },
+    {
+      "coordinates": [
+        990,
+        281
+      ],
+      "flag": "",
+      "name": "Crater Lake"
+    },
+    {
+      "coordinates": [
+        880,
+        769
+      ],
+      "flag": "",
+      "name": "Gunpowder Falls"
+    },
+    {
+      "coordinates": [
+        884,
+        1329
+      ],
+      "flag": "",
+      "name": "TNT Terrace"
+    },
+    {
+      "coordinates": [
+        372,
+        1037
+      ],
+      "flag": "",
+      "name": "Ignition Point"
+    },
+    {
+      "coordinates": [
+        380,
+        1695
+      ],
+      "flag": "",
+      "name": "Fuse City"
+    },
+    {
+      "coordinates": [
+        2900,
+        237
+      ],
+      "flag": "",
+      "name": "Blastville"
+    },
+    {
+      "coordinates": [
+        3517,
+        376
+      ],
+      "flag": "",
+      "name": "Nitro Heights"
+    },
+    {
+      "coordinates": [
+        3011,
+        775
+      ],
+      "flag": "",
+      "name": "Detonator Bay"
+    },
+    {
+      "coordinates": [
+        3512,
+        1039
+      ],
+      "flag": "",
+      "name": "Flashpoint"
+    },
+    {
+      "coordinates": [
+        3005,
+        1332
+      ],
+      "flag": "",
+      "name": "Pyrex Peak"
+    },
+    {
+      "coordinates": [
+        3505,
+        1701
+      ],
+      "flag": "",
+      "name": "ACME Hills"
+    },
+    {
+      "coordinates": [
+        2833,
+        1873
+      ],
+      "flag": "",
+      "name": "Coyote Flats"
+    },
+    {
+      "coordinates": [
+        1786,
+        1079
+      ],
+      "flag": "",
+      "name": "Roadrunner Ridge"
+    },
+    {
+      "coordinates": [
+        2053,
+        1079
+      ],
+      "flag": "",
+      "name": "Powder Keg"
+    },
+    {
+      "coordinates": [
+        1118,
+        1324
+      ],
+      "flag": "",
+      "name": "Boom Town"
+    },
+    {
+      "coordinates": [
+        1385,
+        1324
+      ],
+      "flag": "",
+      "name": "Crater Canyon"
+    },
+    {
+      "coordinates": [
+        1652,
+        1324
+      ],
+      "flag": "",
+      "name": "Spark Gap"
+    },
+    {
+      "coordinates": [
+        1919,
+        1324
+      ],
+      "flag": "",
+      "name": "Concussion Cove"
+    },
+    {
+      "coordinates": [
+        2186,
+        1324
+      ],
+      "flag": "",
+      "name": "Shockwave Shore"
+    },
+    {
+      "coordinates": [
+        985,
+        1569
+      ],
+      "flag": "",
+      "name": "Blastoff Bay"
+    },
+    {
+      "coordinates": [
+        1252,
+        1569
+      ],
+      "flag": "",
+      "name": "Sulfur Springs"
+    },
+    {
+      "coordinates": [
+        1519,
+        1569
+      ],
+      "flag": "",
+      "name": "Smoke Signal"
+    },
+    {
+      "coordinates": [
+        1786,
+        1569
+      ],
+      "flag": "",
+      "name": "Burn Barrel"
+    },
+    {
+      "coordinates": [
+        2053,
+        1569
+      ],
+      "flag": "",
+      "name": "Detonation Dunes"
+    },
+    {
+      "coordinates": [
+        2880,
+        589
+      ],
+      "flag": "",
+      "name": "Meep Meep Meadows"
+    },
+    {
+      "coordinates": [
+        2880,
+        808
+      ],
+      "flag": "",
+      "name": "ACME Headquarters"
+    },
+    {
+      "coordinates": [
+        2880,
+        1351
+      ],
+      "flag": "",
+      "name": "Wile E. Gulch"
+    }
+  ]
+}
