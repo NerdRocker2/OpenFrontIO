@@ -47,3 +47,16 @@ export class SetSoundEffectsVolumeEvent implements GameEvent {
 export class SetBackgroundMusicVolumeEvent implements GameEvent {
   constructor(public readonly volume: number) {}
 }
+
+export class MusicTogglePauseEvent implements GameEvent {}
+
+export class MusicNextTrackEvent implements GameEvent {}
+
+export class MusicPrevTrackEvent implements GameEvent {}
+
+export class AddMusicTrackEvent implements GameEvent {
+  constructor(
+    public readonly url: string,
+    public readonly playImmediately: boolean,
+  ) {}
+}

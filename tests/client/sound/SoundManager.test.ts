@@ -1,5 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+// Silence fetch — loadTracksFromServer() and fetchId3Metadata() both call it.
+// Return an empty track list for the tracks endpoint and an empty buffer
+// for any Range/ID3 request so the parser returns {} without throwing.
+vi.stubGlobal(
+  "fetch",
+  vi.fn().mockResolvedValue({
+    ok: true,
+    status: 200,
+    json: () => Promise.resolve({ tracks: [] }),
+    arrayBuffer: () => Promise.resolve(new ArrayBuffer(0)),
+  }),
+);
+
 // Mock howler before importing SoundManager
 const howlCtor = vi.fn();
 const howlInstances: any[] = [];
@@ -90,12 +103,16 @@ describe("SoundManager", () => {
     eventBus = new EventBus();
     userSettings = createUserSettings();
     soundManager = new SoundManager(eventBus, userSettings);
+    // Seed three background tracks synchronously (server fetch is async/mocked).
+    soundManager.addTrack("mock/bg1.mp3", false);
+    soundManager.addTrack("mock/bg2.mp3", false);
+    soundManager.addTrack("mock/bg3.mp3", false);
   });
 
   it("lazy-loads a sound effect once and reuses it", () => {
     eventBus.emit(new PlaySoundEffectEvent("click"));
     eventBus.emit(new PlaySoundEffectEvent("click"));
-    // 3 background music Howls + 1 Click Howl = 4
+    // 3 background music Howls (seeded in beforeEach) + 1 Click Howl = 4
     expect(howlCtor).toHaveBeenCalledTimes(4);
   });
 
@@ -110,7 +127,10 @@ describe("SoundManager", () => {
     const bus = new EventBus();
     howlCtor.mockClear();
     howlInstances.length = 0;
-    new SoundManager(bus, settings);
+    const sm = new SoundManager(bus, settings);
+    sm.addTrack("mock/bg1.mp3", false);
+    sm.addTrack("mock/bg2.mp3", false);
+    sm.addTrack("mock/bg3.mp3", false);
     const bgHowls = howlInstances.slice(0, 3);
     bgHowls.forEach((h) => {
       expect(h.volume).toHaveBeenCalledWith(0.5);

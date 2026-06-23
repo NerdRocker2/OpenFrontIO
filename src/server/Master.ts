@@ -10,6 +10,7 @@ import { getServerConfigFromServer } from "../core/configuration/ConfigLoader";
 import { logger } from "./Logger";
 import { MapPlaylist } from "./MapPlaylist";
 import { MasterLobbyService } from "./MasterLobbyService";
+import { registerMusicRoutes } from "./MusicRoute";
 import { setNoStoreHeaders } from "./NoStoreHeaders";
 import { renderAppShell } from "./RenderHtml";
 import { applyStaticAssetCacheControl } from "./StaticAssetCache";
@@ -141,6 +142,8 @@ export async function startMaster() {
     log.info(`Master HTTP server listening on port ${PORT}`);
   });
 }
+
+registerMusicRoutes(app, process.cwd());
 
 app.get("/api/health", (_req, res) => {
   const ready = lobbyService?.isHealthy() ?? false;

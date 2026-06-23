@@ -8,6 +8,7 @@ import { UserSettings } from "../../../core/game/UserSettings";
 import { AlternateViewEvent, RefreshGraphicsEvent } from "../../InputHandler";
 import { translateText } from "../../Utils";
 import {
+  AddMusicTrackEvent,
   SetBackgroundMusicVolumeEvent,
   SetSoundEffectsVolumeEvent,
 } from "../../sound/Sounds";
@@ -44,6 +45,12 @@ export class SettingsModal extends LitElement implements Layer {
 
   @state()
   private alternateView: boolean = false;
+
+  @state()
+  private uploadStatus: "idle" | "uploading" | "done" | "error" = "idle";
+
+  @query("#music-upload-input")
+  private musicFileInput!: HTMLInputElement;
 
   @query(".modal-overlay")
   private modalOverlay!: HTMLElement;
@@ -179,6 +186,41 @@ export class SettingsModal extends LitElement implements Layer {
     window.location.href = "/";
   }
 
+  private async onMusicFileSelected(event: Event): Promise<void> {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+    input.value = "";
+
+    this.uploadStatus = "uploading";
+    try {
+      const response = await fetch("/api/music/upload", {
+        method: "POST",
+        headers: {
+          "Content-Type": "audio/mpeg",
+          "X-Filename": encodeURIComponent(file.name),
+        },
+        body: file,
+      });
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({})) as { error?: string };
+        throw new Error(err.error ?? `HTTP ${response.status}`);
+      }
+      const { url } = await response.json() as { url: string };
+      this.eventBus.emit(new AddMusicTrackEvent(url, true));
+      this.uploadStatus = "done";
+      setTimeout(() => {
+        this.uploadStatus = "idle";
+      }, 3000);
+    } catch (err) {
+      console.error("SettingsModal: music upload failed", err);
+      this.uploadStatus = "error";
+      setTimeout(() => {
+        this.uploadStatus = "idle";
+      }, 4000);
+    }
+  }
+
   private onVolumeChange(event: Event) {
     const volume = parseFloat((event.target as HTMLInputElement).value) / 100;
     this.userSettings.setBackgroundMusicVolume(volume);
@@ -249,6 +291,42 @@ export class SettingsModal extends LitElement implements Layer {
               </div>
               <div class="text-sm text-slate-400">
                 ${Math.round(this.userSettings.backgroundMusicVolume() * 100)}%
+              </div>
+            </div>
+
+            <div
+              class="flex gap-3 items-center w-full text-left p-3 hover:bg-slate-700 rounded-sm text-white transition-colors"
+            >
+              <img src=${musicIcon} alt="musicIcon" width="20" height="20" />
+              <div class="flex-1">
+                <div class="font-medium">
+                  ${translateText("user_setting.upload_music_track")}
+                </div>
+                <div class="text-sm text-slate-400">
+                  ${this.uploadStatus === "uploading"
+                    ? translateText("user_setting.upload_music_uploading")
+                    : this.uploadStatus === "done"
+                      ? translateText("user_setting.upload_music_done")
+                      : this.uploadStatus === "error"
+                        ? translateText("user_setting.upload_music_error")
+                        : ""}
+                </div>
+              </div>
+              <div>
+                <input
+                  type="file"
+                  id="music-upload-input"
+                  accept="audio/mpeg"
+                  class="sr-only"
+                  @change=${this.onMusicFileSelected}
+                />
+                <button
+                  class="px-3 py-1 bg-slate-600 hover:bg-slate-500 rounded text-sm transition-colors"
+                  ?disabled=${this.uploadStatus === "uploading"}
+                  @click=${() => this.musicFileInput?.click()}
+                >
+                  ${translateText("user_setting.upload_music_button")}
+                </button>
               </div>
             </div>
 

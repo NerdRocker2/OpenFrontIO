@@ -747,6 +747,42 @@ export class UserSettingModal extends BaseModal {
         .display=${this.getKeyChar("moveRight")}
         @change=${this.handleKeybindChange}
       ></setting-keybind>
+
+      <h2
+        class="text-blue-200 text-xl font-bold mt-8 mb-3 border-b border-white/10 pb-2"
+      >
+        ${translateText("user_setting.music_controls")}
+      </h2>
+
+      <setting-keybind
+        action="musicTogglePause"
+        label=${translateText("user_setting.music_toggle_pause")}
+        description=${translateText("user_setting.music_toggle_pause_desc")}
+        .defaultKey=${this.defaultKeybinds.musicTogglePause}
+        .value=${this.getKeyValue("musicTogglePause")}
+        .display=${this.getKeyChar("musicTogglePause")}
+        @change=${this.handleKeybindChange}
+      ></setting-keybind>
+
+      <setting-keybind
+        action="musicPrevTrack"
+        label=${translateText("user_setting.music_prev_track")}
+        description=${translateText("user_setting.music_prev_track_desc")}
+        .defaultKey=${this.defaultKeybinds.musicPrevTrack}
+        .value=${this.getKeyValue("musicPrevTrack")}
+        .display=${this.getKeyChar("musicPrevTrack")}
+        @change=${this.handleKeybindChange}
+      ></setting-keybind>
+
+      <setting-keybind
+        action="musicNextTrack"
+        label=${translateText("user_setting.music_next_track")}
+        description=${translateText("user_setting.music_next_track_desc")}
+        .defaultKey=${this.defaultKeybinds.musicNextTrack}
+        .value=${this.getKeyValue("musicNextTrack")}
+        .display=${this.getKeyChar("musicNextTrack")}
+        @change=${this.handleKeybindChange}
+      ></setting-keybind>
     `;
   }
 

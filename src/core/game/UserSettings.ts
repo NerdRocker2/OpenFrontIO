@@ -38,6 +38,9 @@ export function getDefaultKeybinds(isMac: boolean): Record<string, string> {
     pauseGame: "KeyP",
     gameSpeedUp: "Period",
     gameSpeedDown: "Comma",
+    musicTogglePause: "Backslash",
+    musicPrevTrack: "BracketLeft",
+    musicNextTrack: "BracketRight",
   };
 }
 

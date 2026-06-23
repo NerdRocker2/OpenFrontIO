@@ -4,6 +4,11 @@ import { GameView, UnitView } from "../core/game/GameView";
 import { UserSettings } from "../core/game/UserSettings";
 import { UIState } from "./graphics/UIState";
 import { Platform } from "./Platform";
+import {
+  MusicNextTrackEvent,
+  MusicPrevTrackEvent,
+  MusicTogglePauseEvent,
+} from "./sound/Sounds";
 import { ReplaySpeedMultiplier } from "./utilities/ReplaySpeedMultiplier";
 
 export class MouseUpEvent implements GameEvent {
@@ -577,6 +582,34 @@ export class InputHandler {
         e.preventDefault();
         console.log("TogglePerformanceOverlayEvent");
         this.eventBus.emit(new TogglePerformanceOverlayEvent());
+      }
+
+      // Music hotkeys: toggle pause, previous track, next track
+      if (
+        !e.repeat &&
+        (this.keybindMatchesEvent(e, this.keybinds.musicTogglePause) ||
+          e.code === "MediaPlayPause")
+      ) {
+        e.preventDefault();
+        this.eventBus.emit(new MusicTogglePauseEvent());
+      }
+
+      if (
+        !e.repeat &&
+        (this.keybindMatchesEvent(e, this.keybinds.musicPrevTrack) ||
+          e.code === "MediaTrackPrevious")
+      ) {
+        e.preventDefault();
+        this.eventBus.emit(new MusicPrevTrackEvent());
+      }
+
+      if (
+        !e.repeat &&
+        (this.keybindMatchesEvent(e, this.keybinds.musicNextTrack) ||
+          e.code === "MediaTrackNext")
+      ) {
+        e.preventDefault();
+        this.eventBus.emit(new MusicNextTrackEvent());
       }
 
       this.activeKeys.delete(e.code);
