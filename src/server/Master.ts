@@ -58,7 +58,11 @@ app.use(
   }),
 );
 
-app.set("trust proxy", 3);
+// Set trust proxy to the number of reverse-proxy hops between the internet
+// and this Express process (nginx = 1). An incorrect value causes
+// express-rate-limit v8 to fail IP resolution for external requests,
+// which surfaces as unmatched requests falling through to the SPA fallback.
+app.set("trust proxy", 1);
 app.use(
   rateLimit({
     windowMs: 1000, // 1 second
@@ -160,8 +164,14 @@ app.get("/api/instance", (_req, res) => {
   });
 });
 
-// SPA fallback route
-app.get("/{*splat}", async function (_req, res) {
+// SPA fallback route — serves the app shell for all non-API client routes.
+// API paths that reach here have no matching handler; return 404 rather than
+// attempting (and failing) to render HTML.
+app.get("/{*splat}", async function (req, res) {
+  if (req.path.startsWith("/api/")) {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
   try {
     const htmlPath = path.join(__dirname, "../../static/index.html");
     await renderAppShell(res, htmlPath);
