@@ -6,7 +6,7 @@
         370,
         378
       ],
-      "name": "Kaboom",
+      "name": "Kaboom Town",
       "flag": ""
     },
     {
@@ -78,7 +78,7 @@
         3512,
         1039
       ],
-      "name": "Flashpoint",
+      "name": "Roadrunner Ridge",
       "flag": ""
     },
     {
@@ -86,7 +86,7 @@
         3005,
         1332
       ],
-      "name": "Pyrex Peak",
+      "name": "Pyro Peak",
       "flag": ""
     },
     {
@@ -107,122 +107,59 @@
     },
     {
       "coordinates": [
-        1786,
-        1079
-      ],
-      "name": "Roadrunner Ridge",
-      "flag": ""
-    },
-    {
-      "coordinates": [
-        2053,
-        1079
-      ],
-      "name": "Powder Keg",
-      "flag": ""
-    },
-    {
-      "coordinates": [
-        1118,
-        1324
+        1641,
+        511
+        
       ],
       "name": "Boom Town",
       "flag": ""
     },
     {
       "coordinates": [
-        1385,
-        1324
+        2261,
+        511
       ],
-      "name": "Crater Canyon",
+      "name": "Powder Keg",
       "flag": ""
     },
     {
       "coordinates": [
-        1652,
-        1324
+        1579,
+        805
       ],
       "name": "Spark Gap",
       "flag": ""
     },
     {
       "coordinates": [
-        1919,
-        1324
+        2310,
+        805
       ],
       "name": "Concussion Cove",
       "flag": ""
     },
     {
       "coordinates": [
-        2186,
-        1324
+        1941,
+        1261
       ],
-      "name": "Shockwave Shore",
+      "name": "Wile E. Nation",
       "flag": ""
     },
     {
       "coordinates": [
-        985,
-        1569
-      ],
-      "name": "Blastoff Bay",
-      "flag": ""
-    },
-    {
-      "coordinates": [
-        1252,
-        1569
-      ],
-      "name": "Sulfur Springs",
-      "flag": ""
-    },
-    {
-      "coordinates": [
-        1519,
-        1569
-      ],
-      "name": "Smoke Signal",
-      "flag": ""
-    },
-    {
-      "coordinates": [
-        1786,
-        1569
-      ],
-      "name": "Burn Barrel",
-      "flag": ""
-    },
-    {
-      "coordinates": [
-        2053,
-        1569
-      ],
-      "name": "Detonation Dunes",
-      "flag": ""
-    },
-    {
-      "coordinates": [
-        2880,
-        589
+        1579,
+        1424
       ],
       "name": "Meep Meep Meadows",
       "flag": ""
     },
     {
       "coordinates": [
-        2880,
-        808
+        2310,
+        1424
       ],
-      "name": "ACME Headquarters",
-      "flag": ""
-    },
-    {
-      "coordinates": [
-        2880,
-        1351
-      ],
-      "name": "Wile E. Gulch",
+      "name": "Sulfur Springs",
       "flag": ""
     }
   ]
