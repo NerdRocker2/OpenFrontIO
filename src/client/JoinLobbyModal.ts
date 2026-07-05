@@ -1,5 +1,6 @@
 import { html, TemplateResult } from "lit";
 import { customElement, property, query, state } from "lit/decorators.js";
+import { ClientEnv } from "src/client/ClientEnv";
 import {
   calculateServerTimeOffset,
   getMapName,
@@ -19,7 +20,6 @@ import {
   LobbyInfoEvent,
   PublicGameInfo,
 } from "../core/Schemas";
-import { getRuntimeClientServerConfig } from "../core/configuration/ConfigLoader";
 import {
   Difficulty,
   GameMapSize,
@@ -77,7 +77,26 @@ export class JoinLobbyModal extends BaseModal {
     });
   };
 
-  render() {
+  protected renderHeaderSlot() {
+    if (!this.currentLobbyId) {
+      return modalHeader({
+        title: translateText("private_lobby.title"),
+        onBack: () => this.closeAndLeave(),
+        ariaLabel: translateText("common.close"),
+      });
+    }
+    return modalHeader({
+      title: translateText("public_lobby.title"),
+      onBack: () => this.closeAndLeave(),
+      ariaLabel: translateText("common.close"),
+      rightContent:
+        this.currentLobbyId && this.isPrivateLobby()
+          ? html`<copy-button .lobbyId=${this.currentLobbyId}></copy-button>`
+          : undefined,
+    });
+  }
+
+  protected renderBody() {
     // Pre-join state: show lobby ID input form
     if (!this.currentLobbyId) {
       return this.renderJoinForm();
@@ -93,7 +112,9 @@ export class JoinLobbyModal extends BaseModal {
         : null;
     const statusLabel =
       secondsRemaining === null
-        ? translateText("public_lobby.waiting_for_players")
+        ? this.isPrivateLobby()
+          ? translateText("private_lobby.joined_waiting")
+          : translateText("public_lobby.waiting_for_players")
         : secondsRemaining > 0
           ? translateText("public_lobby.starting_in", {
               time: renderDuration(secondsRemaining),
@@ -104,20 +125,9 @@ export class JoinLobbyModal extends BaseModal {
     const hostClientID = this.isPrivateLobby()
       ? (this.lobbyCreatorClientID ?? "")
       : "";
-    const content = html`
-      <div class="${this.modalContainerClass}">
-        ${modalHeader({
-          title: translateText("public_lobby.title"),
-          onBack: () => this.closeAndLeave(),
-          ariaLabel: translateText("common.close"),
-          rightContent:
-            this.currentLobbyId && this.isPrivateLobby()
-              ? html`
-                  <copy-button .lobbyId=${this.currentLobbyId}></copy-button>
-                `
-              : undefined,
-        })}
-        <div class="flex-1 overflow-y-auto custom-scrollbar p-6 space-y-4 mr-1">
+    return html`
+      <div class="flex flex-col h-full">
+        <div class="flex-1 custom-scrollbar p-6 space-y-4 mr-1">
           ${this.isConnecting
             ? html`
                 <div
@@ -154,83 +164,48 @@ export class JoinLobbyModal extends BaseModal {
               `}
         </div>
 
-        ${this.isPrivateLobby()
-          ? html`
-              <div
-                class="p-6 lg:p-6 border-t border-white/10 bg-black/20 shrink-0"
-              >
-                <button
-                  class="w-full py-4 text-sm font-bold text-white uppercase tracking-widest bg-malibu-blue hover:bg-aquarius disabled:opacity-50 disabled:cursor-not-allowed rounded-xl transition-all shadow-lg shadow-sky-900/20 hover:shadow-sky-900/40 hover:-translate-y-0.5 active:translate-y-0 disabled:transform-none"
-                  disabled
+        ${html`
+          <div
+            class="p-6 lg:p-6 border-t border-white/10 bg-black/60 backdrop-blur-md shrink-0 sticky bottom-0 z-10"
+          >
+            <div
+              class="w-full px-4 py-3 rounded-xl border border-white/10 bg-white/5 flex items-center justify-between gap-3"
+            >
+              <div class="flex flex-col">
+                <span
+                  class="text-[10px] font-bold uppercase tracking-widest text-white/40"
+                  >${translateText("public_lobby.status")}</span
                 >
-                  ${translateText("private_lobby.joined_waiting")}
-                </button>
+                <span class="text-sm font-bold text-white">${statusLabel}</span>
               </div>
-            `
-          : html`
-              <div
-                class="p-6 lg:p-6 border-t border-white/10 bg-black/20 shrink-0"
-              >
-                <div
-                  class="w-full px-4 py-3 rounded-xl border border-white/10 bg-white/5 flex items-center justify-between gap-3"
-                >
-                  <div class="flex flex-col">
-                    <span
-                      class="text-[10px] font-bold uppercase tracking-widest text-white/40"
-                      >${translateText("public_lobby.status")}</span
+              ${maxPlayers > 0
+                ? html`
+                    <div
+                      class="flex items-center gap-2 text-white/80 text-xs font-bold uppercase tracking-widest"
                     >
-                    <span class="text-sm font-bold text-white"
-                      >${statusLabel}</span
-                    >
-                  </div>
-                  ${maxPlayers > 0
-                    ? html`
-                        <div
-                          class="flex items-center gap-2 text-white/80 text-xs font-bold uppercase tracking-widest"
-                        >
-                          <span>${playerCount}/${maxPlayers}</span>
-                          <svg
-                            class="w-4 h-4 text-white"
-                            fill="currentColor"
-                            viewBox="0 0 20 20"
-                          >
-                            <path
-                              d="M13 6a3 3 0 11-6 0 3 3 0 016 0zM18 8a2 2 0 11-4 0 2 2 0 014 0zM14 15a4 4 0 00-8 0v3h8v-3zM6 8a2 2 0 11-4 0 2 2 0 014 0zM16 18v-3a5.972 5.972 0 00-.75-2.906A3.005 3.005 0 0119 15v3h-3zM4.75 12.094A5.973 5.972 0 004 15v3H1v-3a3 3 0 013.75-2.906z"
-                            ></path>
-                          </svg>
-                        </div>
-                      `
-                    : html``}
-                </div>
-              </div>
-            `}
+                      <span>${playerCount}/${maxPlayers}</span>
+                      <svg
+                        class="w-4 h-4 text-white"
+                        fill="currentColor"
+                        viewBox="0 0 20 20"
+                      >
+                        <path
+                          d="M13 6a3 3 0 11-6 0 3 3 0 016 0zM18 8a2 2 0 11-4 0 2 2 0 014 0zM14 15a4 4 0 00-8 0v3h8v-3zM6 8a2 2 0 11-4 0 2 2 0 014 0zM16 18v-3a5.972 5.972 0 00-.75-2.906A3.005 3.005 0 0119 15v3h-3zM4.75 12.094A5.973 5.972 0 004 15v3H1v-3a3 3 0 013.75-2.906z"
+                        ></path>
+                      </svg>
+                    </div>
+                  `
+                : html``}
+            </div>
+          </div>
+        `}
       </div>
-    `;
-
-    if (this.inline) {
-      return content;
-    }
-
-    return html`
-      <o-modal
-        ?hideHeader=${true}
-        ?hideCloseButton=${true}
-        ?inline=${this.inline}
-      >
-        ${content}
-      </o-modal>
     `;
   }
 
   private renderJoinForm() {
-    const content = html`
-      <div class="${this.modalContainerClass}">
-        ${modalHeader({
-          title: translateText("private_lobby.title"),
-          onBack: () => this.closeAndLeave(),
-          ariaLabel: translateText("common.close"),
-        })}
-        <form @submit=${this.joinLobbyFromInput} class="flex-1 overflow-y-auto custom-scrollbar p-6 space-y-4 mr-1">
+    return html`
+      <form @submit=${this.joinLobbyFromInput} class="custom-scrollbar p-6 space-y-4 mr-1">
           <div class="flex flex-col gap-3">
             <div class="flex gap-2">
               <input
@@ -268,26 +243,13 @@ export class JoinLobbyModal extends BaseModal {
             ></o-button>
           </div>
         </div>
-      </div>
-    `;
-
-    if (this.inline) {
-      return content;
-    }
-
-    return html`
-      <o-modal
-        ?hideHeader=${true}
-        ?hideCloseButton=${true}
-        ?inline=${this.inline}
-      >
-        ${content}
-      </o-modal>
+      </form>
     `;
   }
 
-  public open(lobbyId: string = "", lobbyInfo?: GameInfo | PublicGameInfo) {
-    super.open();
+  protected onOpen(args?: Record<string, unknown>): void {
+    const lobbyId = typeof args?.lobbyId === "string" ? args.lobbyId : "";
+    const lobbyInfo = args?.lobbyInfo as GameInfo | PublicGameInfo | undefined;
     if (lobbyId) {
       this.startTrackingLobby(lobbyId, lobbyInfo);
       // If opened with lobbyId but no lobbyInfo (URL join case), auto-join the lobby
@@ -967,8 +929,7 @@ export class JoinLobbyModal extends BaseModal {
   }
 
   private async checkActiveLobby(lobbyId: string): Promise<boolean> {
-    const config = await getRuntimeClientServerConfig();
-    const url = `/${config.workerPath(lobbyId)}/api/game/${lobbyId}/exists`;
+    const url = `/${ClientEnv.workerPath(lobbyId)}/api/game/${lobbyId}/exists`;
 
     const response = await fetch(url, {
       method: "GET",
@@ -1037,10 +998,8 @@ export class JoinLobbyModal extends BaseModal {
       return "version_mismatch";
     }
 
-    if (
-      window.GIT_COMMIT !== "DEV" &&
-      parsed.data.gitCommit !== window.GIT_COMMIT
-    ) {
+    const gitCommit = ClientEnv.gitCommit();
+    if (gitCommit !== "DEV" && parsed.data.gitCommit !== gitCommit) {
       const safeLobbyId = this.sanitizeForLog(lobbyId);
       console.warn(
         `Git commit hash mismatch for game ${safeLobbyId}`,

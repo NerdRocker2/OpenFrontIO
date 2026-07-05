@@ -2,7 +2,7 @@ import type { TemplateResult } from "lit";
 import { html } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { UserMeResponse } from "../core/ApiSchemas";
-import { Cosmetics } from "../core/CosmeticSchemas";
+import { Cosmetics, Skin } from "../core/CosmeticSchemas";
 import {
   PATTERN_KEY,
   USER_SETTINGS_CHANGED_EVENT,
@@ -24,10 +24,12 @@ import { translateText } from "./Utils";
 
 @customElement("territory-patterns-modal")
 export class TerritoryPatternsModal extends BaseModal {
+  protected routerName = "territory-patterns";
   public previewButton: HTMLElement | null = null;
 
   @state() private selectedPattern: PlayerPattern | null;
   @state() private selectedColor: string | null = null;
+  @state() private selectedSkinName: string | null = null;
   @state() private search = "";
 
   private cosmetics: Cosmetics | null = null;
@@ -65,6 +67,7 @@ export class TerritoryPatternsModal extends BaseModal {
     const cosmetics = await getPlayerCosmetics();
     this.selectedPattern = cosmetics.pattern ?? null;
     this.selectedColor = cosmetics.color?.color ?? null;
+    this.selectedSkinName = cosmetics.skin?.name ?? null;
   }
 
   async onUserMe(userMeResponse: UserMeResponse | false) {
@@ -83,14 +86,15 @@ export class TerritoryPatternsModal extends BaseModal {
     this.search = (event.target as HTMLInputElement).value;
   }
 
-  private renderPatternGrid(): TemplateResult {
+  /** Combined patterns + skins grid. To the user they're the same: "skins". */
+  private renderSkinGrid(): TemplateResult {
     const items = resolveCosmetics(
       this.cosmetics,
       this.userMeResponse,
       null,
     ).filter(
       (r) =>
-        r.type === "pattern" &&
+        (r.type === "pattern" || r.type === "skin") &&
         r.relationship === "owned" &&
         (r.cosmetic === null
           ? !this.search
@@ -104,11 +108,19 @@ export class TerritoryPatternsModal extends BaseModal {
         >
           ${items.map((r) => {
             const isSelected =
-              (r.cosmetic === null && this.selectedPattern === null) ||
-              (r.cosmetic !== null &&
-                this.selectedPattern?.name === r.cosmetic.name &&
-                (this.selectedPattern?.colorPalette?.name ?? null) ===
-                  (r.colorPalette?.name ?? null));
+              r.type === "pattern"
+                ? (r.cosmetic === null && this.selectedPattern === null) ||
+                  (r.cosmetic !== null &&
+                    this.selectedPattern?.name === r.cosmetic.name &&
+                    (this.selectedPattern?.colorPalette?.name ?? null) ===
+                      (r.colorPalette?.name ?? null))
+                : (() => {
+                    const skinName = (r.cosmetic as Skin | null)?.name ?? null;
+                    return (
+                      (skinName === null && this.selectedSkinName === null) ||
+                      (skinName !== null && this.selectedSkinName === skinName)
+                    );
+                  })();
             return html`
               <cosmetic-button
                 .resolved=${r}
@@ -122,66 +134,49 @@ export class TerritoryPatternsModal extends BaseModal {
     `;
   }
 
-  render() {
-    const content = html`
-      <div class="${this.modalContainerClass}">
-        <div
-          class="relative flex flex-col border-b border-white/10 pb-4 shrink-0"
-        >
-          ${modalHeader({
-            title: translateText("territory_patterns.title"),
-            onBack: () => this.close(),
-            ariaLabel: translateText("common.back"),
-            rightContent: html`<not-logged-in-warning></not-logged-in-warning>`,
-          })}
+  protected renderHeaderSlot() {
+    return html`
+      <div
+        class="relative flex flex-col border-b border-white/10 pb-4 shrink-0"
+      >
+        ${modalHeader({
+          title: translateText("territory_patterns.title"),
+          onBack: () => this.close(),
+          ariaLabel: translateText("common.back"),
+          rightContent: html`<not-logged-in-warning></not-logged-in-warning>`,
+        })}
 
-          <div class="md:flex items-center gap-2 justify-center mt-4">
-            <input
-              class="h-12 w-full max-w-md border border-white/10 bg-black/60
+        <div class="md:flex items-center gap-2 justify-center mt-4">
+          <input
+            class="h-12 w-full max-w-md border border-white/10 bg-black/60
               rounded-xl shadow-inner text-xl text-center focus:outline-none
               focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 text-white placeholder-white/30 transition-all"
-              type="text"
-              placeholder=${translateText("territory_patterns.search")}
-              .value=${this.search}
-              @change=${this.handleSearch}
-              @keyup=${this.handleSearch}
-            />
-          </div>
-        </div>
-        <div class="flex justify-center py-3 shrink-0">
-          <o-button
-            class="no-crazygames"
-            variant="primary"
-            size="sm"
-            translationKey="main.store"
-            @click=${() => {
-              this.close();
-              window.showPage?.("page-item-store");
-            }}
-          ></o-button>
-        </div>
-        <div
-          class="flex-1 overflow-y-auto px-3 pb-3 scrollbar-thin scrollbar-thumb-white/20 scrollbar-track-transparent mr-1"
-        >
-          ${this.renderPatternGrid()}
+            type="text"
+            placeholder=${translateText("territory_patterns.search")}
+            .value=${this.search}
+            @change=${this.handleSearch}
+            @keyup=${this.handleSearch}
+          />
         </div>
       </div>
     `;
+  }
 
-    if (this.inline) {
-      return content;
-    }
-
+  protected renderBody() {
     return html`
-      <o-modal
-        id="territoryPatternsModal"
-        title="${translateText("territory_patterns.title")}"
-        ?inline=${this.inline}
-        ?hideHeader=${true}
-        ?hideCloseButton=${true}
-      >
-        ${content}
-      </o-modal>
+      <div class="flex justify-center py-3 shrink-0">
+        <o-button
+          class="no-crazygames"
+          variant="primary"
+          size="sm"
+          translationKey="main.store"
+          @click=${() => {
+            this.close();
+            window.showPage?.("page-item-store");
+          }}
+        ></o-button>
+      </div>
+      <div class="px-3 pb-3">${this.renderSkinGrid()}</div>
     `;
   }
 
@@ -194,8 +189,21 @@ export class TerritoryPatternsModal extends BaseModal {
   }
 
   private selectCosmetic(resolved: ResolvedCosmetic) {
-    if (resolved.type !== "pattern") return;
-    this.selectPattern(resolvedToPlayerPattern(resolved));
+    if (resolved.type === "pattern") {
+      this.selectPattern(resolvedToPlayerPattern(resolved));
+    } else if (resolved.type === "skin") {
+      this.selectSkin((resolved.cosmetic as Skin | null)?.name ?? null);
+    }
+  }
+
+  private selectSkin(skinName: string | null) {
+    this.userSettings.setSelectedPatternName(
+      skinName === null ? undefined : `skin:${skinName}`,
+    );
+    this.selectedSkinName = skinName;
+    this.selectedPattern = null;
+    this.refresh();
+    this.close();
   }
 
   private selectPattern(pattern: PlayerPattern | null) {
@@ -210,6 +218,7 @@ export class TerritoryPatternsModal extends BaseModal {
       this.userSettings.setSelectedPatternName(`pattern:${name}`);
     }
     this.selectedPattern = pattern;
+    this.selectedSkinName = null;
     this.refresh();
     this.showSkinSelectedPopup();
     this.close();

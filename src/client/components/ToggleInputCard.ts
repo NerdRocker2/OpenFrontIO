@@ -1,19 +1,7 @@
 import { LitElement, PropertyValues, html, nothing } from "lit";
 import { customElement, property } from "lit/decorators.js";
 import { translateText } from "../Utils";
-
-const ACTIVE_CARD =
-  "bg-malibu-blue/20 border-malibu-blue/50 shadow-[var(--shadow-malibu-blue)]";
-const INACTIVE_CARD =
-  "bg-white/5 border-white/10 hover:bg-white/10 hover:border-white/20";
-const INPUT_CLASS =
-  "w-full text-center rounded bg-black/60 text-white text-sm font-bold border border-white/20 focus:outline-none focus:border-malibu-blue p-1 my-1";
-const CARD_LABEL_CLASS =
-  "text-xs uppercase font-bold tracking-wider leading-tight break-words hyphens-auto";
-
-function cardClass(active: boolean, extra = ""): string {
-  return `w-full h-full rounded-xl border cursor-pointer transition-all duration-200 active:scale-95 ${extra} ${active ? ACTIVE_CARD : INACTIVE_CARD}`;
-}
+import { CARD_LABEL_CLASS, INPUT_CLASS, cardClass } from "./InputCardStyles";
 
 @customElement("toggle-input-card")
 export class ToggleInputCard extends LitElement {
@@ -44,15 +32,14 @@ export class ToggleInputCard extends LitElement {
     return this;
   }
 
+  // Autofocus + select the number input when the card is toggled on. Safe now
+  // that the input is always mounted (focusing a freshly-inserted one janked).
   protected updated(changedProperties: PropertyValues<this>) {
     if (!changedProperties.has("checked")) return;
-    const previousChecked = changedProperties.get("checked");
-    if (previousChecked === false && this.checked) {
+    if (changedProperties.get("checked") === false && this.checked) {
       const input = this.querySelector("input");
-      if (input) {
-        input.focus();
-        input.select();
-      }
+      input?.focus();
+      input?.select();
     }
   }
 
@@ -108,26 +95,20 @@ export class ToggleInputCard extends LitElement {
   render() {
     const effectiveActive = this.checked && !this.disabledCheckbox;
     const showDisabledMsg = this.disabledCheckbox && !!this.disabledMessage;
-    const showOverlay = effectiveActive || showDisabledMsg;
-
     return html`
-      <div class="${cardClass(effectiveActive, "relative overflow-hidden")}">
+      <div class="${cardClass(this.checked)} relative overflow-hidden">
         <button
           type="button"
           aria-pressed=${effectiveActive}
           @click=${this.handleCardClick}
-          class="w-full h-full p-3 flex flex-col items-center justify-between gap-2 focus:outline-none${
-            this.disabledCheckbox ? " cursor-not-allowed" : ""
-          }"
+          class="w-full h-full p-3 flex flex-col items-center justify-between gap-2 focus:outline-none${this.disabledCheckbox ? " cursor-not-allowed" : ""}"
         >
           <div
-            class="w-5 h-5 rounded border flex items-center justify-center transition-colors mt-1 ${
-              this.disabledCheckbox
-                ? "border-white/10 bg-white/5"
-                : this.checked
-                  ? "bg-blue-500 border-blue-500"
-                  : "border-white/20 bg-white/5"
-            }"
+            class="w-5 h-5 rounded border flex items-center justify-center transition-colors mt-1 ${this.disabledCheckbox
+              ? "border-white/10 bg-white/5"
+              : this.checked
+                ? "bg-blue-500 border-blue-500"
+                : "border-white/20 bg-white/5"}"
           >
             ${effectiveActive
               ? html`<svg
@@ -145,7 +126,7 @@ export class ToggleInputCard extends LitElement {
               : ""}
           </div>
 
-          ${showOverlay
+          ${effectiveActive
             ? html`<div class="h-[30px] my-1"></div>`
             : html`<div class="h-[2px] w-4 rounded my-3 bg-white/10"></div>`}
 
@@ -158,47 +139,49 @@ export class ToggleInputCard extends LitElement {
           </span>
         </button>
 
-        ${effectiveActive
-          ? html`
-              <div
-                class="absolute left-3 right-3 top-1/2 -translate-y-1/2 z-10"
+        <!-- Keep the input permanently mounted and just hide it when unchecked.
+             Rendering it conditionally (${checked ? input : nothing}) inserts a
+             fresh input on enable, and focusing a just-inserted input forces
+             several ms of layout/paint per frame. CSS-hiding an always-present
+             input avoids that. -->
+        <div
+          class="absolute left-3 right-3 top-1/2 -translate-y-1/2 z-10 ${effectiveActive
+            ? ""
+            : "hidden"}"
+        >
+          ${this.inputLabel
+            ? html`<p
+                class="text-white/60 text-[10px] uppercase font-bold tracking-wider text-center mb-1"
               >
-                ${this.inputLabel
-                  ? html`<p
-                      class="text-white/60 text-[10px] uppercase font-bold tracking-wider text-center mb-1"
-                    >
-                      ${this.inputLabel}
-                    </p>`
-                  : nothing}
-                <input
-                  type=${this.inputType}
-                  id=${this.inputId ?? nothing}
-                  min=${this.inputMin ?? nothing}
-                  max=${this.inputMax ?? nothing}
-                  step=${this.inputStep ?? nothing}
-                  .value=${String(this.inputValue ?? "")}
-                  class=${INPUT_CLASS}
-                  aria-label=${this.inputAriaLabel ?? nothing}
-                  placeholder=${this.inputPlaceholder ?? nothing}
-                  @input=${this.onInput}
-                  @change=${this.onChange}
-                  @keydown=${this.onKeyDown}
-                />
-              </div>
-            `
-          : showDisabledMsg
-            ? html`
-                <div
-                  class="absolute left-3 right-3 top-1/2 -translate-y-1/2 z-10 pointer-events-none"
-                >
-                  <p
-                    class="text-white/35 text-[10px] text-center leading-tight italic"
-                  >
-                    ${this.disabledMessage}
-                  </p>
-                </div>
-              `
+                ${this.inputLabel}
+              </p>`
             : nothing}
+          <input
+            type=${this.inputType}
+            id=${this.inputId ?? nothing}
+            min=${this.inputMin ?? nothing}
+            max=${this.inputMax ?? nothing}
+            step=${this.inputStep ?? nothing}
+            .value=${String(this.inputValue ?? "")}
+            class=${INPUT_CLASS}
+            aria-label=${this.inputAriaLabel ?? nothing}
+            placeholder=${this.inputPlaceholder ?? nothing}
+            @input=${this.onInput}
+            @change=${this.onChange}
+            @keydown=${this.onKeyDown}
+          />
+        </div>
+        ${showDisabledMsg
+          ? html`<div
+              class="absolute left-3 right-3 top-1/2 -translate-y-1/2 z-10 pointer-events-none"
+            >
+              <p
+                class="text-white/35 text-[10px] text-center leading-tight italic"
+              >
+                ${this.disabledMessage}
+              </p>
+            </div>`
+          : nothing}
       </div>
     `;
   }

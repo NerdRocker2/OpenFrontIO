@@ -1,4 +1,8 @@
 {
+  "categories": [
+    "arcade"
+  ],
+  "id": "Dynamite",
   "map": {
     "height": 2160,
     "num_land_tiles": 3877797,
@@ -14,6 +18,7 @@
     "num_land_tiles": 962293,
     "width": 1920
   },
+  "multiplayer_frequency": 6,
   "name": "Dynamite",
   "nations": [
     {
@@ -176,5 +181,6 @@
       "flag": "",
       "name": "Sulfur Springs"
     }
-  ]
+  ],
+  "translation_key": "map.dynamite"
 }

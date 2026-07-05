@@ -1,6 +1,5 @@
 import { Logger } from "winston";
 import WebSocket from "ws";
-import { ServerConfig } from "../core/configuration/Config";
 import {
   Difficulty,
   GameMapSize,
@@ -15,10 +14,7 @@ import { GamePhase, GameServer } from "./GameServer";
 export class GameManager {
   private games: Map<GameID, GameServer> = new Map();
 
-  constructor(
-    private config: ServerConfig,
-    private log: Logger,
-  ) {
+  constructor(private log: Logger) {
     setInterval(() => this.tick(), 1000);
   }
 
@@ -35,7 +31,7 @@ export class GameManager {
   joinClient(
     client: Client,
     gameID: GameID,
-  ): "joined" | "kicked" | "rejected" | "not_found" {
+  ): "joined" | "kicked" | "rejected" | "not_allowlisted" | "not_found" {
     const game = this.games.get(gameID);
     if (!game) return "not_found";
     return game.joinClient(client);
@@ -53,9 +49,13 @@ export class GameManager {
     return game.rejoinClient(ws, persistentID, lastTurn, identityUpdate);
   }
 
+  wasAdmitted(gameID: GameID, persistentID: string): boolean {
+    return this.games.get(gameID)?.wasAdmitted(persistentID) ?? false;
+  }
+
   createGame(
     id: GameID,
-    gameConfig: GameConfig | undefined,
+    gameConfig: Partial<GameConfig> | undefined,
     creatorPersistentID?: string,
     startsAt?: number,
     publicGameType?: PublicGameType,
@@ -69,7 +69,6 @@ export class GameManager {
       id,
       this.log,
       Date.now(),
-      this.config,
       {
         donateGold: false,
         donateTroops: false,

@@ -1,3 +1,4 @@
+import { ClientEnv } from "src/client/ClientEnv";
 import { z } from "zod";
 import { EventBus, GameEvent } from "../core/EventBus";
 import {
@@ -9,7 +10,6 @@ import {
   UnitType,
 } from "../core/game/Game";
 import { TileRef } from "../core/game/GameMap";
-import { PlayerView } from "../core/game/GameView";
 import {
   AllPlayersStats,
   ClientHashMessage,
@@ -18,9 +18,11 @@ import {
   ClientMessage,
   ClientPingMessage,
   ClientRejoinMessage,
+  ClientSendLiveStatsMessage,
   ClientSendWinnerMessage,
   GameConfig,
   Intent,
+  LiveStats,
   ServerMessage,
   ServerMessageSchema,
   Winner,
@@ -29,6 +31,7 @@ import { replacer } from "../core/Util";
 import { getPlayToken } from "./Auth";
 import { LobbyConfig } from "./ClientGameRunner";
 import { LocalServer } from "./LocalServer";
+import { PlayerView } from "./view";
 
 export class PauseGameIntentEvent implements GameEvent {
   constructor(public readonly paused: boolean) {}
@@ -155,6 +158,9 @@ export class SendWinnerEvent implements GameEvent {
     public readonly allPlayersStats: AllPlayersStats,
   ) {}
 }
+export class SendLiveStatsEvent implements GameEvent {
+  constructor(public readonly stats: LiveStats) {}
+}
 export class SendHashEvent implements GameEvent {
   constructor(
     public readonly tick: Tick,
@@ -177,7 +183,9 @@ export class SendUpdateGameConfigIntentEvent implements GameEvent {
   constructor(public readonly config: Partial<GameConfig>) {}
 }
 
-export class SendStartGameEvent implements GameEvent {}
+export class SendToggleGameStartTimer implements GameEvent {
+  constructor() {}
+}
 
 export class Transport {
   private socket: WebSocket | null = null;
@@ -248,6 +256,7 @@ export class Transport {
 
     this.eventBus.on(PauseGameIntentEvent, (e) => this.onPauseGameIntent(e));
     this.eventBus.on(SendWinnerEvent, (e) => this.onSendWinnerEvent(e));
+    this.eventBus.on(SendLiveStatsEvent, (e) => this.onSendLiveStatsEvent(e));
     this.eventBus.on(SendHashEvent, (e) => this.onSendHashEvent(e));
     this.eventBus.on(CancelAttackIntentEvent, (e) =>
       this.onCancelAttackIntentEvent(e),
@@ -272,7 +281,9 @@ export class Transport {
       this.onSendUpdateGameConfigIntent(e),
     );
 
-    this.eventBus.on(SendStartGameEvent, () => this.onSendStartGame());
+    this.eventBus.on(SendToggleGameStartTimer, (e) =>
+      this.onSendToggleGameStartTimer(e),
+    );
   }
 
   private startPing() {
@@ -337,9 +348,7 @@ export class Transport {
     this.killExistingSocket();
     const wsHost = window.location.host;
     const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const workerPath = this.lobbyConfig.serverConfig.workerPath(
-      this.lobbyConfig.gameID,
-    );
+    const workerPath = ClientEnv.workerPath(this.lobbyConfig.gameID);
     this.socket = new WebSocket(`${wsProtocol}//${wsHost}/${workerPath}`);
     this.onconnect = onconnect;
     this.onmessage = onmessage;
@@ -603,6 +612,15 @@ export class Transport {
     }
   }
 
+  private onSendLiveStatsEvent(event: SendLiveStatsEvent) {
+    if (this.isLocal || this.socket?.readyState === WebSocket.OPEN) {
+      this.sendMsg({
+        type: "live_stats",
+        stats: event.stats,
+      } satisfies ClientSendLiveStatsMessage);
+    }
+  }
+
   private onSendHashEvent(event: SendHashEvent) {
     if (this.isLocal || this.socket?.readyState === WebSocket.OPEN) {
       this.sendMsg({
@@ -651,7 +669,7 @@ export class Transport {
   private onSendKickPlayerIntent(event: SendKickPlayerIntentEvent) {
     this.sendIntent({
       type: "kick_player",
-      target: event.target,
+      targetClientID: event.target,
     });
   }
 
@@ -662,8 +680,8 @@ export class Transport {
     });
   }
 
-  private onSendStartGame() {
-    this.sendIntent({ type: "start_game" });
+  private onSendToggleGameStartTimer(event: SendToggleGameStartTimer) {
+    this.sendIntent({ type: "toggle_game_start_timer" });
   }
 
   private sendIntent(intent: Intent) {

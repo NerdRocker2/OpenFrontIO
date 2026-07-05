@@ -1,0 +1,18 @@
+{
+  "id": "HillbillyHead",
+  "name": "Hillbilly Head",
+  "translation_key": "map.hillbillyhead",
+  "categories": ["north_america"],
+  "multiplayer_frequency": 5,
+  "nations": [
+    { "coordinates": [1204, 996], "flag": "us", "name": "Wacky Toads" },
+    { "coordinates": [2551, 2740], "flag": "us", "name": "Funky Wombats" },
+    { "coordinates": [4394, 2047], "flag": "us", "name": "Grand Goblins" },
+    { "coordinates": [3673, 4328], "flag": "us", "name": "Mighty Potatoes" },
+    { "coordinates": [2028, 3470], "flag": "us", "name": "Crispy Yetis" },
+    { "coordinates": [3272, 2122], "flag": "us", "name": "Wobbly Rascals" },
+    { "coordinates": [1986, 2104], "flag": "us", "name": "Ancient Beavers" },
+    { "coordinates": [2858, 3861], "flag": "us", "name": "Grand Rascals" },
+    { "coordinates": [4436, 3423], "flag": "us", "name": "Fluffy Parrots" }
+  ]
+}

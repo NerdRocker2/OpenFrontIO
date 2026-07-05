@@ -26,9 +26,11 @@
         padding-left: env(safe-area-inset-left);
       }
 
-      /* Prevent Playwire bottom rail from affecting flex layout */
+      /* Prevent Playwire bottom rail from affecting flex layout,
+         and keep it below the bottom HUD (z-[200]) so it can't cover the control panel */
       [id^="pw-oop-bottom_rail"] {
         position: fixed !important;
+        z-index: 150 !important;
       }
 
       /* Ensure full viewport height on iOS */
@@ -60,11 +62,15 @@
 
     <!-- Injected from Server env -->
     <script>
-      window.GIT_COMMIT = <%- gitCommit %>;
-      window.ASSET_MANIFEST = <%- assetManifest %>;
-      window.CDN_BASE = <%- cdnBase %>;
       window.BOOTSTRAP_CONFIG = {
+        gitCommit: <%- gitCommit %>,
+        assetManifest: <%- assetManifest %>,
+        cdnBase: <%- cdnBase %>,
         gameEnv: <%- gameEnv %>,
+        numWorkers: <%- numWorkers %>,
+        turnstileSiteKey: <%- turnstileSiteKey %>,
+        jwtAudience: <%- jwtAudience %>,
+        instanceId: <%- instanceId %>,
       };
       document.documentElement.style.setProperty(
         "--background-image-url",
@@ -311,7 +317,7 @@
 
       <!-- events+chat: <sm between attacks and control (order-2), sm+ right side, lg+ col-3 -->
       <div
-        class="flex flex-col pointer-events-none items-end order-2 sm:order-none sm:flex-1 lg:col-start-3 lg:self-end lg:justify-end min-[1200px]:mr-4"
+        class="flex flex-col pointer-events-none items-end order-2 sm:order-none sm:flex-1 lg:col-start-3 lg:self-end lg:justify-end"
       >
         <chat-display
           class="w-full sm:w-auto pointer-events-auto"
@@ -319,6 +325,9 @@
         <events-display
           class="w-full sm:w-auto pointer-events-auto"
         ></events-display>
+        <actionable-events
+          class="w-full sm:w-auto pointer-events-auto"
+        ></actionable-events>
       </div>
     </div>
 
@@ -334,6 +343,7 @@
       <replay-panel></replay-panel>
     </div>
     <settings-modal></settings-modal>
+    <graphics-settings-modal></graphics-settings-modal>
     <player-panel></player-panel>
     <spawn-timer></spawn-timer>
     <immunity-timer></immunity-timer>

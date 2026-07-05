@@ -7,16 +7,16 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { WebSocket, WebSocketServer } from "ws";
 import { z } from "zod";
-import { getServerConfigFromServer } from "../core/configuration/ConfigLoader";
+import { GameEnv } from "../core/configuration/Config";
 import { GameType } from "../core/game/Game";
 import {
   ClientMessageSchema,
-  GameID,
   PartialGameRecordSchema,
   ServerErrorMessage,
 } from "../core/Schemas";
 import { generateID, replacer } from "../core/Util";
 import { CreateGameInputSchema } from "../core/WorkerSchemas";
+import { registerAdminBotRoutes } from "./AdminBotRoutes";
 import { archive, finalizeGameRecord } from "./Archive";
 import { Client } from "./Client";
 import { GameManager } from "./GameManager";
@@ -24,19 +24,17 @@ import { registerGamePreviewRoute } from "./GamePreviewRoute";
 import { getUserMe, verifyClientToken } from "./jwt";
 import { logger } from "./Logger";
 
-import { GameEnv } from "../core/configuration/Config";
 import { MapPlaylist } from "./MapPlaylist";
 import { setNoStoreHeaders } from "./NoStoreHeaders";
 import { startPolling } from "./PollingLoop";
 import { PrivilegeRefresher } from "./PrivilegeRefresher";
+import { ServerEnv } from "./ServerEnv";
 import { applyStaticAssetCacheControl } from "./StaticAssetCache";
 import { verifyTurnstileToken } from "./Turnstile";
 import { WorkerLobbyService } from "./WorkerLobbyService";
 import { initWorkerMetrics } from "./WorkerMetrics";
 
-const config = getServerConfigFromServer();
-
-const workerId = parseInt(process.env.WORKER_ID ?? "0");
+const workerId = ServerEnv.workerId() ?? 0;
 const log = logger.child({ comp: `w_${workerId}` });
 const playlist = new MapPlaylist();
 
@@ -55,7 +53,7 @@ export async function startWorker() {
     maxPayload: 1024 * 1024, // 1MB
   });
 
-  const gm = new GameManager(config, log);
+  const gm = new GameManager(log);
 
   // Initialize lobby service (handles WebSocket upgrade routing)
   const lobbyService = new WorkerLobbyService(server, wss, gm, log);
@@ -67,14 +65,15 @@ export async function startWorker() {
     1000 + Math.random() * 2000,
   );
 
-  if (config.otelEnabled()) {
+  if (ServerEnv.otelEnabled()) {
     initWorkerMetrics(gm);
   }
 
   const privilegeRefresher = new PrivilegeRefresher(
-    config.jwtIssuer() + "/cosmetics.json",
-    config.jwtIssuer() + "/profane_words_game_server",
-    config.apiKey(),
+    ServerEnv.jwtIssuer() + "/cosmetics.json",
+    ServerEnv.jwtIssuer() + "/profane_words_game_server",
+    ServerEnv.apiKey(),
+    ServerEnv.jwtIssuer() + "/reserved_clan_tags",
     log,
   );
   privilegeRefresher.start();
@@ -106,7 +105,6 @@ export async function startWorker() {
 
   app.set("trust proxy", 3);
   app.use(compression());
-  app.use(express.json());
 
   app.use(
     express.static(path.join(__dirname, "../../out"), {
@@ -141,73 +139,60 @@ export async function startWorker() {
     next();
   });
 
-  app.post("/api/create_game/:id", async (req, res) => {
-    const id = req.params.id;
-
-    // Extract persistentID from Authorization header token
-    // Never accept persistentID directly from client
-    let creatorPersistentID: string | undefined;
+  // Create a new private game. The worker mints an id that belongs to itself
+  // and returns it, so callers don't need to know the sharding. nginx (and the
+  // vite dev proxy) randomly route here to spread new games across workers.
+  app.post("/api/create_game", async (req, res) => {
+    // Identify the creator from their token. Never accept persistentID directly.
     const authHeader = req.headers.authorization;
-    if (authHeader?.startsWith("Bearer ")) {
-      const token = authHeader.substring("Bearer ".length);
-      const result = await verifyClientToken(token, config);
-      if (result.type === "success") {
-        creatorPersistentID = result.persistentId;
-      } else {
-        log.warn(`Invalid creator token: ${result.message}`);
-        return res.status(401).json({ error: "Invalid creator token" });
-      }
-    } else if (
-      !req.headers[config.adminHeader()] // Public games use admin token instead
-    ) {
+    if (!authHeader?.startsWith("Bearer ")) {
       return res
         .status(400)
         .json({ error: "Authorization header required to create a game" });
     }
-
-    if (!id) {
-      log.warn(`cannot create game, id not found`);
-      return res.status(400).json({ error: "Game ID is required" });
+    const auth = await verifyClientToken(
+      authHeader.substring("Bearer ".length),
+    );
+    if (auth.type !== "success") {
+      log.warn(`Invalid creator token: ${auth.message}`);
+      return res.status(401).json({ error: "Invalid creator token" });
     }
-    // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
-    const clientIP = req.ip || req.socket.remoteAddress || "unknown";
-    const result = CreateGameInputSchema.safeParse(req.body);
-    if (!result.success) {
-      const error = z.prettifyError(result.error);
-      return res.status(400).json({ error });
-    }
+    const creatorPersistentID = auth.persistentId;
 
-    const gc = result.data;
-    if (
-      gc?.gameType === GameType.Public &&
-      req.headers[config.adminHeader()] !== config.adminToken()
-    ) {
-      log.warn(
-        `cannot create public game ${id}, ip ${ipAnonymize(clientIP)} incorrect admin token`,
-      );
-      return res.status(401).send("Unauthorized");
+    const parsed = CreateGameInputSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: z.prettifyError(parsed.error) });
+    }
+    const gc = parsed.data;
+    // Public games are scheduled by the master over IPC, never created here.
+    if (gc?.gameType === GameType.Public) {
+      return res
+        .status(400)
+        .json({ error: "Cannot create public games via this endpoint" });
     }
 
-    // Double-check this worker should host this game
-    const expectedWorkerId = config.workerIndex(id);
-    if (expectedWorkerId !== workerId) {
-      log.warn(
-        `This game ${id} should be on worker ${expectedWorkerId}, but this is worker ${workerId}`,
-      );
-      return res.status(400).json({ error: "Worker, game id mismatch" });
+    const id = ServerEnv.generateGameIdForWorker(workerId);
+    if (id === null) {
+      log.warn(`Failed to mint game id on worker ${workerId}`);
+      return res.status(500).json({ error: "Could not allocate game id" });
     }
 
-    // Pass creatorPersistentID to createGame
     const game = gm.createGame(id, gc, creatorPersistentID);
     if (game === null) {
       log.warn(`cannot create game, id ${id} already exists`);
       return res.status(409).json({ error: "Game ID already exists" });
     }
 
+    // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
+    const clientIP = req.ip || req.socket.remoteAddress || "unknown";
     log.info(
-      `Worker ${workerId}: IP ${ipAnonymize(clientIP)} creating ${game.isPublic() ? GameType.Public : GameType.Private}${gc?.gameMode ? ` ${gc.gameMode}` : ""} game with id ${id}${creatorPersistentID ? `, creator: ${creatorPersistentID.substring(0, 8)}...` : ""}`,
+      `Worker ${workerId}: IP ${ipAnonymize(clientIP)} creating private${gc?.gameMode ? ` ${gc.gameMode}` : ""} game with id ${id}, creator: ${creatorPersistentID.substring(0, 8)}...`,
     );
-    res.json(game.gameInfo());
+    res.json({
+      ...game.gameInfo(),
+      workerIndex: workerId,
+      workerPath: ServerEnv.workerPath(id),
+    });
   });
 
   app.get("/api/game/:id/exists", async (req, res) => {
@@ -229,11 +214,12 @@ export async function startWorker() {
   registerGamePreviewRoute({
     app,
     gm,
-    config,
     workerId,
     log,
     baseDir: __dirname,
   });
+
+  registerAdminBotRoutes({ app, gm, workerId, log });
 
   app.post("/api/archive_singleplayer_game", async (req, res) => {
     try {
@@ -316,7 +302,7 @@ export async function startWorker() {
         }
 
         // Verify this worker should handle this game
-        const expectedWorkerId = config.workerIndex(clientMsg.gameID);
+        const expectedWorkerId = ServerEnv.workerIndex(clientMsg.gameID);
         if (expectedWorkerId !== workerId) {
           log.warn(
             `Worker mismatch: Game ${clientMsg.gameID} should be on worker ${expectedWorkerId}, but this is worker ${workerId}`,
@@ -325,7 +311,7 @@ export async function startWorker() {
         }
 
         // Verify token signature
-        const result = await verifyClientToken(clientMsg.token, config);
+        const result = await verifyClientToken(clientMsg.token);
         if (result.type === "error") {
           log.warn(`Invalid token: ${result.message}`, {
             gameID: clientMsg.gameID,
@@ -380,8 +366,11 @@ export async function startWorker() {
         }
 
         let flares: string[] | undefined;
+        let publicId: string | undefined;
+        let friends: string[] = [];
+        let ownedClanTags: string[] = [];
 
-        const allowedFlares = config.allowedFlares();
+        const allowedFlares = ServerEnv.allowedFlares();
         if (claims === null) {
           if (allowedFlares !== undefined) {
             log.warn("Unauthorized: Anonymous user attempted to join game");
@@ -390,7 +379,7 @@ export async function startWorker() {
           }
         } else {
           // Verify token and get player permissions
-          const result = await getUserMe(clientMsg.token, config);
+          const result = await getUserMe(clientMsg.token);
           if (result.type === "error") {
             log.warn(`Unauthorized: ${result.message}`, {
               persistentID: persistentId,
@@ -400,6 +389,9 @@ export async function startWorker() {
             return;
           }
           flares = result.response.player.flares;
+          publicId = result.response.player.publicId;
+          friends = result.response.player.friends;
+          ownedClanTags = result.response.player.clans?.map((c) => c.tag) ?? [];
 
           if (allowedFlares !== undefined) {
             const allowed =
@@ -415,6 +407,21 @@ export async function startWorker() {
           }
         }
 
+        // Enforce clan tag ownership: a player can wear a tag only if they're
+        // a member; a real clan they're not in (or an unverifiable tag) is
+        // dropped to prevent impersonation. Fictional tags pass through.
+        const resolution = privilegeRefresher
+          .get()
+          .resolveClanTag(censoredClanTag, ownedClanTags);
+        if (resolution.dropped) {
+          log.warn("Dropped clan tag: player is not a member", {
+            persistentID: persistentId,
+            gameID: clientMsg.gameID,
+            clanTag: censoredClanTag,
+          });
+        }
+        const resolvedClanTag = resolution.tag;
+
         const cosmeticResult = privilegeRefresher
           .get()
           .isAllowed(flares ?? [], clientMsg.cosmetics ?? {});
@@ -428,11 +435,18 @@ export async function startWorker() {
           return;
         }
 
-        if (config.env() !== GameEnv.Dev) {
+        // Turnstile gates the FIRST join only. An already-admitted player who
+        // reconnects (e.g. a socket drop during the lobby->start transition,
+        // after which the server has cleared their reconnection mapping) must
+        // not be re-challenged: their original Turnstile token is single-use
+        // and was already redeemed, so re-verifying it would always fail.
+        if (
+          ServerEnv.env() !== GameEnv.Dev &&
+          !gm.wasAdmitted(clientMsg.gameID, persistentId)
+        ) {
           const turnstileResult = await verifyTurnstileToken(
             ip,
             clientMsg.turnstileToken,
-            config,
           );
           switch (turnstileResult.status) {
             case "approved":
@@ -464,9 +478,11 @@ export async function startWorker() {
           flares,
           ip,
           censoredUsername,
-          censoredClanTag,
+          resolvedClanTag,
           ws,
           cosmeticResult.cosmetics,
+          publicId,
+          friends,
         );
 
         const joinResult = gm.joinClient(client, clientMsg.gameID);
@@ -480,6 +496,12 @@ export async function startWorker() {
             workerId,
           });
           ws.close(1002, "Cannot join game");
+        } else if (joinResult === "not_allowlisted") {
+          log.info(`client not whitelisted for game ${clientMsg.gameID}`, {
+            gameID: clientMsg.gameID,
+            workerId,
+          });
+          ws.close(1002, "You are not whitelisted");
         } else if (joinResult === "rejected") {
           log.info(`client rejected from game ${clientMsg.gameID}`, {
             gameID: clientMsg.gameID,
@@ -511,7 +533,7 @@ export async function startWorker() {
   });
 
   // The load balancer will handle routing to this server based on path
-  const PORT = config.workerPortByIndex(workerId);
+  const PORT = ServerEnv.workerPortByIndex(workerId);
   server.listen(PORT, () => {
     log.info(`running on http://localhost:${PORT}`);
     log.info(`Handling requests with path prefix /w${workerId}/`);
@@ -540,8 +562,8 @@ async function startMatchmakingPolling(gm: GameManager) {
   startPolling(
     async () => {
       try {
-        const url = `${config.jwtIssuer() + "/matchmaking/checkin"}`;
-        const gameId = generateGameIdForWorker();
+        const url = `${ServerEnv.jwtIssuer() + "/matchmaking/checkin"}`;
+        const gameId = ServerEnv.generateGameIdForWorker(workerId);
         if (gameId === null) {
           log.warn(`Failed to generate game ID for worker ${workerId}`);
           return;
@@ -553,7 +575,7 @@ async function startMatchmakingPolling(gm: GameManager) {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "x-api-key": config.apiKey(),
+            "x-api-key": ServerEnv.apiKey(),
           },
           body: JSON.stringify({
             id: workerId,
@@ -597,21 +619,6 @@ async function startMatchmakingPolling(gm: GameManager) {
     },
     5000 + Math.random() * 1000,
   );
-}
-
-// TODO: This is a hack to generate a game ID for the worker.
-// It should be replaced with a more robust solution.
-function generateGameIdForWorker(): GameID | null {
-  let attempts = 1000;
-  while (attempts > 0) {
-    const gameId = generateID();
-    if (workerId === config.workerIndex(gameId)) {
-      return gameId;
-    }
-    attempts--;
-  }
-  log.warn(`Failed to generate game ID for worker ${workerId}`);
-  return null;
 }
 
 function getClientIp(req: http.IncomingMessage): string {

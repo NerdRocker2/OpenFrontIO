@@ -3,8 +3,12 @@ import { z } from "zod";
 import type { NewsItem } from "../core/ApiSchemas";
 import {
   NewsItemSchema,
+  PlayerGameModeFilter,
+  PlayerGameTypeFilter,
   PlayerProfile,
   PlayerProfileSchema,
+  PublicPlayerGamesResponse,
+  PublicPlayerGamesResponseSchema,
   RankedLeaderboardResponse,
   RankedLeaderboardResponseSchema,
   UserMeResponse,
@@ -50,6 +54,54 @@ export async function fetchPlayerById(
   } catch (err) {
     console.warn("fetchPlayerById: request failed", err);
     return false;
+  }
+}
+
+// GET /public/player/:publicId/games — keyset-paginated personal game history.
+// Public (no auth). `filter` (mode bucket) and `type` (game-type split) are
+// orthogonal; `cursor` is the opaque token from the previous response's
+// nextCursor — round-trip verbatim, never construct it.
+export async function fetchPublicPlayerGames(
+  publicId: string,
+  opts: {
+    filter?: PlayerGameModeFilter;
+    type?: PlayerGameTypeFilter;
+    cursor?: string;
+  } = {},
+): Promise<PublicPlayerGamesResponse | { error: "failed" }> {
+  try {
+    const url = new URL(
+      `${getApiBase()}/public/player/${encodeURIComponent(publicId)}/games`,
+    );
+    if (opts.filter) url.searchParams.set("filter", opts.filter);
+    if (opts.type) url.searchParams.set("type", opts.type);
+    if (opts.cursor) url.searchParams.set("cursor", opts.cursor);
+
+    const res = await fetch(url.toString(), {
+      headers: { Accept: "application/json" },
+    });
+    if (!res.ok) {
+      console.warn(
+        "fetchPublicPlayerGames: unexpected status",
+        res.status,
+        res.statusText,
+      );
+      return { error: "failed" };
+    }
+
+    const json = await res.json();
+    const parsed = PublicPlayerGamesResponseSchema.safeParse(json);
+    if (!parsed.success) {
+      console.warn(
+        "fetchPublicPlayerGames: Zod validation failed",
+        parsed.error,
+      );
+      return { error: "failed" };
+    }
+    return parsed.data;
+  } catch (err) {
+    console.warn("fetchPublicPlayerGames: request failed", err);
+    return { error: "failed" };
   }
 }
 
@@ -165,6 +217,99 @@ export async function createCheckoutSession(
     return json.url;
   } catch (e) {
     console.error("createCheckoutSession: request failed", e);
+    return false;
+  }
+}
+
+export async function cancelSubscription(): Promise<boolean> {
+  try {
+    const response = await fetch(`${getApiBase()}/subscriptions/@me/cancel`, {
+      method: "POST",
+      headers: {
+        Authorization: await getAuthHeader(),
+      },
+    });
+    if (response.status === 401) {
+      await logOut();
+      return false;
+    }
+    if (!response.ok) {
+      console.error(
+        "cancelSubscription: request failed",
+        response.status,
+        response.statusText,
+      );
+      return false;
+    }
+    return true;
+  } catch (e) {
+    console.error("cancelSubscription: request failed", e);
+    return false;
+  }
+}
+
+export async function changeSubscriptionTier(
+  tierName: string,
+): Promise<boolean> {
+  try {
+    const response = await fetch(
+      `${getApiBase()}/subscriptions/@me/change-tier`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: await getAuthHeader(),
+        },
+        body: JSON.stringify({ tierName }),
+      },
+    );
+    if (response.status === 401) {
+      await logOut();
+      return false;
+    }
+    if (!response.ok) {
+      console.error(
+        "changeSubscriptionTier: request failed",
+        response.status,
+        response.statusText,
+      );
+      return false;
+    }
+    return true;
+  } catch (e) {
+    console.error("changeSubscriptionTier: request failed", e);
+    return false;
+  }
+}
+
+export async function openSubscriptionPortal(): Promise<string | false> {
+  try {
+    const response = await fetch(`${getApiBase()}/subscriptions/@me/portal`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: await getAuthHeader(),
+      },
+      body: JSON.stringify({
+        returnUrl: window.location.origin,
+      }),
+    });
+    if (response.status === 401) {
+      await logOut();
+      return false;
+    }
+    if (!response.ok) {
+      console.error(
+        "openSubscriptionPortal: request failed",
+        response.status,
+        response.statusText,
+      );
+      return false;
+    }
+    const json = await response.json();
+    return json.url;
+  } catch (e) {
+    console.error("openSubscriptionPortal: request failed", e);
     return false;
   }
 }

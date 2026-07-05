@@ -3,6 +3,7 @@ import { customElement, state } from "lit/decorators.js";
 import { translateText } from "../client/Utils";
 import { UserMeResponse } from "../core/ApiSchemas";
 import { assetUrl } from "../core/AssetUrls";
+import { DoomsdayClockSpeed } from "../core/game/DoomsdayClock";
 import {
   Difficulty,
   GameMapSize,
@@ -59,6 +60,8 @@ const DEFAULT_OPTIONS = {
   disabledUnits: [] as UnitType[],
   disableAlliances: false,
   waterNukes: false,
+  doomsdayClock: false,
+  doomsdayClockSpeed: "normal" as DoomsdayClockSpeed,
   pauseAfterSpawn: true,
   eliminateNationsEnabled: true,
   eliminateNationsMax: 1,
@@ -66,6 +69,8 @@ const DEFAULT_OPTIONS = {
 
 @customElement("single-player-modal")
 export class SinglePlayerModal extends BaseModal {
+  protected routerName = "single-player";
+
   @state() private selectedMap: GameMapType = DEFAULT_OPTIONS.selectedMap;
   @state() private selectedDifficulty: Difficulty =
     DEFAULT_OPTIONS.selectedDifficulty;
@@ -98,6 +103,9 @@ export class SinglePlayerModal extends BaseModal {
   ];
   @state() private disableAlliances: boolean = DEFAULT_OPTIONS.disableAlliances;
   @state() private waterNukes: boolean = DEFAULT_OPTIONS.waterNukes;
+  @state() private doomsdayClock: boolean = DEFAULT_OPTIONS.doomsdayClock;
+  @state() private doomsdayClockSpeed: DoomsdayClockSpeed =
+    DEFAULT_OPTIONS.doomsdayClockSpeed;
   @state() private pauseAfterSpawn: boolean = DEFAULT_OPTIONS.pauseAfterSpawn;
   @state() private eliminateNationsEnabled: boolean =
     DEFAULT_OPTIONS.eliminateNationsEnabled;
@@ -177,7 +185,34 @@ export class SinglePlayerModal extends BaseModal {
     this.mapWins = winsMap;
   }
 
-  render() {
+  protected renderHeaderSlot() {
+    return modalHeader({
+      title: translateText("main.solo") || "Solo",
+      onBack: () => this.close(),
+      ariaLabel: translateText("common.back"),
+      rightContent: hasLinkedAccount(this.userMeResponse)
+        ? html`<button
+            @click=${this.toggleAchievements}
+            class="flex items-center gap-2 px-3 py-2 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 transition-all shrink-0 ${this
+              .showAchievements
+              ? "bg-yellow-500/10 border-yellow-500/30 text-yellow-400"
+              : "text-white/60"}"
+          >
+            <img
+              src=${assetUrl("images/MedalIconWhite.svg")}
+              class="w-4 h-4 opacity-80 shrink-0"
+              style="${this.showAchievements ? "" : "filter: grayscale(1);"}"
+            />
+            <span
+              class="text-xs font-bold uppercase tracking-wider whitespace-nowrap"
+              >${translateText("single_modal.toggle_achievements")}</span
+            >
+          </button>`
+        : this.renderNotLoggedInBanner(),
+    });
+  }
+
+  protected renderBody() {
     const inputCards = [
       html`<toggle-input-card
         .labelKey=${"single_modal.max_timer"}
@@ -253,38 +288,10 @@ export class SinglePlayerModal extends BaseModal {
       ></toggle-input-card>`,
     ];
 
-    const content = html`
-      <div class="${this.modalContainerClass}">
-        <!-- Header -->
-        ${modalHeader({
-          title: translateText("main.solo") || "Solo",
-          onBack: () => this.close(),
-          ariaLabel: translateText("common.back"),
-          rightContent: hasLinkedAccount(this.userMeResponse)
-            ? html`<button
-                @click=${this.toggleAchievements}
-                class="flex items-center gap-2 px-3 py-2 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 transition-all shrink-0 ${this
-                  .showAchievements
-                  ? "bg-yellow-500/10 border-yellow-500/30 text-yellow-400"
-                  : "text-white/60"}"
-              >
-                <img
-                  src=${assetUrl("images/MedalIconWhite.svg")}
-                  class="w-4 h-4 opacity-80 shrink-0"
-                  style="${this.showAchievements
-                    ? ""
-                    : "filter: grayscale(1);"}"
-                />
-                <span
-                  class="text-xs font-bold uppercase tracking-wider whitespace-nowrap"
-                  >${translateText("single_modal.toggle_achievements")}</span
-                >
-              </button>`
-            : this.renderNotLoggedInBanner(),
-        })}
-
+    return html`
+      <div class="flex flex-col h-full">
         <div
-          class="flex-1 overflow-y-auto custom-scrollbar px-6 pt-4 pb-6 mr-1 mx-auto w-full max-w-5xl"
+          class="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-6 pt-4 pb-6 mr-1 mx-auto w-full max-w-5xl"
         >
           <game-config-settings
             class="block"
@@ -349,6 +356,11 @@ export class SinglePlayerModal extends BaseModal {
                     checked: this.waterNukes,
                   },
                   {
+                    labelKey: "single_modal.doomsday_clock",
+                    checked: this.doomsdayClock,
+                    doomsdayClockSpeed: this.doomsdayClockSpeed,
+                  },
+                  {
                     labelKey: "single_modal.pause_after_spawn",
                     checked: this.pauseAfterSpawn,
                   },
@@ -363,6 +375,8 @@ export class SinglePlayerModal extends BaseModal {
             @map-selected=${this.handleConfigMapSelected}
             @random-map-selected=${this.handleConfigRandomMapSelected}
             @difficulty-selected=${this.handleConfigDifficultySelected}
+            @doomsday-clock-speed-selected=${this
+              .handleConfigDoomsdayClockSpeedSelected}
             @game-mode-selected=${this.handleConfigGameModeSelected}
             @team-count-selected=${this.handleConfigTeamCountSelected}
             @bots-changed=${this.handleBotsChange}
@@ -373,7 +387,7 @@ export class SinglePlayerModal extends BaseModal {
         </div>
 
         <!-- Footer Action -->
-        <div class="p-6 border-t border-white/10 bg-black/20">
+        <div class="p-6 border-t border-white/10 bg-black/20 shrink-0">
           ${hasLinkedAccount(this.userMeResponse) && this.hasOptionsChanged()
             ? html`<div
                 class="mb-4 px-4 py-3 rounded-xl bg-yellow-500/20 border border-yellow-500/30 text-yellow-400 text-xs font-bold uppercase tracking-wider text-center"
@@ -390,22 +404,6 @@ export class SinglePlayerModal extends BaseModal {
           ></o-button>
         </div>
       </div>
-    `;
-
-    if (this.inline) {
-      return content;
-    }
-
-    return html`
-      <o-modal
-        id="singlePlayerModal"
-        title="${translateText("main.solo") || "Solo"}"
-        ?inline=${this.inline}
-        hideHeader
-        hideCloseButton
-      >
-        ${content}
-      </o-modal>
     `;
   }
 
@@ -425,10 +423,14 @@ export class SinglePlayerModal extends BaseModal {
       this.startingGold !== DEFAULT_OPTIONS.startingGold ||
       this.disableAlliances !== DEFAULT_OPTIONS.disableAlliances ||
       this.waterNukes !== DEFAULT_OPTIONS.waterNukes ||
+      this.doomsdayClock !== DEFAULT_OPTIONS.doomsdayClock ||
+      // Pace only matters when the mode is on (startGame drops it when off).
+      (this.doomsdayClock &&
+        this.doomsdayClockSpeed !== DEFAULT_OPTIONS.doomsdayClockSpeed) ||
       this.pauseAfterSpawn !== DEFAULT_OPTIONS.pauseAfterSpawn ||
-      this.disabledUnits.length > 0 ||
       this.eliminateNationsEnabled !== DEFAULT_OPTIONS.eliminateNationsEnabled ||
-      this.eliminateNationsMax !== DEFAULT_OPTIONS.eliminateNationsMax
+      this.eliminateNationsMax !== DEFAULT_OPTIONS.eliminateNationsMax ||
+      this.disabledUnits.length > 0
     );
   }
 
@@ -456,6 +458,8 @@ export class SinglePlayerModal extends BaseModal {
     this.startingGoldValue = DEFAULT_OPTIONS.startingGoldValue;
     this.disableAlliances = DEFAULT_OPTIONS.disableAlliances;
     this.waterNukes = DEFAULT_OPTIONS.waterNukes;
+    this.doomsdayClock = DEFAULT_OPTIONS.doomsdayClock;
+    this.doomsdayClockSpeed = DEFAULT_OPTIONS.doomsdayClockSpeed;
     this.pauseAfterSpawn = DEFAULT_OPTIONS.pauseAfterSpawn;
     this.eliminateNationsEnabled = DEFAULT_OPTIONS.eliminateNationsEnabled;
     this.eliminateNationsMax = DEFAULT_OPTIONS.eliminateNationsMax;
@@ -493,6 +497,11 @@ export class SinglePlayerModal extends BaseModal {
   private handleConfigDifficultySelected = (e: Event) => {
     const customEvent = e as CustomEvent<{ difficulty: Difficulty }>;
     this.handleDifficultySelection(customEvent.detail.difficulty);
+  };
+
+  private handleConfigDoomsdayClockSpeedSelected = (e: Event) => {
+    const customEvent = e as CustomEvent<{ speed: DoomsdayClockSpeed }>;
+    this.doomsdayClockSpeed = customEvent.detail.speed;
   };
 
   private handleConfigGameModeSelected = (e: Event) => {
@@ -543,6 +552,9 @@ export class SinglePlayerModal extends BaseModal {
         break;
       case "single_modal.water_nukes":
         this.waterNukes = checked;
+        break;
+      case "single_modal.doomsday_clock":
+        this.doomsdayClock = checked;
         break;
       case "single_modal.pause_after_spawn":
         this.pauseAfterSpawn = checked;
@@ -604,6 +616,33 @@ export class SinglePlayerModal extends BaseModal {
     this.startingGoldValue = toOptionalNumber(value);
   };
 
+  private handleEliminateNationsToggle = (
+    checked: boolean,
+    value: number | string | undefined,
+  ) => {
+    this.eliminateNationsEnabled = checked;
+    const n = toOptionalNumber(value);
+    if (n !== undefined) {
+      this.eliminateNationsMax = n;
+    }
+  };
+
+  private handleEliminateNationsMaxKeyDown = (e: KeyboardEvent) => {
+    preventDisallowedKeys(e, ["-", "+", "e", "E", "."]);
+  };
+
+  private handleEliminateNationsMaxChanges = (e: Event) => {
+    const input = e.target as HTMLInputElement;
+    const value = parseBoundedIntegerFromInput(input, {
+      min: 1,
+      max: 20,
+      stripPattern: /[e+\-.]/gi,
+    });
+    if (value !== undefined) {
+      this.eliminateNationsMax = value;
+    }
+  };
+
   private handleMaxTimerValueKeyDown = (e: KeyboardEvent) => {
     preventDisallowedKeys(e, ["-", "+", "e"]);
   };
@@ -660,33 +699,6 @@ export class SinglePlayerModal extends BaseModal {
       input.value = "";
     } else {
       this.startingGoldValue = value;
-    }
-  };
-
-  private handleEliminateNationsToggle = (
-    checked: boolean,
-    value: number | string | undefined,
-  ) => {
-    this.eliminateNationsEnabled = checked;
-    const n = toOptionalNumber(value);
-    if (n !== undefined) {
-      this.eliminateNationsMax = n;
-    }
-  };
-
-  private handleEliminateNationsMaxKeyDown = (e: KeyboardEvent) => {
-    preventDisallowedKeys(e, ["-", "+", "e", "E", "."]);
-  };
-
-  private handleEliminateNationsMaxChanges = (e: Event) => {
-    const input = e.target as HTMLInputElement;
-    const value = parseBoundedIntegerFromInput(input, {
-      min: 1,
-      max: 20,
-      stripPattern: /[e+\-.]/gi,
-    });
-    if (value !== undefined) {
-      this.eliminateNationsMax = value;
     }
   };
 
@@ -782,6 +794,14 @@ export class SinglePlayerModal extends BaseModal {
                 : {}),
               ...(this.disableAlliances ? { disableAlliances: true } : {}),
               ...(this.waterNukes ? { waterNukes: true } : {}),
+              ...(this.doomsdayClock
+                ? {
+                    doomsdayClock: {
+                      enabled: true,
+                      speed: this.doomsdayClockSpeed,
+                    },
+                  }
+                : {}),
               ...(!this.pauseAfterSpawn ? {} : { pauseAfterSpawn: true }),
               ...(this.eliminateNationsEnabled && this.pauseAfterSpawn
                 ? { eliminateNations: this.eliminateNationsMax }

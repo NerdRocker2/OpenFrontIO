@@ -172,13 +172,21 @@ export class UnitImpl implements Unit {
   }
 
   setTroops(troops: number): void {
-    this._troops = Math.max(0, troops);
+    const nextTroops = Math.max(0, troops);
+    if (this._troops === nextTroops) {
+      return;
+    }
+    this._troops = nextTroops;
+    this.mg.addUpdate(this.toUpdate());
   }
   troops(): number {
     return this._troops;
   }
   health(): number {
     return Number(this._health);
+  }
+  maxHealth(): number {
+    return this.info().maxHealth ?? 1;
   }
   hasHealth(): boolean {
     return this.info().maxHealth !== undefined;
@@ -213,20 +221,6 @@ export class UnitImpl implements Unit {
     this._owner = newOwner;
     this._owner._units.push(this);
     this.mg.addUpdate(this.toUpdate());
-    this.mg.displayMessage(
-      "events_display.unit_captured_by_enemy",
-      MessageType.UNIT_CAPTURED_BY_ENEMY,
-      this._lastOwner.id(),
-      undefined,
-      { unit: this.type(), name: newOwner.displayName() },
-    );
-    this.mg.displayMessage(
-      "events_display.captured_enemy_unit",
-      MessageType.CAPTURED_ENEMY_UNIT,
-      newOwner.id(),
-      undefined,
-      { unit: this.type(), name: this._lastOwner.displayName() },
-    );
   }
 
   modifyHealth(delta: number, attacker?: Player): void {
@@ -322,11 +316,12 @@ export class UnitImpl implements Unit {
   }
 
   private displayMessageOnDeleted(): void {
-    if (this._type === UnitType.MIRVWarhead) {
-      return;
-    }
-
-    if (this._type === UnitType.Train && this._trainType !== TrainType.Engine) {
+    // Only warships and transport ships are worth notifying about; everything
+    // else is either visible on the map or too low-stakes to surface.
+    if (
+      this._type !== UnitType.Warship &&
+      this._type !== UnitType.TransportShip
+    ) {
       return;
     }
 
@@ -336,6 +331,7 @@ export class UnitImpl implements Unit {
       this.owner().id(),
       undefined,
       { unit: this._type },
+      this.id(),
     );
   }
 

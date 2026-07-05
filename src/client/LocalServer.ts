@@ -1,3 +1,4 @@
+import { ClientEnv } from "src/client/ClientEnv";
 import { z } from "zod";
 import { EventBus } from "../core/EventBus";
 import {
@@ -87,8 +88,7 @@ export class LocalServer {
     console.log("local server starting");
     this.turnCheckInterval = setInterval(() => {
       const turnIntervalMs =
-        this.lobbyConfig.serverConfig.turnIntervalMs() *
-        this.replaySpeedMultiplier;
+        ClientEnv.turnIntervalMs() * this.replaySpeedMultiplier;
       const backlog = Math.max(0, this.turns.length - this.turnsExecuted);
       const allowReplayBacklog =
         this.replaySpeedMultiplier === ReplaySpeedMultiplier.fastest &&
@@ -154,7 +154,7 @@ export class LocalServer {
       gameStartInfo: this.lobbyConfig.gameStartInfo,
       turns: [],
       lobbyCreatedAt: this.lobbyConfig.gameStartInfo.lobbyCreatedAt,
-      // Don't send myClientID for replays — viewer has no player identity.
+      // Don't send myClientID for replays ΓÇö viewer has no player identity.
       myClientID: this.lobbyConfig.gameRecord ? undefined : this.clientID,
     } satisfies ServerStartGameMessage);
   }
@@ -199,7 +199,6 @@ export class LocalServer {
         this.endTurn();
         return;
       }
-
       // Don't process non-pause intents during replays or while paused
       if (this.lobbyConfig.gameRecord || this.paused) {
         return;
@@ -315,7 +314,7 @@ export class LocalServer {
       console.error("Error parsing game record", error);
       return;
     }
-    const workerPath = this.lobbyConfig.serverConfig.workerPath(
+    const workerPath = ClientEnv.workerPath(
       this.lobbyConfig.gameStartInfo.gameID,
     );
 
