@@ -1,5 +1,9 @@
 {
+  "id": "HillbillyHead",
   "name": "Hillbilly Head",
+  "translation_key": "map.hillbillyhead",
+  "categories": ["north_america"],
+  "multiplayer_frequency": 5,
   "nations": [
     {
       "name": "Wacky Toads",

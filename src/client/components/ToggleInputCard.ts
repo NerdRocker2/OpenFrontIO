@@ -140,10 +140,8 @@ export class ToggleInputCard extends LitElement {
         </button>
 
         <!-- Keep the input permanently mounted and just hide it when unchecked.
-             Rendering it conditionally (${checked ? input : nothing}) inserts a
-             fresh input on enable, and focusing a just-inserted input forces
-             several ms of layout/paint per frame. CSS-hiding an always-present
-             input avoids that. -->
+             CSS-hiding an always-present input avoids jank from focusing a
+             freshly-inserted input on enable. -->
         <div
           class="absolute left-3 right-3 top-1/2 -translate-y-1/2 z-10 ${effectiveActive
             ? ""
