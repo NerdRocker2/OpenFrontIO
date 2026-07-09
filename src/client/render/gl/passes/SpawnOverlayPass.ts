@@ -23,8 +23,8 @@ import { TILE_DEFINES } from "../utils/TileCodec";
 import spawnFragSrc from "../shaders/spawn-overlay/spawn-overlay.frag.glsl?raw";
 import overlayVertSrc from "../shaders/spawn-overlay/spawn-overlay.vert.glsl?raw";
 
-// Per-instance: centerX, centerY, quadRadius, kind, r, g, b
-const FLOATS_PER_INSTANCE = 7;
+// Per-instance: centerX, centerY, quadRadius, kind, r, g, b, alphaMult
+const FLOATS_PER_INSTANCE = 8;
 
 // Quad must cover the ring at its largest breath expansion (scale tops out at
 // 0.5 + 0.65 = 1.15), plus a margin so the antialiased edge isn't clipped.
@@ -35,6 +35,7 @@ const RADIUS_MARGIN = 1;
 const KIND_ENEMY = 0;
 const KIND_SELF = 1;
 const KIND_TEAMMATE = 2;
+const KIND_NATION = 3;
 
 export interface SpawnCenter {
   x: number;
@@ -44,6 +45,9 @@ export interface SpawnCenter {
   b: number;
   isSelf: boolean;
   isTeammate: boolean;
+  isNation: boolean;
+  /** Per-instance alpha multiplier (0–1). Defaults to 1. Used for fade-out animations. */
+  alphaMult?: number;
 }
 
 export class SpawnOverlayPass {
@@ -62,6 +66,7 @@ export class SpawnOverlayPass {
   private uSelfRadii: WebGLUniformLocation;
   private uMateRadii: WebGLUniformLocation;
   private uGradientStops: WebGLUniformLocation;
+  private uNationHighlightAlpha: WebGLUniformLocation;
 
   private mapW: number;
   private mapH: number;
@@ -109,6 +114,10 @@ export class SpawnOverlayPass {
       this.program,
       "uGradientStops",
     )!;
+    this.uNationHighlightAlpha = gl.getUniformLocation(
+      this.program,
+      "uNationHighlightAlpha",
+    )!;
 
     gl.useProgram(this.program);
     gl.uniform1i(gl.getUniformLocation(this.program, "uTileTex"), 0);
@@ -128,7 +137,7 @@ export class SpawnOverlayPass {
     gl.enableVertexAttribArray(0);
     gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
 
-    // Instance buffer: [x, y, radius, kind, r, g, b]
+    // Instance buffer: [x, y, radius, kind, r, g, b, alphaMult]
     const glBuf = gl.createBuffer()!;
     this.instanceBuf = new DynamicInstanceBuffer(
       gl,
@@ -144,9 +153,9 @@ export class SpawnOverlayPass {
     gl.vertexAttribPointer(1, 4, gl.FLOAT, false, stride, 0);
     gl.vertexAttribDivisor(1, 1);
 
-    // Attribute 2: per-instance vec3 (r, g, b)
+    // Attribute 2: per-instance vec4 (r, g, b, alphaMult)
     gl.enableVertexAttribArray(2);
-    gl.vertexAttribPointer(2, 3, gl.FLOAT, false, stride, 16);
+    gl.vertexAttribPointer(2, 4, gl.FLOAT, false, stride, 16);
     gl.vertexAttribDivisor(2, 1);
 
     gl.bindVertexArray(null);
@@ -164,6 +173,9 @@ export class SpawnOverlayPass {
     const selfRadius = s.selfMaxRad * MAX_BREATH_SCALE + RADIUS_MARGIN;
     const mateRadius = s.mateMaxRad * MAX_BREATH_SCALE + RADIUS_MARGIN;
     const enemyRadius = s.highlightRadius + RADIUS_MARGIN;
+    // Nations use per-instance radius so animating ones can shrink.
+    // alphaMult on a nation entry is repurposed as a radius scale (1 = full, 0 = gone).
+    const baseNationRadius = s.nationHighlightRadius;
 
     this.instanceBuf.ensureCapacity(centers.length);
     const data = this.instanceBuf.float32;
@@ -178,13 +190,25 @@ export class SpawnOverlayPass {
       data[off + 4] = c.r;
       data[off + 5] = c.g;
       data[off + 6] = c.b;
+      data[off + 7] = c.alphaMult ?? 1.0;
       count++;
     };
 
     // Draw order = buffer order; over-blending puts later instances on top.
-    // Enemies first, then teammates, then self so the local ring wins.
+    // Nations first (black highlights underneath), then enemies, teammates, self.
     for (const c of centers) {
-      if (!c.isSelf && !c.isTeammate) write(c, KIND_ENEMY, enemyRadius);
+      if (c.isNation) {
+        // alphaMult is the radius scale for nations (1 = full size, 0 = fully retracted).
+        const scale = c.alphaMult ?? 1;
+        // Keep the bounding quad at full size so the fragment shader can discard
+        // based on the scaled effective radius without clipping the quad early.
+        write(c, KIND_NATION, baseNationRadius + RADIUS_MARGIN);
+        // Overwrite alphaMult slot with the radius scale.
+        data[(count - 1) * FLOATS_PER_INSTANCE + 7] = scale;
+      }
+    }
+    for (const c of centers) {
+      if (!c.isSelf && !c.isTeammate && !c.isNation) write(c, KIND_ENEMY, enemyRadius);
     }
     for (const c of centers) {
       if (c.isTeammate) write(c, KIND_TEAMMATE, mateRadius);
@@ -235,6 +259,7 @@ export class SpawnOverlayPass {
     gl.uniform4f(this.uSelfRadii, s.selfMinRad, s.selfMaxRad, 0, 0);
     gl.uniform4f(this.uMateRadii, s.mateMinRad, s.mateMaxRad, 0, 0);
     gl.uniform2f(this.uGradientStops, s.gradientInnerEdge, s.gradientSolidEnd);
+    gl.uniform1f(this.uNationHighlightAlpha, s.nationHighlightAlpha);
 
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.tileTex);

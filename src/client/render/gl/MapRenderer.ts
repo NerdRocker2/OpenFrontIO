@@ -166,6 +166,10 @@ export class MapRenderer {
   refreshNames(displayNames: Map<string, string>): void {
     this.renderer?.refreshNames(displayNames);
   }
+  /** Hide a player's name plate immediately (e.g. eliminated nation during spawn). */
+  hidePlayer(playerID: string): void {
+    this.renderer?.hidePlayer(playerID);
+  }
   updateRelations(data: Uint8Array, size: number): void {
     this.renderer?.updateRelations(data, size);
   }

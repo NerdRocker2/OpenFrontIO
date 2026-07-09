@@ -34,6 +34,25 @@ export class WebGLFrameBuilder {
    * just first-seen — re-uploads only when the tile actually changes.
    */
   private readonly lastSpawnTile = new Map<number, number>();
+  /**
+   * Nations the local player has clicked to eliminate. Mapped to their world
+   * position and the timestamp of elimination for the shrink animation.
+   */
+  private readonly eliminatingNations = new Map<
+    string,
+    { x: number; y: number; eliminatedAt: number }
+  >();
+  /**
+   * Nations permanently excluded from the overlay after their animation finishes.
+   * Prevents the overlay from reappearing on subsequent syncSpawnOverlay calls.
+   */
+  private readonly permanentlyEliminatedNations = new Set<string>();
+  /** Fade-out duration in milliseconds. */
+  private static readonly FADE_DURATION_MS = 500;
+  /** Last GameView passed to update() or refreshSpawnOverlay(), used by the animation RAF. */
+  private lastGameView: GameView | null = null;
+  /** requestAnimationFrame id for the ongoing fade animation, or null when idle. */
+  private fadeRafId: number | null = null;
   /** Skin atlas allocated once on first syncPlayers — player set is locked at game start. */
   private skinsInitialized = false;
   // The renderer needs to know which player is "me" so affiliation tint,
@@ -55,6 +74,46 @@ export class WebGLFrameBuilder {
     this.lastSpawnTile.clear();
     this.localPlayerSmallID = 0;
     this.skinsInitialized = false;
+  }
+
+  /** Remove the black spawn-phase overlay for a nation the player has chosen to
+   * eliminate. Stores the nation's position so the shrink animation can run
+   * independently of the game tick loop (the game is paused at this point).
+   */
+  markNationEliminated(nationID: string, x: number, y: number): void {
+    this.permanentlyEliminatedNations.add(nationID);
+    this.eliminatingNations.set(nationID, { x, y, eliminatedAt: performance.now() });
+  }
+
+  /**
+   * Refresh only the spawn overlay and start the fade animation loop if
+   * any nations are currently fading out. Used when the game is paused so
+   * the retraction animates without waiting for the next game tick.
+   */
+  refreshSpawnOverlay(gameView: GameView): void {
+    this.lastGameView = gameView;
+    this.syncSpawnOverlay(gameView);
+    this.scheduleFadeAnimation();
+  }
+
+  /** Drive repeated overlay updates until all shrink animations complete. */
+  private scheduleFadeAnimation(): void {
+    if (this.fadeRafId !== null || this.eliminatingNations.size === 0) return;
+    this.fadeRafId = requestAnimationFrame(() => {
+      this.fadeRafId = null;
+      const gv = this.lastGameView;
+      if (!gv) return;
+      const now = performance.now();
+      // Remove fully retracted nations and hide their name plate.
+      for (const [id, data] of this.eliminatingNations) {
+        if (now - data.eliminatedAt >= WebGLFrameBuilder.FADE_DURATION_MS) {
+          this.eliminatingNations.delete(id);
+          this.view.hidePlayer(id);
+        }
+      }
+      this.syncSpawnOverlay(gv);
+      this.scheduleFadeAnimation(); // re-arm if still animating
+    });
   }
 
   /**
@@ -146,8 +205,9 @@ export class WebGLFrameBuilder {
 
   /**
    * Spawn-phase highlights: each already-spawned human player gets a colored
-   * ring + tile glow around their starting territory. Pushed every tick
-   * during spawn phase; the pass animates locally from the snapshot.
+   * ring + tile glow around their starting territory. Nation (AI) players get
+   * a black tile highlight so they stand out from tribes during spawn phase.
+   * Pushed every tick during spawn phase; the pass animates locally from the snapshot.
    */
   private syncSpawnOverlay(gameView: GameView): void {
     const inSpawnPhase = gameView.inSpawnPhase();
@@ -158,6 +218,52 @@ export class WebGLFrameBuilder {
     const me = gameView.myPlayer();
     const myTeam = me?.team() ?? null;
     const centers: SpawnCenter[] = [];
+
+    // Add Nation (pre-placed AI) players as black highlights so they
+    // are visually distinct from Bot tribes during spawn phase.
+    // Skip permanently eliminated nations (animating-out or fully gone).
+    for (const p of gameView.players()) {
+      if (!p.isPlayer() || p.type() !== PlayerType.Nation) continue;
+      if (this.permanentlyEliminatedNations.has(p.id())) continue;
+      const nd = p.nameLocation();
+      if (!nd) continue;
+      centers.push({
+        x: nd.x,
+        y: nd.y,
+        r: 0,
+        g: 0,
+        b: 0,
+        isSelf: false,
+        isTeammate: false,
+        isNation: true,
+      });
+    }
+
+    // Add shrinking-out nations. alphaMult is repurposed as a radius scale
+    // (1 = full size → 0 = fully retracted). The fragment shader uses it
+    // to compute the effective tile-check radius.
+    const now = performance.now();
+    for (const [, data] of this.eliminatingNations) {
+      const elapsed = now - data.eliminatedAt;
+      const scale = Math.max(
+        0,
+        1 - elapsed / WebGLFrameBuilder.FADE_DURATION_MS,
+      );
+      if (scale > 0) {
+        centers.push({
+          x: data.x,
+          y: data.y,
+          r: 0,
+          g: 0,
+          b: 0,
+          isSelf: false,
+          isTeammate: false,
+          isNation: true,
+          alphaMult: scale,
+        });
+      }
+    }
+
     for (const p of gameView.players()) {
       if (!p.isPlayer() || p.type() !== PlayerType.Human) continue;
       const spawnTile = p.state.spawnTile;
@@ -182,6 +288,7 @@ export class WebGLFrameBuilder {
           myTeam !== null &&
           p.team() === myTeam &&
           p.smallID() !== me?.smallID(),
+        isNation: false,
       });
     }
     this.view.updateSpawnOverlay(true, centers);

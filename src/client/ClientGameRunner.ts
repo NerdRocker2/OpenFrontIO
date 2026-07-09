@@ -1006,6 +1006,11 @@ export class ClientGameRunner {
         ) {
           const nationID = owner.id();
           this.pendingEliminations.add(nationID);
+          const nd = owner.nameLocation();
+          if (nd) {
+            this.webglBuilder?.markNationEliminated(nationID, nd.x, nd.y);
+            this.webglBuilder?.refreshSpawnOverlay(this.gameView);
+          }
           this.eventBus.emit(new EliminateNationAnimationEvent(nationID));
           this.eventBus.emit(new SendEliminateNationIntentEvent(nationID));
           return;

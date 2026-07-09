@@ -915,6 +915,10 @@ export class GPURenderer {
   setMouseWorldPos(x: number, y: number): void {
     this.namePass.setMouseWorldPos(x, y);
   }
+  /** Hide a player's name plate immediately (e.g. eliminated nation during spawn). */
+  hidePlayer(playerID: string): void {
+    this.namePass.hidePlayer(playerID);
+  }
   setHighlightStructureTypes(unitTypes: string[] | null): void {
     this.structurePass.setHighlightTypes(unitTypes);
     this.structureLevelPass.setHighlightTypes(unitTypes);

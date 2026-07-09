@@ -366,6 +366,8 @@ export interface RenderSettings {
     animSpeed: number; // breathing animation speed
     gradientInnerEdge: number; // static gradient inner ramp end (0–1)
     gradientSolidEnd: number; // static gradient solid band end (0–1)
+    nationHighlightRadius: number; // nation black highlight radius (squared internally)
+    nationHighlightAlpha: number; // nation black highlight opacity (0–1)
   };
   altView: {
     gridFontSize: number;

@@ -619,6 +619,18 @@ export class NamePass {
   }
 
   /**
+   * Immediately hide a player's name plate (name + flag circle). Used during
+   * the spawn phase to remove eliminated nations once their retraction animation
+   * completes, without waiting for the next game tick.
+   */
+  hidePlayer(playerID: string): void {
+    const slot = this.slots.get(playerID);
+    if (!slot || !slot.alive) return;
+    slot.alive = false;
+    this.writePlayerDataRow(slot);
+  }
+
+  /**
    * Find the player whose name plate (name + troops + flag + emoji/status row)
    * is under the cursor, so the whole plate can fade as a unit. Mirrors the
    * lerp + sizing math in name.vert.glsl. Returns the smallID, or 0 for none.

@@ -317,7 +317,9 @@
     "mateMaxRad": 14,
     "animSpeed": 0.008,
     "gradientInnerEdge": 0.01,
-    "gradientSolidEnd": 0.1
+    "gradientSolidEnd": 0.1,
+    "nationHighlightRadius": 12,
+    "nationHighlightAlpha": 0.6
   },
   "altView": {
     "gridFontSize": 24,

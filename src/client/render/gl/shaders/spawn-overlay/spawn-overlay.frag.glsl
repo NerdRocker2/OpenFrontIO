@@ -13,11 +13,14 @@ uniform float uHighlightAlpha;    // tile highlight opacity
 uniform vec4 uSelfRadii;          // (minR, maxR, _, _)
 uniform vec4 uMateRadii;          // (minR, maxR, _, _)
 uniform vec2 uGradientStops;      // (innerEdge, solidEnd)
+uniform float uNationHighlightAlpha;    // nation black highlight base opacity
 
 in vec2 vWorldPos;
 flat in vec2 vCenter;
-flat in float vKind;   // 0 = enemy highlight, 1 = self ring, 2 = teammate ring
+flat in float vKind;   // 0 = enemy highlight, 1 = self ring, 2 = teammate ring, 3 = nation black highlight
 flat in vec3 vColor;
+flat in float vAlpha;  // per-instance multiplier: scales alpha for rings/enemies; scales radius for nations
+flat in float vRadius; // per-instance quad radius (KIND_NATION: base + RADIUS_MARGIN, scaled by vAlpha)
 
 out vec4 fragColor;
 
@@ -35,7 +38,22 @@ void main() {
     if (distSq > uHighlightRadiusSq) discard;
     uint raw = texelFetch(uTileTex, tc, 0).r;
     if ((raw & uint(OWNER_MASK)) != 0u) discard; // owned tile → no highlight
-    fragColor = vec4(vColor, uHighlightAlpha);
+    fragColor = vec4(vColor, uHighlightAlpha * vAlpha);
+    return;
+  }
+
+  // --- Nation black highlight: unowned tiles within a per-instance shrinking radius ---
+  if (vKind > 2.5) {
+    // vAlpha doubles as a radius scale (1 = full, 0 = fully retracted).
+    // vRadius = nationHighlightRadius + RADIUS_MARGIN; effective radius = (vRadius - 1.0) * vAlpha.
+    float effectiveRad = (vRadius - 1.0) * vAlpha;
+    if (effectiveRad <= 0.0 || distSq > effectiveRad * effectiveRad) discard;
+    ivec2 tc = ivec2(floor(vWorldPos));
+    if (tc.x < 0 || tc.y < 0 || tc.x >= int(uMapSize.x) || tc.y >= int(uMapSize.y))
+      discard;
+    uint raw = texelFetch(uTileTex, tc, 0).r;
+    if ((raw & uint(OWNER_MASK)) != 0u) discard; // owned tile → no highlight
+    fragColor = vec4(0.0, 0.0, 0.0, uNationHighlightAlpha);
     return;
   }
 
@@ -77,5 +95,5 @@ void main() {
   if (alpha <= 0.0) discard;
   // Opacity pulses 65% → 100% in phase with the radius.
   alpha *= 0.65 + 0.35 * uBreathRadius;
-  fragColor = vec4(color, alpha);
+  fragColor = vec4(color, alpha * vAlpha);
 }
