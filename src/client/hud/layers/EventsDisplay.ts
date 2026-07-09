@@ -38,10 +38,21 @@ interface GameEvent {
   type: MessageType;
   highlight?: boolean;
   createdAt: number;
+  createdAtMs: number;
   onDelete?: () => void;
   focusID?: number;
   unitView?: UnitView;
 }
+
+type GameEventDraft = Omit<GameEvent, "createdAtMs"> &
+  Partial<Pick<GameEvent, "createdAtMs">>;
+
+const EVENT_LOG_EXPIRATION_MS = 10 * 60 * 1000;
+const EVENT_LOG_MAX_ROWS = 20;
+const LOW_PRIORITY_EVENT_EXPIRATION_TICKS = 80;
+const LOW_PRIORITY_EVENT_MAX_ROWS = 30;
+const LOW_PRIORITY_EVENT_RENDER_ROWS = 4;
+const TIMESTAMP_REFRESH_MS = 5000;
 
 const TIER_1_TYPES: ReadonlySet<MessageType> = new Set([
   MessageType.NUKE_INBOUND,
@@ -69,8 +80,10 @@ export class EventsDisplay extends LitElement implements Controller {
 
   private active: boolean = false;
   private events: GameEvent[] = [];
+  private timestampRefreshInterval: number | null = null;
 
   @state() private _isVisible: boolean = false;
+  @state() private timestampNowMs = Date.now();
 
   @query(".events-container")
   private _eventsContainer?: HTMLDivElement;
@@ -144,6 +157,25 @@ export class EventsDisplay extends LitElement implements Controller {
     this.events = [];
   }
 
+  connectedCallback() {
+    super.connectedCallback();
+    this.timestampRefreshInterval = window.setInterval(() => {
+      const nowMs = Date.now();
+      this.timestampNowMs = nowMs;
+      if (!this.updateEvents(nowMs)) {
+        this.requestUpdate();
+      }
+    }, TIMESTAMP_REFRESH_MS);
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    if (this.timestampRefreshInterval !== null) {
+      clearInterval(this.timestampRefreshInterval);
+      this.timestampRefreshInterval = null;
+    }
+  }
+
   init() {
     this.eventBus.on(
       SendAllianceRequestIntentEvent,
@@ -211,8 +243,50 @@ export class EventsDisplay extends LitElement implements Controller {
       }
     }
 
-    let remainingEvents = this.events.filter((event) => {
-      const expired = this.game.ticks() - event.createdAt >= 80;
+    this.updateEvents();
+
+    this.requestUpdate();
+  }
+
+  private addEvent(event: GameEventDraft) {
+    const nowMs = Date.now();
+    const eventWithTimestamp: GameEvent = {
+      ...event,
+      createdAtMs: event.createdAtMs ?? nowMs,
+    };
+
+    this.timestampNowMs = nowMs;
+    this.events = this.compactEvents(
+      [...this.events, eventWithTimestamp],
+      nowMs,
+    );
+    this.requestUpdate();
+  }
+
+  private updateEvents(nowMs = Date.now()): boolean {
+    const remainingEvents = this.compactEvents(this.events, nowMs);
+    const changed =
+      this.events.length !== remainingEvents.length ||
+      this.events.some((event, index) => event !== remainingEvents[index]);
+
+    if (changed) {
+      this.events = remainingEvents;
+      this.requestUpdate();
+    }
+
+    return changed;
+  }
+
+  private compactEvents(events: GameEvent[], nowMs: number): GameEvent[] {
+    const eventLogEvents: GameEvent[] = [];
+    const lowPriorityEvents: GameEvent[] = [];
+
+    events.forEach((event) => {
+      (isTier1(event.type) ? eventLogEvents : lowPriorityEvents).push(event);
+    });
+
+    const remainingEventLogEvents = eventLogEvents.filter((event) => {
+      const expired = nowMs - event.createdAtMs >= EVENT_LOG_EXPIRATION_MS;
       const isInboundWarning =
         event.type === MessageType.NUKE_INBOUND ||
         event.type === MessageType.HYDROGEN_BOMB_INBOUND ||
@@ -229,21 +303,40 @@ export class EventsDisplay extends LitElement implements Controller {
       return shouldKeep;
     });
 
-    if (remainingEvents.length > 30) {
-      remainingEvents = remainingEvents.slice(-30);
+    const currentTick = this.game?.ticks() ?? 0;
+    const remainingLowPriorityEvents = lowPriorityEvents.filter((event) => {
+      const expired =
+        currentTick - event.createdAt >= LOW_PRIORITY_EVENT_EXPIRATION_TICKS;
+      if (expired && event.onDelete) {
+        event.onDelete();
+      }
+      return !expired;
+    });
+
+    let compactedEventLogEvents = remainingEventLogEvents;
+    if (compactedEventLogEvents.length > EVENT_LOG_MAX_ROWS) {
+      const removedEvents = compactedEventLogEvents.slice(
+        0,
+        compactedEventLogEvents.length - EVENT_LOG_MAX_ROWS,
+      );
+      removedEvents.forEach((event) => event.onDelete?.());
+      compactedEventLogEvents =
+        compactedEventLogEvents.slice(-EVENT_LOG_MAX_ROWS);
     }
 
-    if (this.events.length !== remainingEvents.length) {
-      this.events = remainingEvents;
-      this.requestUpdate();
+    let compactedLowPriorityEvents = remainingLowPriorityEvents;
+    if (compactedLowPriorityEvents.length > LOW_PRIORITY_EVENT_MAX_ROWS) {
+      const removedEvents = compactedLowPriorityEvents.slice(
+        0,
+        compactedLowPriorityEvents.length - LOW_PRIORITY_EVENT_MAX_ROWS,
+      );
+      removedEvents.forEach((event) => event.onDelete?.());
+      compactedLowPriorityEvents = compactedLowPriorityEvents.slice(
+        -LOW_PRIORITY_EVENT_MAX_ROWS,
+      );
     }
 
-    this.requestUpdate();
-  }
-
-  private addEvent(event: GameEvent) {
-    this.events = [...this.events, event];
-    this.requestUpdate();
+    return [...compactedEventLogEvents, ...compactedLowPriorityEvents];
   }
 
   onDisplayMessageEvent(event: DisplayMessageUpdate) {
@@ -555,6 +648,22 @@ export class EventsDisplay extends LitElement implements Controller {
       : event.description;
   }
 
+  private formatRelativeTimestamp(event: GameEvent): string {
+    const elapsedSeconds = Math.max(
+      0,
+      Math.floor((this.timestampNowMs - event.createdAtMs) / 1000),
+    );
+
+    if (elapsedSeconds <= 120) {
+      const unit = elapsedSeconds === 1 ? "second" : "seconds";
+      return `${elapsedSeconds} ${unit} ago`;
+    }
+
+    const elapsedMinutes = Math.floor(elapsedSeconds / 60);
+    const unit = elapsedMinutes === 1 ? "minute" : "minutes";
+    return `${elapsedMinutes} ${unit} ago`;
+  }
+
   private renderBetrayalDebuffTimer() {
     const myPlayer = this.game.myPlayer();
     if (!myPlayer || !myPlayer.isTraitor()) {
@@ -579,31 +688,42 @@ export class EventsDisplay extends LitElement implements Controller {
     `;
   }
 
-  private renderEventRow(event: GameEvent) {
+  private renderEventRow(event: GameEvent, showTimestamp = false) {
+    const eventDescription = event.focusID
+      ? this.renderButton({
+          content: this.getEventDescription(event),
+          onClick: () => {
+            if (event.focusID) this.emitGoToPlayerEvent(event.focusID);
+          },
+          className: "text-left",
+        })
+      : event.unitView
+        ? this.renderButton({
+            content: this.getEventDescription(event),
+            onClick: () => {
+              if (event.unitView) this.emitGoToUnitEvent(event.unitView);
+            },
+            className: "text-left",
+          })
+        : this.getEventDescription(event);
+
     return html`
       <tr>
         <td
-          class="lg:px-2 lg:py-1 p-1 text-left ${getMessageTypeClasses(
+          class="lg:px-2 lg:py-1 p-1 text-left align-top ${getMessageTypeClasses(
             event.type,
           )}"
         >
-          ${event.focusID
-            ? this.renderButton({
-                content: this.getEventDescription(event),
-                onClick: () => {
-                  if (event.focusID) this.emitGoToPlayerEvent(event.focusID);
-                },
-                className: "text-left",
-              })
-            : event.unitView
-              ? this.renderButton({
-                  content: this.getEventDescription(event),
-                  onClick: () => {
-                    if (event.unitView) this.emitGoToUnitEvent(event.unitView);
-                  },
-                  className: "text-left",
-                })
-              : this.getEventDescription(event)}
+          ${eventDescription}
+          ${showTimestamp
+            ? html`
+                <span
+                  class="text-white/45 text-[0.8em] tabular-nums whitespace-nowrap"
+                >
+                  ${this.formatRelativeTimestamp(event)}
+                </span>
+              `
+            : ""}
         </td>
       </tr>
     `;
@@ -622,17 +742,19 @@ export class EventsDisplay extends LitElement implements Controller {
     );
 
     const tier1Events: GameEvent[] = [];
-    let tier2Events: GameEvent[] = [];
+    const tier2Events: GameEvent[] = [];
     for (const event of this.events) {
       (isTier1(event.type) ? tier1Events : tier2Events).push(event);
     }
     tier1Events.sort((a, b) => a.createdAt - b.createdAt);
     tier2Events.sort((a, b) => a.createdAt - b.createdAt);
-    tier2Events = tier2Events.slice(-4);
+    const visibleTier2Events = tier2Events.slice(
+      -LOW_PRIORITY_EVENT_RENDER_ROWS,
+    );
 
     if (
       tier1Events.length === 0 &&
-      tier2Events.length === 0 &&
+      visibleTier2Events.length === 0 &&
       !showBetrayalTimer
     ) {
       return html``;
@@ -640,7 +762,7 @@ export class EventsDisplay extends LitElement implements Controller {
 
     return html`
       <div class="flex flex-col gap-1 w-full min-[1200px]:w-96">
-        ${tier2Events.length > 0
+        ${visibleTier2Events.length > 0
           ? html`
               <div
                 class="bg-gray-800/92 backdrop-blur-sm max-h-[12vh] lg:max-h-[22vh] overflow-y-auto rounded-lg opacity-90 events-container"
@@ -649,7 +771,9 @@ export class EventsDisplay extends LitElement implements Controller {
                   class="w-full border-collapse text-white text-xs lg:text-sm pointer-events-auto"
                 >
                   <tbody>
-                    ${tier2Events.map((event) => this.renderEventRow(event))}
+                    ${visibleTier2Events.map((event) =>
+                      this.renderEventRow(event),
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -661,10 +785,12 @@ export class EventsDisplay extends LitElement implements Controller {
                 class="bg-gray-800 backdrop-blur-sm max-h-[30vh] lg:max-h-[40vh] overflow-y-auto rounded-lg shadow-lg border-l-4 border-red-500 important-events-container"
               >
                 <table
-                  class="w-full border-collapse text-white text-base lg:text-lg font-medium pointer-events-auto"
+                  class="w-full border-collapse text-white text-[0.87rem] lg:text-[.97rem] font-medium pointer-events-auto"
                 >
                   <tbody>
-                    ${tier1Events.map((event) => this.renderEventRow(event))}
+                    ${tier1Events.map((event) =>
+                      this.renderEventRow(event, true),
+                    )}
                     ${showBetrayalTimer
                       ? html`
                           <tr>
