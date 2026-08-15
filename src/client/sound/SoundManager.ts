@@ -60,7 +60,7 @@ export class SoundManager {
     eventBus.on(MusicNextTrackEvent, this.onMusicNextTrack);
     eventBus.on(MusicPrevTrackEvent, this.onMusicPrevTrack);
     eventBus.on(AddMusicTrackEvent, (e) =>
-      this.addTrack(e.url, e.playImmediately),
+      this.addTrack(e.url, e.playImmediately, e.filename),
     );
     this.initMediaSession();
     this.loadTracksFromServer();
@@ -196,11 +196,13 @@ export class SoundManager {
     fetch("/api/music/tracks")
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json() as Promise<{ tracks: { filename: string; url: string }[] }>;
+        return r.json() as Promise<{
+          tracks: { filename: string; url: string }[];
+        }>;
       })
       .then(({ tracks }) => {
         for (const track of tracks) {
-          this.addTrack(track.url, false);
+          this.addTrack(track.url, false, track.filename);
         }
         if (this.pendingPlay && this.backgroundMusic.length > 0) {
           this.pendingPlay = false;
@@ -212,15 +214,28 @@ export class SoundManager {
       );
   }
 
-  public addTrack(url: string, playImmediately: boolean): void {
+  public addTrack(
+    url: string,
+    playImmediately: boolean,
+    filename?: string,
+  ): void {
     this.safely("add track", () => {
-      const fallback = metadataFromFilename(url);
+      const fallback = metadataFromFilename(filename ?? url);
       const newIndex = this.backgroundMusic.length;
 
       const howl = new Howl({
         src: [url],
+        format: ["mp3"],
+        html5: true,
+        preload: false,
         loop: false,
         onend: this.playNext.bind(this),
+        onloaderror: (_id, err) => {
+          console.error(`SoundManager: failed to load music track ${url}`, err);
+        },
+        onplayerror: (_id, err) => {
+          console.error(`SoundManager: failed to play music track ${url}`, err);
+        },
         volume: 0,
       });
       howl.volume(this.backgroundMusicVolume);

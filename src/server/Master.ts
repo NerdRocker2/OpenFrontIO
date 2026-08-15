@@ -9,7 +9,7 @@ import { GameEnv } from "../core/configuration/Config";
 import { logger } from "./Logger";
 import { MapPlaylist } from "./MapPlaylist";
 import { MasterLobbyService } from "./MasterLobbyService";
-import { registerMusicRoutes } from "./MusicRoute";
+import { registerMusicFileRoutes, registerMusicRoutes } from "./MusicRoute";
 import { setNoStoreHeaders } from "./NoStoreHeaders";
 import { renderAppShell } from "./RenderHtml";
 import { ServerEnv } from "./ServerEnv";
@@ -56,6 +56,8 @@ app.use(
     },
   }),
 );
+
+registerMusicFileRoutes(app, process.cwd());
 
 // Set trust proxy to the number of reverse-proxy hops between the internet
 // and this Express process (nginx = 1). An incorrect value causes

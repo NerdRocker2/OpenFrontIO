@@ -1,16 +1,16 @@
+import type { Express } from "express";
 import express from "express";
 import fs from "fs";
 import { globSync } from "glob";
 import path from "path";
-import type { Express } from "express";
-import { buildAssetUrl } from "../core/AssetUrls";
 import { logger } from "./Logger";
 import { getProprietaryDir, getResourcesDir } from "./PublicAssetManifest";
-import { getRuntimeAssetManifest } from "./RuntimeAssetManifest";
 
 const log = logger.child({ comp: "music" });
 
 const MUSIC_GLOB = "sounds/music/*.mp3";
+const STATIC_MUSIC_ROUTE = "/music/static";
+const UPLOADED_MUSIC_ROUTE = "/music/uploads";
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024; // 50 MB
 
 function sanitizeFilename(name: string): string {
@@ -25,6 +25,32 @@ export function getUploadsDir(baseDir: string): string {
   return path.join(baseDir, "uploads", "music");
 }
 
+export function registerMusicFileRoutes(app: Express, baseDir: string): void {
+  const resourcesDir = getResourcesDir(baseDir);
+  const proprietaryDir = getProprietaryDir(baseDir);
+  const uploadsDir = getUploadsDir(baseDir);
+
+  fs.mkdirSync(uploadsDir, { recursive: true });
+
+  // Serve static music directly from source directories. Proprietary tracks
+  // take precedence when a resource track has the same filename.
+  app.use(
+    STATIC_MUSIC_ROUTE,
+    express.static(path.join(proprietaryDir, "sounds", "music"), {
+      maxAge: 0,
+    }),
+  );
+  app.use(
+    STATIC_MUSIC_ROUTE,
+    express.static(path.join(resourcesDir, "sounds", "music"), { maxAge: 0 }),
+  );
+
+  // Serve uploaded files directly from the game server (not CDN). The
+  // /uploads/music mount is kept as an alias for older responses/bookmarks.
+  app.use(UPLOADED_MUSIC_ROUTE, express.static(uploadsDir, { maxAge: 0 }));
+  app.use("/uploads/music", express.static(uploadsDir, { maxAge: 0 }));
+}
+
 export function registerMusicRoutes(app: Express, baseDir: string): void {
   const resourcesDir = getResourcesDir(baseDir);
   const proprietaryDir = getProprietaryDir(baseDir);
@@ -32,16 +58,10 @@ export function registerMusicRoutes(app: Express, baseDir: string): void {
 
   fs.mkdirSync(uploadsDir, { recursive: true });
 
-  // Serve uploaded files directly from the game server (not CDN).
-  app.use("/uploads/music", express.static(uploadsDir, { maxAge: 0 }));
-
   // GET /api/music/tracks — list all available music tracks.
-  // Returns relative asset paths for static files (client resolves via assetUrl())
-  // and absolute server paths for uploaded files.
-  app.get("/api/music/tracks", async (_req, res) => {
+  // Returns server paths for both static and uploaded files.
+  app.get("/api/music/tracks", (_req, res) => {
     try {
-      const assetManifest = await getRuntimeAssetManifest();
-      const cdnBase = process.env.CDN_BASE ?? "";
       const tracks: { filename: string; url: string }[] = [];
       const seen = new Set<string>();
 
@@ -58,7 +78,7 @@ export function registerMusicRoutes(app: Express, baseDir: string): void {
           seen.add(filename);
           tracks.push({
             filename,
-            url: buildAssetUrl(relativePath, assetManifest, cdnBase),
+            url: `${STATIC_MUSIC_ROUTE}/${encodeURIComponent(filename)}`,
           });
         }
       }
@@ -70,7 +90,7 @@ export function registerMusicRoutes(app: Express, baseDir: string): void {
         seen.add(file);
         tracks.push({
           filename: file,
-          url: `/uploads/music/${encodeURIComponent(file)}`,
+          url: `${UPLOADED_MUSIC_ROUTE}/${encodeURIComponent(file)}`,
         });
       }
 
@@ -121,7 +141,7 @@ export function registerMusicRoutes(app: Express, baseDir: string): void {
     }
 
     res.json({
-      url: `/uploads/music/${encodeURIComponent(filename)}`,
+      url: `${UPLOADED_MUSIC_ROUTE}/${encodeURIComponent(filename)}`,
       filename,
     });
   });

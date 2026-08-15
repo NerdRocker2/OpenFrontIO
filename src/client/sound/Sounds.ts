@@ -58,5 +58,6 @@ export class AddMusicTrackEvent implements GameEvent {
   constructor(
     public readonly url: string,
     public readonly playImmediately: boolean,
+    public readonly filename?: string,
   ) {}
 }

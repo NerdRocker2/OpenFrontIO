@@ -275,6 +275,11 @@ export default defineConfig(({ mode }) => {
           ws: true,
           changeOrigin: true,
         },
+        "/music": {
+          target: "http://localhost:3000",
+          changeOrigin: true,
+          secure: false,
+        },
         // Worker proxies
         "/w0": {
           target: "ws://localhost:3001",

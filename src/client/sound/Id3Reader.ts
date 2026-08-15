@@ -30,7 +30,10 @@ export function metadataFromFilename(url: string): {
   artist: string;
 } {
   const raw = decodeURIComponent((url.split("/").pop() ?? url).split("?")[0]);
-  const noExt = raw.replace(/\.[^.]+$/, "").trim();
+  const noExt = raw
+    .replace(/\.[^.]+$/, "")
+    .replace(/\.[0-9a-f]{12}$/i, "")
+    .trim();
   const idx = noExt.indexOf(" - ");
   if (idx !== -1) {
     const afterFirst = noExt.slice(idx + 3);

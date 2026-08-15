@@ -212,8 +212,11 @@ export class SettingsModal extends LitElement implements Controller {
         const err = await response.json().catch(() => ({})) as { error?: string };
         throw new Error(err.error ?? `HTTP ${response.status}`);
       }
-      const { url } = await response.json() as { url: string };
-      this.eventBus.emit(new AddMusicTrackEvent(url, true));
+      const { url, filename } = (await response.json()) as {
+        url: string;
+        filename?: string;
+      };
+      this.eventBus.emit(new AddMusicTrackEvent(url, true, filename));
       this.uploadStatus = "done";
       setTimeout(() => {
         this.uploadStatus = "idle";
