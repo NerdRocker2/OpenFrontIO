@@ -291,6 +291,18 @@ export class NamePass {
   }
 
   /**
+   * Immediately hide a player's name plate (e.g. nation eliminated during spawn).
+   * Marks the slot dead and re-uploads the row so the GPU stops rendering it
+   * completes, without waiting for the next game tick.
+   */
+  hidePlayer(playerID: string): void {
+    const slot = this.slots.get(playerID);
+    if (!slot || !slot.alive) return;
+    slot.alive = false;
+    this.writePlayerDataRow(slot);
+  }
+
+  /**
    * Request the texture layer for a slot's flag (called once at slot creation).
    * If the image is already loaded the layer index is set immediately; otherwise
    * the slot joins a wait list and is updated when the image arrives.

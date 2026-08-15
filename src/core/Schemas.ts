@@ -53,7 +53,8 @@ export type Intent =
   | KickPlayerIntent
   | TogglePauseIntent
   | UpdateGameConfigIntent
-  | ToggleGameStartTimer;
+  | ToggleGameStartTimer
+  | EliminateNationIntent;
 
 export type AttackIntent = z.infer<typeof AttackIntentSchema>;
 export type CancelAttackIntent = z.infer<typeof CancelAttackIntentSchema>;
@@ -397,6 +398,8 @@ export const GameConfigSchema = z.object({
   // that only know publicIds at create_game); resolved to clientID at lookup.
   nameRevealPublicIds: z.string().array().max(200).optional(),
   waterNukes: z.boolean().nullable().optional(),
+  pauseAfterSpawn: z.boolean().nullable().optional(),
+  eliminateNations: z.number().int().min(1).max(20).nullable().optional(),
   randomSpawn: z.boolean(),
   maxPlayers: z.number().optional(),
   // OFM: allowlist of publicIds allowed to join (admin-only, see create_game).
@@ -618,6 +621,12 @@ export const ToggleGameStartTimerIntentSchema = z.object({
   type: z.literal("toggle_game_start_timer"),
 });
 
+export const EliminateNationIntentSchema = z.object({
+  type: z.literal("eliminate_nation"),
+  targetID: ID,
+});
+export type EliminateNationIntent = z.infer<typeof EliminateNationIntentSchema>;
+
 export const IntentSchema = z.discriminatedUnion("type", [
   AttackIntentSchema,
   CancelAttackIntentSchema,
@@ -644,6 +653,7 @@ export const IntentSchema = z.discriminatedUnion("type", [
   TogglePauseIntentSchema,
   UpdateGameConfigIntentSchema,
   ToggleGameStartTimerIntentSchema,
+  EliminateNationIntentSchema,
 ]);
 
 // StampedIntent = Intent with server-stamped clientID (used in turns and execution)

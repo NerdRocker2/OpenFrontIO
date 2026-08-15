@@ -156,6 +156,15 @@ export class WebGLFrameBuilder {
   // unit colors, and SAM-radius perspective work. Push it once the local
   // player's update arrives (may take several ticks during join).
   private localPlayerSmallID = 0;
+  // --- Elimi-nation fields ---
+  private readonly eliminatingNations = new Map<
+    string,
+    { x: number; y: number; eliminatedAt: number }
+  >();
+  private readonly permanentlyEliminatedNations = new Set<string>();
+  private static readonly FADE_DURATION_MS = 500;
+  private lastGameView: GameView | null = null;
+  private fadeRafId: number | null = null;
 
   constructor(private readonly view: MapRenderer) {
     this.palette = new Float32Array(PALETTE_SIZE * 2 * 4);
@@ -181,8 +190,50 @@ export class WebGLFrameBuilder {
    * change (e.g. toggling colorblind mode) so existing territories re-color
    * without re-syncing players, skins, or spawns.
    */
-  refreshPalette(gameView: GameView): void {
-    for (const p of gameView.players()) {
+  /** Remove the black spawn-phase overlay for a nation the player has chosen to
+   * eliminate. Stores the nation's position so the shrink animation can run
+   * independently of the game tick loop (the game is paused at this point).
+   */
+  markNationEliminated(nationID: string, x: number, y: number): void {
+    this.permanentlyEliminatedNations.add(nationID);
+    this.eliminatingNations.set(nationID, {
+      x,
+      y,
+      eliminatedAt: performance.now(),
+    });
+  }
+
+  /**
+   * Refresh only the spawn overlay and start the fade animation loop if
+   * any nations are currently fading out. Used when the game is paused so
+   * the retraction animates without waiting for the next game tick.
+   */
+  refreshSpawnOverlay(gameView: GameView): void {
+    this.lastGameView = gameView;
+    this.syncSpawnOverlay(gameView);
+    this.scheduleFadeAnimation();
+  }
+
+  /** Drive repeated overlay updates until all shrink animations complete. */
+  private scheduleFadeAnimation(): void {
+    if (this.fadeRafId !== null || this.eliminatingNations.size === 0) return;
+    this.fadeRafId = requestAnimationFrame(() => {
+      this.fadeRafId = null;
+      const gv = this.lastGameView;
+      if (!gv) return;
+      const now = performance.now();
+      for (const [id, data] of this.eliminatingNations) {
+        if (now - data.eliminatedAt >= WebGLFrameBuilder.FADE_DURATION_MS) {
+          this.eliminatingNations.delete(id);
+          this.view.hidePlayer(id);
+        }
+      }
+      this.syncSpawnOverlay(gv);
+      this.scheduleFadeAnimation();
+    });
+  }
+
+  refreshPalette(gameView: GameView): void {    for (const p of gameView.players()) {
       this.writePaletteEntry(p.smallID(), p.territoryColor(), p.borderColor());
     }
     this.view.updatePalette(this.palette);

@@ -914,6 +914,11 @@ export class GPURenderer {
     this.namePass.refreshNames(displayNames);
   }
 
+  /** Hide a player's name plate immediately (e.g. eliminated nation during spawn). */
+  hidePlayer(playerID: string): void {
+    this.namePass.hidePlayer(playerID);
+  }
+
   updateRelations(data: Uint8Array, size: number): void {
     this.borderPass.updateRelations(data, size);
     this.affiliationPalette.updateRelations(data, size);

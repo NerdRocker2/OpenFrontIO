@@ -1,7 +1,6 @@
 import type { Express } from "express";
 import express from "express";
 import fs from "fs";
-import { globSync } from "glob";
 import path from "path";
 import { logger } from "./Logger";
 import { getProprietaryDir, getResourcesDir } from "./PublicAssetManifest";
@@ -68,11 +67,12 @@ export function registerMusicRoutes(app: Express, baseDir: string): void {
       // Static files — proprietary takes precedence over resources.
       for (const dir of [proprietaryDir, resourcesDir]) {
         if (!fs.existsSync(dir)) continue;
-        for (const relativePath of globSync(MUSIC_GLOB, {
-          cwd: dir,
-          nodir: true,
-          posix: true,
-        })) {
+        const musicSubDir = path.join(dir, "sounds/music");
+        if (!fs.existsSync(musicSubDir)) continue;
+        const entries = fs
+          .readdirSync(musicSubDir)
+          .filter((f) => f.toLowerCase().endsWith(".mp3"));
+        for (const relativePath of entries.map((f) => `sounds/music/${f}`)) {
           const filename = path.posix.basename(relativePath);
           if (seen.has(filename)) continue;
           seen.add(filename);
