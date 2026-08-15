@@ -392,6 +392,52 @@ export class WebGLFrameBuilder {
     const me = gameView.myPlayer();
     const myTeam = me?.team() ?? null;
     const centers: SpawnCenter[] = [];
+
+    // Add Nation (pre-placed AI) players as black highlights so they
+    // are visually distinct from Bot tribes during spawn phase.
+    // Skip permanently eliminated nations (animating-out or fully gone).
+    for (const p of gameView.players()) {
+      if (!p.isPlayer() || p.type() !== PlayerType.Nation) continue;
+      if (this.permanentlyEliminatedNations.has(p.id())) continue;
+      const nd = p.nameLocation();
+      if (!nd) continue;
+      centers.push({
+        x: nd.x,
+        y: nd.y,
+        r: 0,
+        g: 0,
+        b: 0,
+        isSelf: false,
+        isTeammate: false,
+        isNation: true,
+      });
+    }
+
+    // Add shrinking-out nations. alphaMult is repurposed as a radius scale
+    // (1 = full size → 0 = fully retracted). The fragment shader uses it
+    // to compute the effective tile-check radius.
+    const now = performance.now();
+    for (const [, data] of this.eliminatingNations) {
+      const elapsed = now - data.eliminatedAt;
+      const scale = Math.max(
+        0,
+        1 - elapsed / WebGLFrameBuilder.FADE_DURATION_MS,
+      );
+      if (scale > 0) {
+        centers.push({
+          x: data.x,
+          y: data.y,
+          r: 0,
+          g: 0,
+          b: 0,
+          isSelf: false,
+          isTeammate: false,
+          isNation: true,
+          alphaMult: scale,
+        });
+      }
+    }
+
     for (const p of gameView.players()) {
       if (!p.isPlayer() || p.type() !== PlayerType.Human) continue;
       const spawnTile = p.state.spawnTile;
@@ -416,6 +462,7 @@ export class WebGLFrameBuilder {
           myTeam !== null &&
           p.team() === myTeam &&
           p.smallID() !== me?.smallID(),
+        isNation: false,
       });
     }
     this.view.updateSpawnOverlay(true, centers);
