@@ -136,39 +136,51 @@ export class SoundManager {
    * Chromium-based browsers only route hardware media keys to a page via the
    * Media Session API when an HTMLMediaElement is actively playing. The Web
    * Audio API (used by Howler) is not sufficient on its own.
+   *
+   * Called every time music starts so that if the first attempt was blocked by
+   * the browser's autoplay policy (common when the game starts via a WebSocket
+   * message rather than a direct user gesture), subsequent calls — triggered
+   * by user-initiated actions such as spawning or volume adjustment — will
+   * succeed and claim the media session.
    */
   private ensureMediaSessionAnchor(): void {
-    if (this.mediaSessionAnchor) return;
     if (typeof document === "undefined" || typeof URL === "undefined") return;
     try {
-      // Minimal 1-sample, 8-bit, mono, 8 kHz WAV — just enough audio to keep
-      // an HTMLMediaElement in the "playing" state at zero volume.
-      const bytes = new Uint8Array([
-        0x52, 0x49, 0x46, 0x46, 0x25, 0x00, 0x00, 0x00, // RIFF + size (37)
-        0x57, 0x41, 0x56, 0x45,                         // "WAVE"
-        0x66, 0x6d, 0x74, 0x20, 0x10, 0x00, 0x00, 0x00, // "fmt " + 16
-        0x01, 0x00,                                      // PCM
-        0x01, 0x00,                                      // 1 channel
-        0x40, 0x1f, 0x00, 0x00,                         // 8000 Hz
-        0x40, 0x1f, 0x00, 0x00,                         // 8000 bytes/sec
-        0x01, 0x00,                                      // block align
-        0x08, 0x00,                                      // 8 bits/sample
-        0x64, 0x61, 0x74, 0x61, 0x01, 0x00, 0x00, 0x00, // "data" + 1 byte
-        0x80,                                            // silence
-      ]);
-      this.mediaSessionAnchorUrl = URL.createObjectURL(
-        new Blob([bytes], { type: "audio/wav" }),
-      );
-      this.mediaSessionAnchor = document.createElement("audio");
-      this.mediaSessionAnchor.src = this.mediaSessionAnchorUrl;
-      this.mediaSessionAnchor.loop = true;
-      this.mediaSessionAnchor.volume = 0;
-      document.body.appendChild(this.mediaSessionAnchor);
-      this.mediaSessionAnchor.play().then(() => {
-        console.log("SoundManager: media session anchor playing");
-      }).catch((err) => {
-        console.warn("SoundManager: media session anchor failed to play:", err);
-      });
+      if (!this.mediaSessionAnchor) {
+        // Minimal 1-sample, 8-bit, mono, 8 kHz WAV — just enough audio to keep
+        // an HTMLMediaElement in the "playing" state at zero volume.
+        const bytes = new Uint8Array([
+          0x52, 0x49, 0x46, 0x46, 0x25, 0x00, 0x00, 0x00, // RIFF + size (37)
+          0x57, 0x41, 0x56, 0x45,                         // "WAVE"
+          0x66, 0x6d, 0x74, 0x20, 0x10, 0x00, 0x00, 0x00, // "fmt " + 16
+          0x01, 0x00,                                      // PCM
+          0x01, 0x00,                                      // 1 channel
+          0x40, 0x1f, 0x00, 0x00,                         // 8000 Hz
+          0x40, 0x1f, 0x00, 0x00,                         // 8000 bytes/sec
+          0x01, 0x00,                                      // block align
+          0x08, 0x00,                                      // 8 bits/sample
+          0x64, 0x61, 0x74, 0x61, 0x01, 0x00, 0x00, 0x00, // "data" + 1 byte
+          0x80,                                            // silence
+        ]);
+        this.mediaSessionAnchorUrl = URL.createObjectURL(
+          new Blob([bytes], { type: "audio/wav" }),
+        );
+        this.mediaSessionAnchor = document.createElement("audio");
+        this.mediaSessionAnchor.src = this.mediaSessionAnchorUrl;
+        this.mediaSessionAnchor.loop = true;
+        this.mediaSessionAnchor.volume = 0;
+        document.body.appendChild(this.mediaSessionAnchor);
+      }
+      // Re-try play every time this is called: the first attempt may have been
+      // blocked by the autoplay policy (no user gesture yet). Calling play()
+      // on an already-playing element is a no-op, so this is always safe.
+      if (this.mediaSessionAnchor.paused) {
+        this.mediaSessionAnchor.play().then(() => {
+          console.log("SoundManager: media session anchor playing");
+        }).catch((err) => {
+          console.warn("SoundManager: media session anchor blocked (will retry on next play):", err);
+        });
+      }
     } catch (err) {
       console.warn("SoundManager: failed to create media session anchor:", err);
     }
@@ -306,6 +318,11 @@ export class SoundManager {
       this.backgroundMusic.forEach((track) => {
         track.volume(this.backgroundMusicVolume);
       });
+      // Volume slider interaction is a confirmed user gesture: retry the anchor
+      // in case it was blocked by autoplay policy on the initial attempt.
+      if (this.backgroundMusicVolume > 0) {
+        this.ensureMediaSessionAnchor();
+      }
     });
   }
 
