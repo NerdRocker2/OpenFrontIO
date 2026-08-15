@@ -2,6 +2,11 @@ import { EventBus, GameEvent } from "../core/EventBus";
 import { PlayerBuildableUnitType, UnitType } from "../core/game/Game";
 import { UserSettings } from "../core/game/UserSettings";
 import { Platform } from "./Platform";
+import {
+  MusicNextTrackEvent,
+  MusicPrevTrackEvent,
+  MusicTogglePauseEvent,
+} from "./sound/Sounds";
 import { UIState } from "./UIState";
 import { ReplaySpeedMultiplier } from "./utilities/ReplaySpeedMultiplier";
 import { GameView, UnitView } from "./view";
@@ -332,6 +337,27 @@ export class InputHandler {
     this.addKeybindAndEvent("Shift+KeyD", () => {
       this.eventBus.emit(new TogglePerformanceOverlayEvent());
     });
+    this.addKeybindAndEvent(
+      this.keybinds.musicTogglePause,
+      () => {
+        this.eventBus.emit(new MusicTogglePauseEvent());
+      },
+      (e: KeyboardEvent) => !e.repeat,
+    );
+    this.addKeybindAndEvent(
+      this.keybinds.musicPrevTrack,
+      () => {
+        this.eventBus.emit(new MusicPrevTrackEvent());
+      },
+      (e: KeyboardEvent) => !e.repeat,
+    );
+    this.addKeybindAndEvent(
+      this.keybinds.musicNextTrack,
+      () => {
+        this.eventBus.emit(new MusicNextTrackEvent());
+      },
+      (e: KeyboardEvent) => !e.repeat,
+    );
     this.addKeybindAndEvent(this.keybinds.toggleView, () => {
       this.alternateView = false;
       this.eventBus.emit(new AlternateViewEvent(false));
@@ -731,6 +757,21 @@ export class InputHandler {
           item[1].handler(e);
         }
       }
+
+      // Media hardware keys ΓÇö not configurable via keybinds, handled directly.
+      if (!e.repeat) {
+        if (e.code === "MediaPlayPause") {
+          e.preventDefault();
+          this.eventBus.emit(new MusicTogglePauseEvent());
+        } else if (e.code === "MediaTrackPrevious") {
+          e.preventDefault();
+          this.eventBus.emit(new MusicPrevTrackEvent());
+        } else if (e.code === "MediaTrackNext") {
+          e.preventDefault();
+          this.eventBus.emit(new MusicNextTrackEvent());
+        }
+      }
+
       this.activeKeys.delete(e.code);
 
       // Reset crosshair when Shift is released (unless selection box or multi-selection still active)

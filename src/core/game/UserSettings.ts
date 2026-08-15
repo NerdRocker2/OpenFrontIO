@@ -52,6 +52,9 @@ export function getDefaultKeybinds(isMac: boolean): Record<string, string> {
     gameSpeedUp: "Period",
     gameSpeedDown: "Comma",
     altKey: "AltLeft",
+    musicTogglePause: "Backslash",
+    musicPrevTrack: "BracketLeft",
+    musicNextTrack: "BracketRight",
   };
 }
 
