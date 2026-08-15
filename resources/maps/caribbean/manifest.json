@@ -141,7 +141,7 @@
       "name": "Tobago"
     }
   ],
-  "categories": ["new", "north_america"],
+  "categories": ["north_america"],
   "id": "Caribbean",
   "map": {
     "height": 1808,
@@ -312,7 +312,7 @@
       "name": "Curaçao"
     },
     {
-      "coordinates": [3185, 13],
+      "coordinates": [2235, 2],
       "flag": "bm",
       "name": "Bermuda"
     },
@@ -332,5 +332,6 @@
       "name": "San Andres"
     }
   ],
+  "themes": ["north_america"],
   "translation_key": "map.caribbean"
 }

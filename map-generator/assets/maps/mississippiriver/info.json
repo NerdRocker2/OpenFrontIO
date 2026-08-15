@@ -2,7 +2,7 @@
   "id": "MississippiRiver",
   "name": "Mississippi River",
   "translation_key": "map.mississippiriver",
-  "categories": ["new", "north_america"],
+  "categories": ["north_america"],
   "multiplayer_frequency": 3,
   "nations": [
     {
@@ -317,5 +317,6 @@
       "name": "Round Lake",
       "flag": "Mississippi"
     }
-  ]
+  ],
+  "themes": ["north_america"]
 }

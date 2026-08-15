@@ -22,6 +22,7 @@ const emojiIcon = assetUrl("images/EmojiIconWhite.svg");
 const exitIcon = assetUrl("images/ExitIconWhite.svg");
 const mouseIcon = assetUrl("images/MouseIconWhite.svg");
 const ninjaIcon = assetUrl("images/NinjaIconWhite.svg");
+const nukeIcon = assetUrl("images/NukeIconWhite.svg");
 const settingsIcon = assetUrl("images/SettingIconWhite.svg");
 const sirenIcon = assetUrl("images/SirenIconWhite.svg");
 const swordIcon = assetUrl("images/SwordIconWhite.svg");
@@ -115,12 +116,17 @@ export class SettingsModal extends LitElement implements Controller {
   }
 
   private pauseGame(pause: boolean) {
+    // CrazyGames: report gameplay as stopped whenever the settings menu is open,
+    // and resumed when it closes — unless the game was already paused when opened.
+    if (pause) {
+      crazyGamesSDK.gameplayStop();
+    } else if (!this.wasPausedWhenOpened) {
+      crazyGamesSDK.gameplayStart();
+    }
+
+    // Only pause the simulation itself when we own the pause (singleplayer or
+    // lobby creator).
     if (this.shouldPause && !this.wasPausedWhenOpened) {
-      if (pause) {
-        crazyGamesSDK.gameplayStop();
-      } else {
-        crazyGamesSDK.gameplayStart();
-      }
       this.eventBus.emit(new PauseGameIntentEvent(pause));
     }
   }
@@ -158,6 +164,14 @@ export class SettingsModal extends LitElement implements Controller {
 
   private onToggleCursorCostLabelButtonClick() {
     this.userSettings.toggleCursorCostLabel();
+    this.requestUpdate();
+  }
+
+  private onNukeAllianceSafetyDurationChange(event: Event) {
+    const duration = parseInt((event.target as HTMLInputElement).value, 10);
+    this.userSettings.setNukeAllianceSafetyDuration(
+      isNaN(duration) ? 0 : duration,
+    );
     this.requestUpdate();
   }
 
@@ -533,6 +547,42 @@ export class SettingsModal extends LitElement implements Controller {
                   : translateText("user_setting.off")}
               </div>
             </button>
+
+            <div
+              class="flex gap-3 items-center w-full text-left p-3 hover:bg-slate-700 rounded-sm text-white transition-colors"
+            >
+              <img src=${nukeIcon} alt="" width="20" height="20" />
+              <div class="flex-1">
+                <div class="font-medium">
+                  ${translateText("user_setting.nuke_alliance_safety_label")}
+                </div>
+                <div class="text-sm text-slate-400">
+                  ${translateText("user_setting.nuke_alliance_safety_desc")}
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="30"
+                  step="1"
+                  .value=${this.userSettings.nukeAllianceSafetyDuration()}
+                  @input=${this.onNukeAllianceSafetyDurationChange}
+                  class="w-full border border-slate-500 rounded-lg"
+                />
+              </div>
+              <div class="text-sm text-slate-400">
+                ${this.userSettings.nukeAllianceSafetyDuration() > 0
+                  ? translateText(
+                      "user_setting.nuke_alliance_safety_duration",
+                      {
+                        count: this.userSettings.nukeAllianceSafetyDuration(),
+                        seconds: (
+                          this.userSettings.nukeAllianceSafetyDuration() / 10
+                        ).toFixed(1),
+                      },
+                    )
+                  : translateText("user_setting.off")}
+              </div>
+            </div>
 
             <button
               class="flex gap-3 items-center w-full text-left p-3 hover:bg-slate-700 rounded-sm text-white transition-colors"

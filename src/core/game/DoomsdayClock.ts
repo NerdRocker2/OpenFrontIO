@@ -22,53 +22,60 @@ export const DOOMSDAY_CLOCK_SPEEDS: DoomsdayClockSpeed[] = [
 ];
 
 interface WaveSchedule {
-  /** Flat 0% for this long at the very start (the one grace period). */
+  /** Flat 0% for this long at the very start: a COMBAT-ONLY window — the clock
+   *  does not touch real players early; eliminations there come from fighting. */
   graceSeconds: number;
-  /** Each wave grows its share up linearly over this long. */
-  rampSeconds: number;
-  /** Flat hold after each ramp before the next one starts. */
-  pauseSeconds: number;
+  /** Per-wave: wave i grows its share up linearly over rampSeconds[i]. */
+  rampSeconds: number[];
+  /** Per-wave: flat hold after wave i's ramp before the next one starts. */
+  pauseSeconds: number[];
   /** Share (basis points, 100 = 1%) reached at the end of each ramp, ascending. */
   levels: number[];
 }
 
-// Grace once, then a repeating cycle of [ramp up over rampSeconds] + [hold for
-// pauseSeconds]. The share rises linearly during each ramp and is flat during
-// the grace and every pause. Easy to tune: change grace, ramp, pause, or levels.
-// Same levels everywhere (the ofstats FFA territory median, then a final 55%
-// squeeze); the presets only change the pace. The median run is 3/5/10/20/30%;
-// normal hits it dead on at 10/15/20/25/30 min. The 6th wave (55%) only one side
-// can hold, so, together with the crown exemption, it forces out everyone but
-// the leader for a single winner. slow is ~20% slower, fast ~30% faster, very
-// fast 50% faster.
-const LEVELS = [300, 500, 1000, 2000, 3000, 5500]; // 3, 5, 10, 20, 30, 55%
+// Grace once (a long COMBAT-ONLY window — 0% bar, the clock ignores everyone),
+// then per wave a [ramp up over rampSeconds[i]] + [hold for pauseSeconds[i]]. The
+// share rises linearly during each ramp and is flat during the grace and pauses.
+//
+// Design: the clock is a STALEMATE-BREAKER, not an early-game culler. It stays at
+// 0% for the first 10 minutes (combat decides the early game), then climbs to 35%
+// by the preset's cap.
+//
+// Ceiling and steps come from 85 tournament games: the runner-up's share at game
+// end has never exceeded 21.6%, so a bar above ~16% catches the same players while
+// a higher one climbs past the leader's own share. Steps stay small because half
+// the players alive at the end hold under 0.4% of the map.
+const LEVELS = [200, 400, 700, 1100, 1700, 2500, 3500]; // 2/4/7/11/17/25/35%
 const SCHEDULES: Record<DoomsdayClockSpeed, WaveSchedule> = {
-  // grace 5:30, 4:30 ramps + 30s pauses -> 3/5/10/20/30/55% at 10/15/20/25/30/35 min.
+  // grace 10:00, then seven 168s ramps + 54s pauses -> 35% at 35:00.
   normal: {
-    graceSeconds: 330,
-    rampSeconds: 270,
-    pauseSeconds: 30,
+    graceSeconds: 600,
+    rampSeconds: [168, 168, 168, 168, 168, 168, 168],
+    pauseSeconds: [54, 54, 54, 54, 54, 54, 0],
     levels: LEVELS,
   },
-  // grace 6:30, 5:30 ramps -> reaches at 12/18/24/30/36/42 min.
+  // grace 10:00, then seven 240s ramps + 70s pauses -> 35% at 45:00.
   slow: {
-    graceSeconds: 390,
-    rampSeconds: 330,
-    pauseSeconds: 30,
+    graceSeconds: 600,
+    rampSeconds: [240, 240, 240, 240, 240, 240, 240],
+    pauseSeconds: [70, 70, 70, 70, 70, 70, 0],
     levels: LEVELS,
   },
-  // grace 4:30, 2:50 ramps -> reaches at 7:20/10:40/14/17:20/20:40/24 min.
+  // grace 10:00, then seven 102s ramps + 31s pauses -> 2/4/7/11/17/25/35% at
+  // 11:42/13:55/16:08/18:21/20:34/22:47/25:00 — the final bar lands exactly on a
+  // 25-minute cap, so it has the whole endgame to act rather than arriving at the
+  // buzzer, which is what a ceiling reached only at the cap amounts to.
   fast: {
-    graceSeconds: 270,
-    rampSeconds: 170,
-    pauseSeconds: 30,
+    graceSeconds: 600,
+    rampSeconds: [102, 102, 102, 102, 102, 102, 102],
+    pauseSeconds: [31, 31, 31, 31, 31, 31, 0],
     levels: LEVELS,
   },
-  // grace 3:00, 2:00 ramps -> reaches at 5/7:30/10/12:30/15/17:30 min.
+  // grace 10:00, then seven 36s ramps + 8s pauses -> 35% at 15:00.
   veryfast: {
-    graceSeconds: 180,
-    rampSeconds: 120,
-    pauseSeconds: 30,
+    graceSeconds: 600,
+    rampSeconds: [36, 36, 36, 36, 36, 36, 36],
+    pauseSeconds: [8, 8, 8, 8, 8, 8, 0],
     levels: LEVELS,
   },
 };
@@ -88,20 +95,32 @@ function requiredBasisPoints(
 ): number {
   const s = schedule(speed);
   if (elapsed <= s.graceSeconds) return 0;
-  const cycle = s.rampSeconds + s.pauseSeconds;
-  const t = elapsed - s.graceSeconds;
-  const i = Math.floor(t / cycle);
-  if (i >= s.levels.length) return s.levels[s.levels.length - 1];
-  const into = t - i * cycle;
-  const prev = i === 0 ? 0 : s.levels[i - 1];
-  const target = s.levels[i];
-  if (into >= s.rampSeconds) return target; // in the pause: hold
-  return prev + Math.floor(((target - prev) * into) / s.rampSeconds);
+  let t = elapsed - s.graceSeconds;
+  let prev = 0;
+  for (let i = 0; i < s.levels.length; i++) {
+    const ramp = s.rampSeconds[i];
+    const target = s.levels[i];
+    if (t < ramp) return prev + Math.floor(((target - prev) * t) / ramp); // ramping
+    t -= ramp;
+    if (t < s.pauseSeconds[i]) return target; // in the pause: hold
+    t -= s.pauseSeconds[i];
+    prev = target;
+  }
+  return s.levels[s.levels.length - 1];
 }
 
 /**
- * Base minimum tiles one player must own at `elapsed` game seconds. One floored
- * integer ratio, so every client agrees.
+ * Minimum tiles one SIDE must hold at `elapsed` game seconds — a solo player in
+ * FFA, a whole team's combined territory in team modes. The bar is identical
+ * for every side regardless of headcount: the clock's job is to shrink the
+ * number of viable sides (floor(100 / wave%) can be above the bar at once — two
+ * at the final 35% wave, so the bar narrows the field but no longer forces a
+ * single winner by arithmetic alone; territory rot is what closes out the last
+ * pair), and elimination happens at side
+ * granularity, so scaling by member count only distorts it — a headcount-
+ * scaled bar saturated at "hold the whole map" for big teams the moment the
+ * grace ended, and dropped whenever a teammate died. One floored integer
+ * ratio, so every client agrees.
  */
 export function doomsdayClockRequiredTiles(
   speed: DoomsdayClockSpeed,
@@ -110,22 +129,6 @@ export function doomsdayClockRequiredTiles(
 ): number {
   if (land <= 0) return 0;
   return Math.floor((requiredBasisPoints(speed, elapsed) * land) / 10000);
-}
-
-/**
- * Threshold a whole side must hold: the base per-player share scaled by the
- * side's headcount, so a team of N must hold N× what a solo player holds (FFA
- * sides are size 1, i.e. unscaled). Capped at the whole map. Shared by the sim
- * and the HUD so the two always agree.
- */
-export function doomsdayClockSideRequiredTiles(
-  speed: DoomsdayClockSpeed,
-  land: number,
-  elapsed: number,
-  sideSize: number,
-): number {
-  const base = doomsdayClockRequiredTiles(speed, land, elapsed);
-  return Math.min(land, base * Math.max(1, sideSize));
 }
 
 export interface DoomsdayClockWaveState {
@@ -137,6 +140,8 @@ export interface DoomsdayClockWaveState {
   growing: boolean;
   /** Seconds until the next ramp begins (0 while growing or once done). */
   secondsToNextGrowth: number;
+  /** Seconds until the current rise reaches its target level (0 unless growing). */
+  secondsToTarget: number;
   /** Within 5s before or after a ramp starting (the orange cue window). */
   waveFlash: boolean;
   /** True once the final level has been reached. */
@@ -153,7 +158,6 @@ export function doomsdayClockWaveState(
 ): DoomsdayClockWaveState {
   const s = schedule(speed);
   const currentPercent = requiredBasisPoints(speed, elapsed) / 100;
-  const cycle = s.rampSeconds + s.pauseSeconds;
   const n = s.levels.length;
   const last = s.levels[n - 1] / 100;
 
@@ -164,36 +168,51 @@ export function doomsdayClockWaveState(
       targetPercent: s.levels[0] / 100,
       growing: false,
       secondsToNextGrowth: s.graceSeconds - elapsed,
+      secondsToTarget: 0,
       waveFlash: s.graceSeconds - elapsed <= 5,
       done: false,
     };
   }
 
-  const t = elapsed - s.graceSeconds;
-  const i = Math.floor(t / cycle);
-  if (i >= n) {
-    return {
-      currentPercent,
-      targetPercent: last,
-      growing: false,
-      secondsToNextGrowth: 0,
-      waveFlash: false,
-      done: true,
-    };
+  // Walk the per-wave ramp/pause segments to locate the current wave.
+  let t = elapsed - s.graceSeconds;
+  for (let i = 0; i < n; i++) {
+    const ramp = s.rampSeconds[i];
+    const pause = s.pauseSeconds[i];
+    const isLast = i === n - 1;
+    if (t < ramp) {
+      return {
+        currentPercent,
+        targetPercent: s.levels[i] / 100,
+        growing: true,
+        secondsToNextGrowth: 0,
+        secondsToTarget: ramp - t, // reaches this wave's level when the ramp ends
+        waveFlash: t <= 5, // just started ramping
+        done: false,
+      };
+    }
+    t -= ramp;
+    if (t < pause) {
+      return {
+        currentPercent,
+        targetPercent: (isLast ? s.levels[i] : s.levels[i + 1]) / 100,
+        growing: false,
+        secondsToNextGrowth: isLast ? 0 : pause - t,
+        secondsToTarget: 0,
+        waveFlash: !isLast && pause - t <= 5, // next ramp imminent
+        done: isLast,
+      };
+    }
+    t -= pause;
   }
-
-  const into = t - i * cycle;
-  const growing = into < s.rampSeconds;
-  const isLast = i === n - 1;
-  const nextRampStart = s.graceSeconds + (i + 1) * cycle;
   return {
     currentPercent,
-    targetPercent: (growing || isLast ? s.levels[i] : s.levels[i + 1]) / 100,
-    growing,
-    secondsToNextGrowth: growing || isLast ? 0 : nextRampStart - elapsed,
-    // 5s into a ramp (just started) or 5s before the next ramp begins.
-    waveFlash: into <= 5 || (!isLast && nextRampStart - elapsed <= 5),
-    done: isLast && !growing,
+    targetPercent: last,
+    growing: false,
+    secondsToNextGrowth: 0,
+    secondsToTarget: 0,
+    waveFlash: false,
+    done: true,
   };
 }
 
@@ -203,26 +222,141 @@ export interface DoomsdayClockDrainConfig {
   drainRampSeconds: number;
 }
 
+/** Upper bound (exclusive) of both rot noise fields, so callers share a scale. */
+export const ROT_NOISE_SCALE = 1 << 16;
+
+// R2 low-discrepancy lattice constants (inverse plastic-number powers) at 2^32.
+const R2_X = 3242174889;
+const R2_Y = 2447445413;
+
 /**
- * Troops a skulled side loses this second: a LINEAR ramp from drainStartPercent
- * up to drainMaxPercent over drainRampSeconds. It is a percentage of the side's
- * MAX troop capacity (not current), so it outpaces troop income from the first
- * second and accelerates as it grows, driving the side to zero in ~55s from full
- * troops (sooner with fewer troops or a shrinking territory). The caller caps it
- * at the side's current troops (removeTroops does, and the HUD shows
- * min(current, this)). Shared by the sim and the HUD.
+ * Even, blue-noise-like per-tile value in [0, ROT_NOISE_SCALE): used to place
+ * scattered pinholes. Taking the lowest values gives points that are near-evenly
+ * spaced, where a plain hash clumps — measured on a 60x60 grid, 0% of picks touch
+ * a neighbour here against 32% for white noise.
+ *
+ * Deliberately NOT avalanched: the evenness is the lattice being linear in x and
+ * y, and hashing the result measures worse than white noise (36% touching).
+ */
+export function rotSpeckleNoise(x: number, y: number, salt: number): number {
+  const h =
+    (Math.imul(x, R2_X) + Math.imul(y, R2_Y) + Math.imul(salt, 0x9e3779b9)) >>>
+    0;
+  return (h >>> 16) % ROT_NOISE_SCALE;
+}
+
+/**
+ * Unstructured per-tile value in [0, ROT_NOISE_SCALE): used to order the rot
+ * front. This one MUST be hashed. The lattice above is striped, and ranking an
+ * advancing front by it walks along a stripe and grows a straight 80x21 filament
+ * instead of a shape.
+ */
+export function rotFrontNoise(tile: number, salt: number): number {
+  let h = (Math.imul(tile, 0x27d4eb2d) ^ Math.imul(salt, 0x9e3779b9)) | 0;
+  h ^= h >>> 15;
+  h = Math.imul(h, 0x2545f491);
+  h ^= h >>> 13;
+  return (h >>> 16) % ROT_NOISE_SCALE;
+}
+
+export interface DoomsdayClockFloorConfig {
+  /** Where the troop floor settles, as a percent of max (the long-run floor). */
+  drainFloorPercent: number;
+  /** Where the troop floor STARTS, as a percent of max, before it decays. */
+  floorStartPercent: number;
+  /** How long the floor takes to decay from the start down to drainFloorPercent. */
+  floorDecaySeconds: number;
+}
+
+/**
+ * Troop floor `secondsPastWarn` into the decay: linear from floorStartPercent down
+ * to drainFloorPercent over floorDecaySeconds, flat after. Integer-only.
+ */
+export function doomsdayClockTroopFloor(
+  maxTroops: number,
+  secondsPastWarn: number,
+  cfg: DoomsdayClockFloorConfig,
+): number {
+  const end = cfg.drainFloorPercent;
+  const span = cfg.floorStartPercent - end;
+  const t = Math.max(0, secondsPastWarn);
+  const pct =
+    span > 0 && cfg.floorDecaySeconds > 0 && t < cfg.floorDecaySeconds
+      ? cfg.floorStartPercent - Math.floor((span * t) / cfg.floorDecaySeconds)
+      : end;
+  return Math.floor((maxTroops * pct) / 100);
+}
+
+// Fixed-point scale for the convex drain curve. (t/r)^exponent is evaluated as a
+// fraction of this via repeated integer multiply, so the ramp never touches a
+// float and lands bit-identically on every client in the lockstep sim.
+const DRAIN_CURVE_SCALE = 1_000_000;
+
+/**
+ * (t/r)^exponent as a fraction of DRAIN_CURVE_SCALE, integer-only. Squares down
+ * from 1.0 with a floored multiply per step; t <= r and exponent >= 2, so the
+ * intermediates stay well inside Number.MAX_SAFE_INTEGER.
+ */
+function drainCurveFraction(t: number, r: number, exponent: number): number {
+  const ratio = Math.floor((t * DRAIN_CURVE_SCALE) / r); // in [0, SCALE]
+  let acc = DRAIN_CURVE_SCALE; // represents 1.0
+  for (let i = 0; i < exponent; i++) {
+    acc = Math.floor((acc * ratio) / DRAIN_CURVE_SCALE);
+  }
+  return acc;
+}
+
+/**
+ * Troops (or warship health) a skulled side loses this second: a ramp from
+ * drainStartPercent up to drainMaxPercent over drainRampSeconds, as a percentage
+ * of MAX capacity/health (not current), so it outpaces income from the first
+ * second. `curveExponent` shapes the ramp: 1 = LINEAR (troops → ~1:30 to zero
+ * from full); >1 = CONVEX (warships → stays near the gentle start for most of the
+ * ramp, then spikes hard, so a ship caught early lasts ~as long as troops but a
+ * side at full attrition loses ships in ~2s). The caller caps it at the side's
+ * current value. Integer-only and floored throughout — no floats — so the drain
+ * is deterministic across clients (required by the lockstep sim).
  */
 export function doomsdayClockDrain(
   maxTroops: number,
   secondsPastWarn: number,
   cfg: DoomsdayClockDrainConfig,
+  curveExponent = 1,
 ): number {
   const t = Math.max(0, secondsPastWarn);
   const r = cfg.drainRampSeconds;
   const span = cfg.drainMaxPercent - cfg.drainStartPercent;
-  const pct =
-    r <= 0 || t >= r
-      ? cfg.drainMaxPercent
-      : cfg.drainStartPercent + Math.floor((span * t) / r);
+  let pct = cfg.drainMaxPercent;
+  if (r > 0 && t < r) {
+    // Linear is the exact integer form the sim has always used; the convex case
+    // reshapes it through the fixed-point curve above (still integer-only).
+    const grown =
+      curveExponent <= 1
+        ? Math.floor((span * t) / r)
+        : Math.floor(
+            (span * drainCurveFraction(t, r, curveExponent)) /
+              DRAIN_CURVE_SCALE,
+          );
+    pct = cfg.drainStartPercent + grown;
+  }
   return Math.max(1, Math.floor((maxTroops * pct) / 100));
+}
+
+/**
+ * Tiles rot takes per second: the deadline quota ceil(tilesLeft / secondsLeft).
+ * Self-correcting, so it holds the rotDeathSeconds deadline whatever the size and
+ * however late rot started. Shared so the HUD readout and the sim cannot drift.
+ *
+ * This is the steady quota. The grainy opening can briefly exceed it (it runs
+ * ahead and the quota absorbs it), so the readout understates the first few
+ * seconds rather than overstating the rest.
+ */
+export function doomsdayClockRotQuota(
+  tilesLeft: number,
+  secondsUnder: number,
+  cfg: { rotDeathSeconds: number },
+): number {
+  if (tilesLeft <= 0 || cfg.rotDeathSeconds <= 0) return 0;
+  const secondsLeft = Math.max(1, cfg.rotDeathSeconds - secondsUnder);
+  return Math.ceil(tilesLeft / secondsLeft);
 }

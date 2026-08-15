@@ -18,12 +18,15 @@ function makePlayerState(overrides: Partial<PlayerState> = {}): PlayerState {
     smallID: 1,
     isAlive: true,
     isDisconnected: false,
+    killedBy: null,
+    deathPosition: null,
     tilesOwned: 0,
     gold: 0,
     troops: 100,
     isTraitor: false,
     traitorRemainingTicks: 0,
     inDoomsdayClock: false,
+    isDecaying: false,
     markedDoomsdayClockTick: -1,
     betrayals: 0,
     hasSpawned: true,
@@ -66,6 +69,28 @@ describe("diffPlayerUpdate", () => {
     expect(diff.betrayals).toBe(1);
     expect(diff.isTraitor).toBe(true);
     expect(diff.hasSpawned).toBeUndefined();
+  });
+
+  it("carries a changed clanTag and stays quiet when it is unchanged", () => {
+    expect(
+      diffPlayerUpdate(
+        makePlayerUpdate({ clanTag: "ABCDE" }),
+        makePlayerUpdate({ clanTag: "ABCDE" }),
+      ),
+    ).toBeNull();
+    const diff = diffPlayerUpdate(
+      makePlayerUpdate({ clanTag: null }),
+      makePlayerUpdate({ clanTag: "ABCDE" }),
+    )!;
+    expect(diff.clanTag).toBe("ABCDE");
+  });
+
+  it("emits killedBy + deathPosition when a player is eliminated", () => {
+    const prev = makePlayerUpdate({ killedBy: null, deathPosition: null });
+    const next = makePlayerUpdate({ killedBy: "client-b", deathPosition: 3 });
+    const diff = diffPlayerUpdate(prev, next)!;
+    expect(diff.killedBy).toBe("client-b");
+    expect(diff.deathPosition).toBe(3);
   });
 
   it("ignores tilesOwned/gold/troops — they travel via packedPlayerUpdates", () => {
@@ -241,6 +266,16 @@ describe("packAttackTroopDeltas", () => {
 });
 
 describe("applyStateUpdate", () => {
+  it("applies killedBy + deathPosition on elimination", () => {
+    const target = makePlayerState();
+    applyStateUpdate(
+      target,
+      makePlayerUpdate({ killedBy: "client-b", deathPosition: 3 }),
+    );
+    expect(target.killedBy).toBe("client-b");
+    expect(target.deathPosition).toBe(3);
+  });
+
   it("applies every field from a full update", () => {
     const target = makePlayerState();
     const pu = makePlayerUpdate({
@@ -387,5 +422,73 @@ describe("diff + apply round-trip", () => {
     const v0 = makePlayerUpdate({ gold: 100n, playerType: PlayerType.Human });
     const v1 = makePlayerUpdate({ gold: 100n, playerType: PlayerType.Human });
     expect(diffPlayerUpdate(v0, v1)).toBeNull();
+  });
+});
+
+describe("diffPlayerUpdate — every scalar field must be wired up", () => {
+  // diffPlayerUpdate sends ONLY changed fields, so a field added to PlayerUpdate
+  // without a matching setIfDifferent() line is silently never transmitted: the
+  // client keeps its initial value forever. That is not a hypothetical -- it is
+  // exactly how `isDecaying` shipped broken (the red doomsday skull never lit,
+  // because the flag flipped in the sim and no update ever carried it).
+  //
+  // This walks every scalar field on a PlayerUpdate, flips it, and asserts the
+  // diff carries it and applyStateUpdate merges it. Non-scalars (arrays, nested
+  // objects) have bespoke comparators and are covered by the tests above.
+  const SKIP = new Set([
+    // Identity: never changes for a given player.
+    "type",
+    "id",
+    "smallID",
+    "clientID",
+    // Deliberately NOT diffed: these ride the packed transferable channel
+    // (GameUpdateViewData.packedPlayerUpdates) every tick instead. See the
+    // diffPlayerUpdate doc comment.
+    "tilesOwned",
+    "gold",
+    "troops",
+  ]);
+
+  function flip(value: unknown): unknown {
+    if (typeof value === "boolean") return !value;
+    if (typeof value === "number") return value + 7;
+    if (typeof value === "bigint") return value + 7n;
+    if (typeof value === "string") return value + "-changed";
+    return undefined; // not a scalar
+  }
+
+  const base = makePlayerUpdate({ id: "p1" });
+  const asRecord = base as unknown as Record<string, unknown>;
+  const scalars = Object.keys(base).filter(
+    (k) =>
+      !SKIP.has(k) && asRecord[k] !== null && flip(asRecord[k]) !== undefined,
+  );
+
+  it("covers a meaningful number of fields (guards the walk itself)", () => {
+    expect(scalars.length).toBeGreaterThan(8);
+  });
+
+  for (const key of scalars) {
+    it(`transmits a change to ${key}`, () => {
+      const next = { ...base, [key]: flip(asRecord[key]) } as PlayerUpdate;
+      const diff = diffPlayerUpdate(base, next);
+      expect(diff, `${key} produced no diff at all`).not.toBeNull();
+      expect(
+        Object.prototype.hasOwnProperty.call(diff, key),
+        `${key} is missing a setIfDifferent() line in diffPlayerUpdate`,
+      ).toBe(true);
+    });
+  }
+
+  it("merges isDecaying through to the client state", () => {
+    const state = makePlayerState({ isDecaying: false });
+    applyStateUpdate(state, { ...base, isDecaying: true } as PlayerUpdate);
+    expect(state.isDecaying).toBe(true);
+    // ...and a later update that omits it must not clobber it.
+    applyStateUpdate(state, {
+      type: GameUpdateType.Player,
+      id: "p1",
+    } as PlayerUpdate);
+    expect(state.isDecaying).toBe(true);
   });
 });

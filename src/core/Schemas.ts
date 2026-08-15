@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   ColorPaletteSchema,
   CosmeticNameSchema,
+  EffectTypeSchema,
   PatternDataSchema,
 } from "./CosmeticSchemas";
 import type { GameEvent } from "./EventBus";
@@ -15,13 +16,14 @@ import {
   GameMode,
   GameType,
   HumansVsNations,
+  MAX_UPGRADE_AMOUNT,
   Quads,
   RankedType,
   Trios,
   UnitType,
 } from "./game/Game";
-import { PlayerStatsSchema } from "./StatsSchemas";
-import { flattenedEmojiTable } from "./Util";
+import { ArchivedPlayerStatsSchema, PlayerStatsSchema } from "./StatsSchemas";
+import { flattenedEmojiTable, LOBBY_LABEL_MAX } from "./Util";
 
 export type GameID = string;
 export type ClientID = string;
@@ -49,7 +51,6 @@ export type Intent =
   | UpgradeStructureIntent
   | DeleteUnitIntent
   | KickPlayerIntent
-  | EliminateNationIntent
   | TogglePauseIntent
   | UpdateGameConfigIntent
   | ToggleGameStartTimer;
@@ -82,7 +83,6 @@ export type AllianceExtensionIntent = z.infer<
 >;
 export type DeleteUnitIntent = z.infer<typeof DeleteUnitIntentSchema>;
 export type KickPlayerIntent = z.infer<typeof KickPlayerIntentSchema>;
-export type EliminateNationIntent = z.infer<typeof EliminateNationIntentSchema>;
 export type TogglePauseIntent = z.infer<typeof TogglePauseIntentSchema>;
 export type UpdateGameConfigIntent = z.infer<
   typeof UpdateGameConfigIntentSchema
@@ -111,7 +111,8 @@ export type ServerMessage =
   | ServerDesyncMessage
   | ServerPrestartMessage
   | ServerErrorMessage
-  | ServerLobbyInfoMessage;
+  | ServerLobbyInfoMessage
+  | ServerNewLobbyMessage;
 
 export type ServerTurnMessage = z.infer<typeof ServerTurnMessageSchema>;
 export type ServerStartGameMessage = z.infer<
@@ -124,6 +125,7 @@ export type ServerErrorMessage = z.infer<typeof ServerErrorSchema>;
 export type ServerLobbyInfoMessage = z.infer<
   typeof ServerLobbyInfoMessageSchema
 >;
+export type ServerNewLobbyMessage = z.infer<typeof ServerNewLobbyMessageSchema>;
 export type ClientSendWinnerMessage = z.infer<typeof ClientSendWinnerSchema>;
 export type ClientSendLiveStatsMessage = z.infer<
   typeof ClientSendLiveStatsSchema
@@ -144,13 +146,66 @@ export type PlayerCosmeticRefs = z.infer<typeof PlayerCosmeticRefsSchema>;
 export type PlayerPattern = z.infer<typeof PlayerPatternSchema>;
 export type PlayerColor = z.infer<typeof PlayerColorSchema>;
 export type PlayerSkin = z.infer<typeof PlayerSkinSchema>;
+export type PlayerCrown = z.infer<typeof PlayerCrownSchema>;
+export type PlayerEffect = z.infer<typeof PlayerEffectSchema>;
 export type GameStartInfo = z.infer<typeof GameStartInfoSchema>;
 export type GameInfo = z.infer<typeof GameInfoSchema>;
 export type PublicGames = z.infer<typeof PublicGamesSchema>;
 export type PublicGameInfo = z.infer<typeof PublicGameInfoSchema>;
 export type PublicGameType = z.infer<typeof PublicGameTypeSchema>;
 
-export const PublicGameTypeSchema = z.enum(["ffa", "team", "special"]);
+export const PublicGameTypeSchema = z.enum([
+  "ffa",
+  "team",
+  "special",
+  "hosted",
+]);
+
+// Lobby types the master schedules from the map playlist. "hosted" is
+// excluded: those are player-created private lobbies that a subscriber has
+// listed publicly, and the host (not the master) controls their lifecycle.
+// Derived from PublicGameTypeSchema so a new lobby type is scheduled by
+// default and opting out is the explicit act.
+export const ScheduledPublicGameTypeSchema = PublicGameTypeSchema.exclude([
+  "hosted",
+]);
+export const SCHEDULED_PUBLIC_GAME_TYPES =
+  ScheduledPublicGameTypeSchema.options;
+export type ScheduledPublicGameType = z.infer<
+  typeof ScheduledPublicGameTypeSchema
+>;
+
+// Cluster-wide cap on subscriber-listed (hosted) lobbies, to prevent listing
+// spam. Workers reject listings past the cap; the master caps the broadcast
+// and delists any overflow as the authoritative backstop.
+export const MAX_HOSTED_LOBBIES = 10;
+
+// How long a lobby may stay publicly listed before it starts automatically,
+// so hosts can't sit on a listing indefinitely. Unlisting cancels the
+// deadline; relisting starts a fresh one.
+export const HOSTED_LOBBY_AUTO_START_MS = 5 * 60 * 1000;
+
+// Featured lobbies get a longer window. A scheduled event announced ahead of
+// time needs the listing to still be up when its audience arrives, and unlike a
+// subscriber sitting on a listing the host is an authenticated admin bot. Only
+// create_game can set it, so the ordinary deadline still governs every
+// player-hosted lobby.
+export const FEATURED_LOBBY_AUTO_START_MS = 10 * 60 * 1000;
+
+// Labels are capped by CODE POINT, matching sanitizeLobbyLabel. z.string().max()
+// counts UTF-16 code units, so it would reject a legal 48-emoji label (96 units)
+// before the sanitiser ever saw it.
+export const LobbyLabelSchema = z
+  .string()
+  .refine((v) => Array.from(v).length <= LOBBY_LABEL_MAX, {
+    message: `label must be at most ${LOBBY_LABEL_MAX} characters`,
+  });
+
+// Accent applied to a featured lobby's row. A closed set, not free-form CSS:
+// arbitrary styling in a shared list lets one lobby make every other row
+// unreadable.
+export const LobbyAccentSchema = z.enum(["gold", "blue", "green", "red"]);
+export type LobbyAccent = z.infer<typeof LobbyAccentSchema>;
 
 export const UsernameSchema = z
   .string()
@@ -168,6 +223,10 @@ const ClientInfoSchema = z.object({
   username: UsernameSchema,
   clanTag: ClanTagSchema,
   friends: z.array(z.string()).optional(),
+  // Plays under their server-validated account name (blue check in the
+  // lobby list). Never set on anonymized entries — the badge vouches for
+  // the exact display name.
+  verified: z.boolean().optional(),
 });
 
 export const GameInfoSchema = z.object({
@@ -178,19 +237,43 @@ export const GameInfoSchema = z.object({
   serverTime: z.number(),
   gameConfig: z.lazy(() => GameConfigSchema).optional(),
   publicGameType: PublicGameTypeSchema.optional(),
+  // Private lobbies only: whether the lobby is publicly listed. Server-owned
+  // (only /api/game/:id/listing sets it); carried in lobby info so the host
+  // UI stays in sync when the server delists (whitelist enabled, duplicate
+  // creator resolved by the master).
+  listed: z.boolean().optional(),
+  // Listed lobbies only: server timestamp when the lobby starts
+  // automatically (hosts can't sit on a public listing indefinitely).
+  autoStartAt: z.number().optional(),
+  // Featured lobbies only (admin bot). Echoed back so the creating bot can
+  // confirm the request took effect, the same way it checks `listed`.
+  label: LobbyLabelSchema.optional(),
+  accent: LobbyAccentSchema.optional(),
+  featured: z.boolean().optional(),
 });
 
+// Browser-facing lobby info. Master/worker-internal fields (the creator hash
+// used for the one-listed-lobby-per-creator check) live on
+// InternalGameInfoSchema in IPCBridgeSchema.ts, so client payloads cannot
+// carry them by construction.
 export const PublicGameInfoSchema = z.object({
   gameID: z.string(),
   numClients: z.number(),
   startsAt: z.number().optional(),
   gameConfig: z.lazy(() => GameConfigSchema).optional(),
   publicGameType: PublicGameTypeSchema,
+  // Featured lobbies only. Both optional so a client on an older build simply
+  // renders the map name as it does today.
+  label: LobbyLabelSchema.optional(),
+  accent: LobbyAccentSchema.optional(),
+  featured: z.boolean().optional(),
 });
 
 export const PublicGamesSchema = z.object({
   serverTime: z.number(),
-  games: z.record(PublicGameTypeSchema, z.array(PublicGameInfoSchema)),
+  // partialRecord: every consumer already treats buckets as optional, and it
+  // lets clients tolerate servers that don't send every lobby type.
+  games: z.partialRecord(PublicGameTypeSchema, z.array(PublicGameInfoSchema)),
 });
 
 // Wire message sent from server to lobby WebSocket clients.
@@ -199,7 +282,7 @@ export const PublicGamesSchema = z.object({
 export const PublicLobbyFullSchema = z.object({
   type: z.literal("full"),
   serverTime: z.number(),
-  games: z.record(PublicGameTypeSchema, z.array(PublicGameInfoSchema)),
+  games: z.partialRecord(PublicGameTypeSchema, z.array(PublicGameInfoSchema)),
 });
 
 export const PublicLobbyCountsSchema = z.object({
@@ -227,6 +310,9 @@ export interface ClientInfo {
   username: string;
   clanTag: string | null;
   friends?: ClientID[];
+  // Plays under their server-validated account name (blue check). Never set
+  // on anonymized entries.
+  verified?: boolean;
 }
 export enum LogSeverity {
   Debug = "DEBUG",
@@ -283,6 +369,7 @@ export const GameConfigSchema = z.object({
       isSAMsDisabled: z.boolean().optional(),
       isPeaceTime: z.boolean().optional(),
       isWaterNukes: z.boolean().optional(),
+      isDoomsdayClock: z.boolean().optional(),
     })
     .optional(),
   nations: z
@@ -310,13 +397,12 @@ export const GameConfigSchema = z.object({
   // that only know publicIds at create_game); resolved to clientID at lookup.
   nameRevealPublicIds: z.string().array().max(200).optional(),
   waterNukes: z.boolean().nullable().optional(),
-  pauseAfterSpawn: z.boolean().nullable().optional(),
-  eliminateNations: z.number().int().min(1).max(20).nullable().optional(),
   randomSpawn: z.boolean(),
   maxPlayers: z.number().optional(),
   // OFM: allowlist of publicIds allowed to join (admin-only, see create_game).
   allowedPublicIds: z.array(z.string()).max(200).optional(),
   maxTimerValue: z.number().int().min(1).max(120).nullable().optional(), // In minutes
+  customAllianceDuration: z.number().int().min(0).max(15).nullable().optional(), // In minutes; 0 disables alliances
   startDelay: z.number().int().min(0).max(600).nullable().optional(), // In seconds
   spawnImmunityDuration: z.number().int().min(0).nullable().optional(), // In ticks
   disabledUnits: z.enum(UnitType).array().optional(),
@@ -398,13 +484,17 @@ export const AttackIntentSchema = z.object({
 
 export const SpawnIntentSchema = z.object({
   type: z.literal("spawn"),
-  tile: z.number(),
+  // A TileRef indexes the typed-array terrain buffers, so it must be a
+  // non-negative integer. Fractional refs silently corrupt those lookups.
+  tile: z.number().int().nonnegative(),
 });
 
 export const BoatAttackIntentSchema = z.object({
   type: z.literal("boat"),
+  // Not .int(): troops are fractional throughout the sim (attackRatio *
+  // troops(), combat attrition), and the client sends the raw float.
   troops: z.number().nonnegative(),
-  dst: z.number(),
+  dst: z.number().int().nonnegative(),
 });
 
 export const AllianceRequestIntentSchema = z.object({
@@ -459,14 +549,16 @@ export const DonateTroopIntentSchema = z.object({
 export const BuildUnitIntentSchema = z.object({
   type: z.literal("build_unit"),
   unit: z.enum(UnitType),
-  tile: z.number(),
+  tile: z.number().int().nonnegative(),
   rocketDirectionUp: z.boolean().optional(),
+  amount: z.number().int().min(1).max(MAX_UPGRADE_AMOUNT).optional(),
 });
 
 export const UpgradeStructureIntentSchema = z.object({
   type: z.literal("upgrade_structure"),
   unit: z.enum(UnitType),
-  unitId: z.number(),
+  unitId: z.number().int().nonnegative(),
+  amount: z.number().int().min(1).max(MAX_UPGRADE_AMOUNT).optional(),
 });
 
 export const CancelAttackIntentSchema = z.object({
@@ -476,18 +568,18 @@ export const CancelAttackIntentSchema = z.object({
 
 export const CancelBoatIntentSchema = z.object({
   type: z.literal("cancel_boat"),
-  unitID: z.number(),
+  unitID: z.number().int().nonnegative(),
 });
 
 export const MoveWarshipIntentSchema = z.object({
   type: z.literal("move_warship"),
   unitIds: z.array(z.number().int()).nonempty(),
-  tile: z.number(),
+  tile: z.number().int().nonnegative(),
 });
 
 export const DeleteUnitIntentSchema = z.object({
   type: z.literal("delete_unit"),
-  unitId: z.number(),
+  unitId: z.number().int().nonnegative(),
 });
 
 export const QuickChatIntentSchema = z.object({
@@ -510,11 +602,6 @@ export const KickPlayerIntentSchema = z.object({
   // the server resolves the publicID to the live clientID. Exactly one is set.
   targetClientID: ID.optional(),
   targetPublicID: ID.optional(),
-});
-
-export const EliminateNationIntentSchema = z.object({
-  type: z.literal("eliminate_nation"),
-  targetID: ID,
 });
 
 export const TogglePauseIntentSchema = z.object({
@@ -554,7 +641,6 @@ export const IntentSchema = z.discriminatedUnion("type", [
   AllianceExtensionIntentSchema,
   DeleteUnitIntentSchema,
   KickPlayerIntentSchema,
-  EliminateNationIntentSchema,
   TogglePauseIntentSchema,
   UpdateGameConfigIntentSchema,
   ToggleGameStartTimerIntentSchema,
@@ -614,11 +700,34 @@ export const PlayerCosmeticRefsSchema = z.object({
   patternName: CosmeticNameSchema.optional(),
   patternColorPaletteName: z.string().optional(),
   skinName: CosmeticNameSchema.optional(),
+  crownName: CosmeticNameSchema.optional(),
+  // One selected effect per slot: key = slot (effectType for trails, nukeType for
+  // nuke explosions — see effectTypeForSlot), value = effect name.
+  effects: z.record(z.string(), CosmeticNameSchema).optional(),
+  // The player claims to be playing under their verified account username
+  // (renders the blue check next to the name). The game server keeps the
+  // claim only when the join name exactly matches the account's resolved
+  // display name from /users/@me (Worker join → verifiedBadgeAllowed).
+  verified: z.boolean().optional(),
 });
 
 export const PlayerSkinSchema = z.object({
   name: CosmeticNameSchema,
   url: z.string(),
+});
+
+export const PlayerCrownSchema = z.object({
+  name: CosmeticNameSchema,
+  url: z.string(),
+});
+
+// A resolved effect is just an identity: which effect, of which type. Its
+// attributes (the visual style) are resolved from the cosmetics catalog by
+// (effectType, name), so this needs no per-type variants — a new effectType
+// just becomes a new EFFECT_TYPES entry, no change here.
+export const PlayerEffectSchema = z.object({
+  name: CosmeticNameSchema,
+  effectType: EffectTypeSchema,
 });
 
 // Server converts refs to the actual cosmetics here
@@ -627,6 +736,12 @@ export const PlayerCosmeticsSchema = z.object({
   pattern: PlayerPatternSchema.optional(),
   color: PlayerColorSchema.optional(),
   skin: PlayerSkinSchema.optional(),
+  crown: PlayerCrownSchema.optional(),
+  // Resolved effects keyed by slot (effectType for trails, nukeType for nuke
+  // explosions).
+  effects: z.record(z.string(), PlayerEffectSchema).optional(),
+  // Plays under the verified account username — renders the blue check.
+  verified: z.boolean().optional(),
 });
 
 export const PlayerSchema = z.object({
@@ -636,14 +751,33 @@ export const PlayerSchema = z.object({
   cosmetics: PlayerCosmeticsSchema.optional(),
   isLobbyCreator: z.boolean().optional(),
   friends: z.array(ID).optional(),
+  // Server-stamped team slot for matchmade team games (index into the
+  // game's team list). Feeds deterministic team assignment, so it must be
+  // identical for every client (like clanTag/friends).
+  teamIndex: z.number().int().nonnegative().optional(),
 });
+
+// A purchased bot tribe name in use this game (active names are globally
+// unique, so the name alone identifies the tribe). Loose to mirror infra's
+// analytics-ingest schema — a field the API adds later flows through to the
+// record without a game-side change, instead of being silently stripped.
+export const TribeSchema = z
+  .object({
+    name: SafeString.min(1).max(64),
+  })
+  .loose();
+export type Tribe = z.infer<typeof TribeSchema>;
 
 export const GameStartInfoSchema = z.object({
   gameID: ID,
   lobbyCreatedAt: z.number(),
   visibleAt: z.number().optional(),
+  listed: z.boolean().optional(),
   config: GameConfigSchema,
   players: PlayerSchema.array(),
+  // Purchased bot tribe names in use this game (public games only). Rides
+  // the analytics record to infra at game end for owner appearance stats.
+  tribes: z.array(TribeSchema).max(100).optional(),
 });
 
 export const WinnerSchema = z
@@ -707,6 +841,14 @@ export const ServerLobbyInfoMessageSchema = z.object({
   myClientID: ID,
 });
 
+// Broadcast by a finished private game's server to every still-connected client
+// when the host starts a successor lobby, so the whole group can hop to the new
+// game without re-sharing the link. gameID is the freshly minted successor.
+export const ServerNewLobbyMessageSchema = z.object({
+  type: z.literal("new_lobby"),
+  gameID: ID,
+});
+
 export const ServerMessageSchema = z.discriminatedUnion("type", [
   ServerTurnMessageSchema,
   ServerPrestartMessageSchema,
@@ -715,6 +857,7 @@ export const ServerMessageSchema = z.discriminatedUnion("type", [
   ServerDesyncSchema,
   ServerErrorSchema,
   ServerLobbyInfoMessageSchema,
+  ServerNewLobbyMessageSchema,
 ]);
 
 //
@@ -738,6 +881,11 @@ export const PlayerLiveStatsSchema = z.object({
   gold: z.string(),
   isAlive: z.boolean(),
   team: z.string().nullable(),
+  // OFM live standings: the eliminator's clientID and the finishing place at
+  // elimination, both null while the player is still alive. Deterministic sim
+  // values, so clients agree on them for the majority vote.
+  killedBy: ID.nullable(),
+  deathPosition: z.number().int().positive().nullable(),
 });
 
 // A full live snapshot of a running game at a given turn. Reported by clients
@@ -842,11 +990,46 @@ export type ClientAnalyticsRecord = z.infer<
 
 export const AnalyticsRecordSchema = PartialAnalyticsRecordSchema.extend({
   gitCommit: GitCommitSchema,
-  subdomain: z.string(),
-  domain: z.string(),
+  // Absent on client-archived singleplayer records: those are stored by the
+  // API worker exactly as the client sent them, and no game server (whose
+  // identity these fields record) is involved.
+  subdomain: z.string().optional(),
+  domain: z.string().optional(),
 });
 
 export type AnalyticsRecord = z.infer<typeof AnalyticsRecordSchema>;
+
+// Lenient variant for *reading* archived records. Older builds wrote records
+// under earlier schemas (username rules tightened since, clanTag and nations
+// added later, conquests became an array) while the `version` literal never
+// changed, so strict parsing rejects them wholesale. Records are trusted
+// server output, not untrusted input — tolerate the historical shapes.
+// Inferred types are identical to the strict schemas', so parsed results are
+// still AnalyticsRecord. Not for replays: those require an exact gitCommit
+// match anyway (see JoinLobbyModal.checkArchivedGame).
+const ArchivedPlayerRecordSchema = PlayerRecordSchema.extend({
+  // Validated at join time under the rules of its era; the loosest era was
+  // SafeString (max 1000, emoji allowed, no min), so only cap length.
+  username: z.string().max(1000),
+  clanTag: ClanTagSchema.catch(null).default(null), // predates clan tags
+  stats: ArchivedPlayerStatsSchema, // scalar conquests
+});
+
+export const ArchivedAnalyticsRecordSchema = AnalyticsRecordSchema.extend({
+  info: GameEndInfoSchema.extend({
+    config: GameConfigSchema.extend({
+      gameMap: z.preprocess(
+        (value) => (typeof value === "string" ? value.trim() : value),
+        GameConfigSchema.shape.gameMap,
+      ),
+      // predates configurable nation count
+      nations: GameConfigSchema.shape.nations
+        .catch("default")
+        .default("default"),
+    }),
+    players: ArchivedPlayerRecordSchema.array(),
+  }),
+});
 
 export const GameRecordSchema = AnalyticsRecordSchema.extend({
   turns: TurnSchema.array(),

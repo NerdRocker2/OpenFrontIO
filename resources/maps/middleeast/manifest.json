@@ -1,5 +1,5 @@
 {
-  "categories": ["new", "asia"],
+  "categories": ["asia"],
   "id": "MiddleEast",
   "map": {
     "height": 2060,
@@ -155,5 +155,6 @@
       "name": "Russian State"
     }
   ],
+  "themes": ["asia"],
   "translation_key": "map.middleeast"
 }

@@ -1,5 +1,5 @@
 {
-  "categories": ["new", "asia"],
+  "categories": ["asia"],
   "id": "TaiwanStrait",
   "map": {
     "height": 1600,
@@ -145,6 +145,7 @@
       "name": "Lanyu"
     }
   ],
+  "special_team_count": 2,
   "teamGameSpawnAreas": {
     "2": [
       {
@@ -161,5 +162,6 @@
       }
     ]
   },
+  "themes": ["asia"],
   "translation_key": "map.taiwanstrait"
 }

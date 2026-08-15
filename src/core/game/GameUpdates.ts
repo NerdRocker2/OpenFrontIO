@@ -5,6 +5,7 @@ import {
   Gold,
   MessageType,
   NameViewData,
+  NukeState,
   PlayerID,
   PlayerType,
   Team,
@@ -64,6 +65,12 @@ export interface GameUpdateViewData {
   playerNameViewData?: Record<string, NameViewData>;
   tickExecutionDuration?: number;
   pendingTurns?: number;
+  /**
+   * Packed tile refs that were inside a nuke blast radius this tick.
+   * Used by the renderer to mark nukeable layer tiles as destroyed.
+   * Absent when no nukes detonated.
+   */
+  packedNukeImpacts?: Uint32Array;
 }
 
 export interface ErrorUpdate {
@@ -181,6 +188,7 @@ export interface UnitUpdate {
   reachedTarget: boolean;
   warshipState?: WarshipState;
   transportShipState?: TransportShipState;
+  nukeState?: NukeState;
   targetable: boolean;
   markedForDeletion: number | false;
   targetUnitId?: number; // Only for trade ships
@@ -221,11 +229,14 @@ export interface PlayerUpdate {
   clientID?: ClientID | null;
   name?: string;
   displayName?: string;
+  clanTag?: string | null;
   team?: Team;
   smallID?: number;
   playerType?: PlayerType;
   isAlive?: boolean;
   isDisconnected?: boolean;
+  killedBy?: ClientID | null;
+  deathPosition?: number | null;
   tilesOwned?: number;
   gold?: Gold;
   troops?: number;
@@ -234,6 +245,7 @@ export interface PlayerUpdate {
   isTraitor?: boolean;
   traitorRemainingTicks?: number;
   inDoomsdayClock?: boolean;
+  isDecaying?: boolean;
   markedDoomsdayClockTick?: number;
   targets?: number[];
   outgoingEmojis?: EmojiMessage[];

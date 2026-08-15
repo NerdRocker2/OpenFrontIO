@@ -3,12 +3,15 @@ import { customElement, state } from "lit/decorators.js";
 import { assetUrl } from "../../../core/AssetUrls";
 import { EventBus } from "../../../core/EventBus";
 import { GameType } from "../../../core/game/Game";
+import { createNextLobby } from "../../Api";
+import { ClientEnv } from "../../ClientEnv";
 import "../../components/DoomsdayClockPanel";
 import { Controller } from "../../Controller";
 import { crazyGamesSDK } from "../../CrazyGamesSDK";
+import { showInGameAlert, showInGameConfirm } from "../../InGameModal";
 import { TogglePauseIntentEvent } from "../../InputHandler";
 import { PauseGameIntentEvent, SendWinnerEvent } from "../../Transport";
-import { translateText } from "../../Utils";
+import { showToast, translateText } from "../../Utils";
 import { GameView } from "../../view";
 import { ImmunityBarVisibleEvent } from "./ImmunityTimer";
 import { ShowReplayPanelEvent } from "./ReplayPanel";
@@ -18,9 +21,15 @@ const exitIcon = assetUrl("images/ExitIconWhite.svg");
 const FastForwardIconSolid = assetUrl("images/FastForwardIconSolidWhite.svg");
 const pauseIcon = assetUrl("images/PauseIconWhite.svg");
 const playIcon = assetUrl("images/PlayIconWhite.svg");
+const newLobbyIcon = assetUrl("images/ReplayRegularIconWhite.svg");
 const settingsIcon = assetUrl("images/SettingIconWhite.svg");
 const fullscreenIcon = assetUrl("images/FullscreenIconWhite.svg");
 const exitFullscreenIcon = assetUrl("images/ExitFullscreenIconWhite.svg");
+
+const LAST_MINUTE_SECONDS = 60;
+const FLASH_TIMER_SECONDS = 30;
+const FLASH_SIDEBAR_SECONDS = 10;
+const ONE_MINUTE_WARNING_DURATION_MS = 4_000;
 
 @customElement("game-right-sidebar")
 export class GameRightSidebar extends LitElement implements Controller {
@@ -45,8 +54,15 @@ export class GameRightSidebar extends LitElement implements Controller {
   @state()
   private timer: number = 0;
 
+  // CrazyGames provides its own fullscreen control in the game frame, so hide ours.
+  private readonly onCrazyGames = crazyGamesSDK.isOnCrazyGames();
   private hasWinner = false;
   private isLobbyCreator = false;
+  private isPrivateLobby = false;
+  private hasShownOneMinuteWarning = false;
+  // Guards the in-game "New lobby" button so a double click doesn't fire twice
+  // before we navigate to the successor lobby.
+  private newLobbyRequested = false;
   private spawnBarVisible = false;
   private immunityBarVisible = false;
 
@@ -64,7 +80,10 @@ export class GameRightSidebar extends LitElement implements Controller {
     this._isSinglePlayer =
       this.game?.config()?.gameConfig()?.gameType === GameType.Singleplayer ||
       this.game.config().isReplay();
+    this.isPrivateLobby =
+      this.game?.config()?.gameConfig()?.gameType === GameType.Private;
     this._isVisible = true;
+    this.hasShownOneMinuteWarning = false;
 
     this.eventBus.on(SpawnBarVisibleEvent, (e) => {
       this.spawnBarVisible = e.visible;
@@ -83,7 +102,10 @@ export class GameRightSidebar extends LitElement implements Controller {
     this.eventBus.on(TogglePauseIntentEvent, () => {
       const isReplayOrSingleplayer =
         this._isSinglePlayer || this.game?.config()?.isReplay();
-      if (isReplayOrSingleplayer || this.isLobbyCreator) {
+      if (
+        isReplayOrSingleplayer ||
+        (this.isLobbyCreator && !this.game.config().listed)
+      ) {
         this.onPauseButtonClick();
       }
     });
@@ -146,8 +168,29 @@ export class GameRightSidebar extends LitElement implements Controller {
     const maxTimerValue = this.game.config().gameConfig().maxTimerValue;
     if (maxTimerValue !== null && maxTimerValue !== undefined) {
       this.timer = Math.max(0, maxTimerValue * 60 - elapsedSeconds);
+      this.maybeShowOneMinuteWarning();
     } else {
       this.timer = elapsedSeconds;
+    }
+  }
+
+  // Handing the notice to the heads-up toast layer means that layer owns the
+  // dismissal timer, so there's nothing for us to tear down on disconnect or
+  // when the game ends.
+  private maybeShowOneMinuteWarning(): void {
+    if (
+      !this.hasWinner &&
+      !this.game.inSpawnPhase() &&
+      this.timer > 0 &&
+      this.timer <= LAST_MINUTE_SECONDS &&
+      !this.hasShownOneMinuteWarning
+    ) {
+      this.hasShownOneMinuteWarning = true;
+      showToast(
+        translateText("game_timer.one_minute_remaining"),
+        "red",
+        ONE_MINUTE_WARNING_DURATION_MS,
+      );
     }
   }
 
@@ -191,10 +234,38 @@ export class GameRightSidebar extends LitElement implements Controller {
     this.eventBus.emit(new PauseGameIntentEvent(this.isPaused));
   }
 
+  private async onNewLobbyButtonClick() {
+    if (this.newLobbyRequested) return;
+    // Confirm so a stray click next to pause/exit doesn't yank everyone into a
+    // new lobby mid-game.
+    const isConfirmed = await showInGameConfirm(
+      translateText("new_lobby_prompt.confirm"),
+      { variant: "warning" },
+    );
+    if (!isConfirmed) return;
+    if (this.newLobbyRequested) return; // clicked again while confirming
+    this.newLobbyRequested = true;
+    this.requestUpdate();
+    try {
+      // The worker mints the successor lobby and has the current game
+      // broadcast its id, so everyone else gets the NewLobbyPrompt. We (the
+      // host) navigate straight to the new host view from the response.
+      const lobby = await createNextLobby(this.game.gameID());
+      const id = lobby.gameID;
+      // ?host routes the creator back into the host view on load.
+      window.location.href = `${window.location.origin}/${ClientEnv.workerPath(id)}/game/${id}?host`;
+    } catch (error) {
+      console.error("Failed to create successor lobby", error);
+      this.newLobbyRequested = false;
+      this.requestUpdate();
+      void showInGameAlert(translateText("new_lobby_prompt.failed"));
+    }
+  }
+
   private async onExitButtonClick() {
     const isAlive = this.game.myPlayer()?.isAlive();
     if (isAlive) {
-      const isConfirmed = confirm(
+      const isConfirmed = await showInGameConfirm(
         translateText("help_modal.exit_confirmation"),
       );
       if (!isConfirmed) return;
@@ -226,22 +297,75 @@ export class GameRightSidebar extends LitElement implements Controller {
   render() {
     if (this.game === undefined) return html``;
 
-    const timerColor =
-      this.game.config().gameConfig().maxTimerValue !== undefined &&
-      this.game.config().gameConfig().maxTimerValue !== null &&
-      this.timer < 60
-        ? "text-red-400"
+    const maxTimerValue = this.game.config().gameConfig().maxTimerValue;
+    const isEndTimerActive =
+      maxTimerValue !== undefined &&
+      maxTimerValue !== null &&
+      !this.game.inSpawnPhase() &&
+      !this.hasWinner &&
+      this.timer > 0;
+    const isLastMinute = isEndTimerActive && this.timer <= LAST_MINUTE_SECONDS;
+    const shouldFlashTimer =
+      isEndTimerActive && this.timer <= FLASH_TIMER_SECONDS;
+    const shouldFlashSidebar =
+      isEndTimerActive && this.timer <= FLASH_SIDEBAR_SECONDS;
+
+    const timerClass = shouldFlashTimer
+      ? "game-end-timer-flash"
+      : isLastMinute
+        ? "game-end-timer-last-minute"
         : "";
 
     return html`
+      <style>
+        @keyframes game-end-timer-text-flash {
+          0%,
+          100% {
+            color: rgb(248 113 113);
+          }
+          50% {
+            color: white;
+          }
+        }
+        @keyframes game-end-timer-sidebar-flash {
+          0%,
+          100% {
+            background-color: rgb(0 0 0 / 0.92);
+          }
+          50% {
+            background-color: rgb(185 28 28 / 0.96);
+          }
+        }
+        .game-end-timer-last-minute {
+          color: rgb(248 113 113);
+        }
+        .game-end-timer-flash {
+          animation: game-end-timer-text-flash 1s ease-in-out infinite;
+        }
+        .game-end-timer-sidebar-flash {
+          animation: game-end-timer-sidebar-flash 1s ease-in-out infinite;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .game-end-timer-flash {
+            animation: none;
+            color: white;
+          }
+          .game-end-timer-sidebar-flash {
+            animation: none;
+            background-color: rgb(185 28 28 / 0.96);
+          }
+        }
+      </style>
       <aside
-        class=${`w-fit flex flex-row items-center gap-3 py-2 px-3 bg-gray-800/92 backdrop-blur-sm shadow-xs min-[1200px]:rounded-lg rounded-bl-lg transition-transform duration-300 ease-out transform text-white ${
+        class=${`w-fit flex flex-row items-center gap-3 py-2 px-3 bg-gray-800/92 backdrop-blur-sm shadow-xs min-[1200px]:rounded-lg rounded-bl-lg transition-transform duration-300 ease-out transform text-white ${shouldFlashSidebar ? "game-end-timer-sidebar-flash" : ""} ${
           this._isVisible ? "translate-x-0" : "translate-x-full"
         }`}
         @contextmenu=${(e: Event) => e.preventDefault()}
       >
         <!-- In-game time -->
-        <div class=${timerColor}>${this.secondsToHms(this.timer)}</div>
+        <div data-game-timer class=${timerClass}>
+          ${this.secondsToHms(this.timer)}
+        </div>
 
         <!-- Buttons -->
         ${this.maybeRenderReplayButtons()}
@@ -250,7 +374,7 @@ export class GameRightSidebar extends LitElement implements Controller {
           <img src=${settingsIcon} alt="settings" width="20" height="20" />
         </div>
 
-        ${document.fullscreenEnabled
+        ${document.fullscreenEnabled && !this.onCrazyGames
           ? html`<div
               class="cursor-pointer"
               @click=${this.onFullscreenButtonClick}
@@ -281,7 +405,12 @@ export class GameRightSidebar extends LitElement implements Controller {
   maybeRenderReplayButtons() {
     const isReplayOrSingleplayer =
       this._isSinglePlayer || this.game?.config()?.isReplay();
-    const showPauseButton = isReplayOrSingleplayer || this.isLobbyCreator;
+    const showPauseButton =
+      isReplayOrSingleplayer ||
+      (this.isLobbyCreator && !this.game.config().listed);
+    // The host of a private lobby can start a fresh lobby at any time, without
+    // waiting to die or for the game to end.
+    const showNewLobbyButton = this.isLobbyCreator && this.isPrivateLobby;
 
     return html`
       ${isReplayOrSingleplayer
@@ -302,6 +431,24 @@ export class GameRightSidebar extends LitElement implements Controller {
               <img
                 src=${this.isPaused ? playIcon : pauseIcon}
                 alt="play/pause"
+                width="20"
+                height="20"
+              />
+            </div>
+          `
+        : ""}
+      ${showNewLobbyButton
+        ? html`
+            <div
+              class="cursor-pointer ${this.newLobbyRequested
+                ? "opacity-50 pointer-events-none"
+                : ""}"
+              @click=${this.onNewLobbyButtonClick}
+              title=${translateText("win_modal.new_lobby")}
+            >
+              <img
+                src=${newLobbyIcon}
+                alt=${translateText("win_modal.new_lobby")}
                 width="20"
                 height="20"
               />

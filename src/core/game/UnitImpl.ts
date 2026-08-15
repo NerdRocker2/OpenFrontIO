@@ -2,6 +2,7 @@ import { simpleHash, toInt, withinInt } from "../Util";
 import {
   AllUnitParams,
   MessageType,
+  NukeState,
   Player,
   Tick,
   TrainType,
@@ -16,6 +17,7 @@ import { GameImpl } from "./GameImpl";
 import { TileRef } from "./GameMap";
 import { GameUpdateType, UnitUpdate } from "./GameUpdates";
 import { PlayerImpl } from "./PlayerImpl";
+import { maxHealthWithVeterancy } from "./Veterancy";
 
 export class UnitImpl implements Unit {
   private _active = true;
@@ -25,7 +27,7 @@ export class UnitImpl implements Unit {
   private _lastTile: TileRef;
   private _transportShipState: TransportShipState | undefined = undefined;
   private _warshipState: WarshipState | undefined = undefined;
-  private _targetedBySAM = false;
+  private _nukeState: NukeState | undefined = undefined;
   private _reachedTarget = false;
   private _wasDestroyedByEnemy: boolean = false;
   private _destroyer: Player | undefined = undefined;
@@ -41,8 +43,6 @@ export class UnitImpl implements Unit {
   private _loaded: boolean | undefined;
   private _trainType: TrainType | undefined;
   // Nuke only
-  private _trajectoryIndex: number = 0;
-  private _trajectory: TrajectoryTile[];
   private _deletionAt: number | null = null;
 
   constructor(
@@ -57,7 +57,14 @@ export class UnitImpl implements Unit {
     this._health = toInt(this.mg.unitInfo(_type).maxHealth ?? 1);
     this._targetTile =
       "targetTile" in params ? (params.targetTile ?? undefined) : undefined;
-    this._trajectory = "trajectory" in params ? (params.trajectory ?? []) : [];
+    if ("trajectory" in params || "waitTicks" in params) {
+      this._nukeState = {
+        trajectory: params.trajectory ?? [],
+        waitTicks: 0,
+        trajectoryIndex: 0,
+        targetedBySam: false,
+      };
+    }
     this._troops = "troops" in params ? (params.troops ?? 0) : 0;
     this._lastSetSafeFromPirates =
       "lastSetSafeFromPirates" in params
@@ -71,6 +78,8 @@ export class UnitImpl implements Unit {
         state: "patrolling",
         patrolTile: params.patrolTile,
         lastCombatTick: -100,
+        veterancy: 0,
+        veterancyProgress: 0,
       };
     }
     this._targetUnit =
@@ -138,6 +147,8 @@ export class UnitImpl implements Unit {
         this._transportShipState !== undefined
           ? this.transportShipState()
           : undefined,
+      nukeState:
+        this._nukeState !== undefined ? { ...this._nukeState } : undefined,
       pos: this._tile,
       markedForDeletion: this._deletionAt ?? false,
       targetable: this._targetable,
@@ -215,6 +226,16 @@ export class UnitImpl implements Unit {
         this.mg.stats().unitCapture(newOwner, this._type);
         this.mg.stats().unitLose(this._owner, this._type);
         break;
+      // Transports change hands when their owner is conquered, or when a
+      // disconnected teammate's fleet is inherited. Boats have no "lost"
+      // slot, so only the captor is credited.
+      //
+      // Trade ships are deliberately absent: they reach here too, but the
+      // warship that hunts one down records the capture itself, and counting
+      // it again would double every act of piracy.
+      case UnitType.TransportShip:
+        this.mg.stats().boatCapturedTroops(newOwner, this._owner);
+        break;
     }
     this._lastOwner = this._owner;
     this._lastOwner._units = this._lastOwner._units.filter((u) => u !== this);
@@ -223,12 +244,22 @@ export class UnitImpl implements Unit {
     this.mg.addUpdate(this.toUpdate());
   }
 
+  maxHealth(): number {
+    const base = this.info().maxHealth ?? 1;
+    // veterancy() is 0 for non-warships, so this returns base for them.
+    return maxHealthWithVeterancy(
+      base,
+      this.veterancy(),
+      this.mg.config().warshipVeterancyHealthBonus(),
+    );
+  }
+
   modifyHealth(delta: number, attacker?: Player): void {
     const previousHealth = this._health;
     const nextHealth = withinInt(
       this._health + toInt(delta),
       0n,
-      toInt(this.info().maxHealth ?? 1),
+      toInt(this.maxHealth()),
     );
 
     if (nextHealth === previousHealth) {
@@ -374,6 +405,8 @@ export class UnitImpl implements Unit {
       patrolTile: merged.patrolTile,
       retreatPort: merged.retreatPort,
       lastCombatTick: this._warshipState.lastCombatTick,
+      veterancy: this._warshipState.veterancy,
+      veterancyProgress: this._warshipState.veterancyProgress,
     };
     this.mg.addUpdate(this.toUpdate());
   }
@@ -420,6 +453,33 @@ export class UnitImpl implements Unit {
     if (changed) {
       this.mg.addUpdate(this.toUpdate());
     }
+  }
+
+  nukeState(): NukeState {
+    if (this._nukeState === undefined) {
+      throw new Error("nukeState called on non-nuke unit");
+    }
+    return this._nukeState;
+  }
+
+  updateNukeState(update: Partial<NukeState>): void {
+    if (this._nukeState === undefined) {
+      throw new Error("updateNukeState called on non-nuke unit");
+    }
+    const merged = { ...this._nukeState, ...update };
+    if (
+      merged.targetedBySam === this._nukeState.targetedBySam &&
+      merged.trajectoryIndex === this._nukeState.trajectoryIndex &&
+      merged.waitTicks === this._nukeState.waitTicks
+    )
+      return;
+    this._nukeState = {
+      targetedBySam: merged.targetedBySam,
+      trajectoryIndex: merged.trajectoryIndex,
+      waitTicks: merged.waitTicks,
+      trajectory: this._nukeState.trajectory,
+    };
+    this.mg.addUpdate(this.toUpdate());
   }
 
   isUnderConstruction(): boolean {
@@ -472,16 +532,19 @@ export class UnitImpl implements Unit {
   }
 
   setTrajectoryIndex(i: number): void {
-    const max = this._trajectory.length - 1;
-    this._trajectoryIndex = i < 0 ? 0 : i > max ? max : i;
+    if (this._nukeState === undefined) {
+      throw new Error("setTrajectoryIndex called on non-nuke unit");
+    }
+    const max = this.trajectory().length - 1;
+    this._nukeState.trajectoryIndex = i < 0 ? 0 : i > max ? max : i;
   }
 
   trajectoryIndex(): number {
-    return this._trajectoryIndex;
+    return this._nukeState?.trajectoryIndex ?? 0;
   }
 
   trajectory(): TrajectoryTile[] {
-    return this._trajectory;
+    return this._nukeState?.trajectory ?? [];
   }
 
   setTargetUnit(target: Unit | undefined): void {
@@ -493,11 +556,11 @@ export class UnitImpl implements Unit {
   }
 
   setTargetedBySAM(targeted: boolean): void {
-    this._targetedBySAM = targeted;
+    this._nukeState!.targetedBySam = targeted;
   }
 
   targetedBySAM(): boolean {
-    return this._targetedBySAM;
+    return this._nukeState!.targetedBySam;
   }
 
   setReachedTarget(): void {
@@ -521,6 +584,84 @@ export class UnitImpl implements Unit {
 
   level(): number {
     return this._level;
+  }
+
+  veterancy(): number {
+    return this._warshipState?.veterancy ?? 0;
+  }
+
+  /** Raise veterancy by one level (capped), which raises max health. The ship
+   *  is NOT instantly healed — it heals toward the higher cap normally.
+   *  No-op for non-warships or at the cap. */
+  private increaseVeterancy(): void {
+    if (this._warshipState === undefined) {
+      return;
+    }
+    if (
+      this._warshipState.veterancy >= this.mg.config().warshipMaxVeterancy()
+    ) {
+      return;
+    }
+    this._warshipState.veterancy++;
+    this.mg.addUpdate(this.toUpdate());
+  }
+
+  recordKill(targetType: UnitType): void {
+    if (this._warshipState === undefined) {
+      return;
+    }
+    if (targetType === UnitType.Warship) {
+      // Final blow on an enemy warship: instant level, and the partial
+      // transport/capture progress toward the next level is wiped.
+      this._warshipState.veterancyProgress = 0;
+      this.increaseVeterancy();
+    } else if (targetType === UnitType.TransportShip) {
+      this.addVeterancyProgress(UnitType.TransportShip);
+    }
+  }
+
+  recordTradeCapture(): void {
+    if (this._warshipState === undefined) {
+      return;
+    }
+    this.addVeterancyProgress(UnitType.TradeShip);
+  }
+
+  /**
+   * Add partial progress toward the next veterancy level from a non-kill source.
+   *
+   * Transports and captures share one integer progress meter. One level =
+   * transportThreshold * captureThreshold points; a transport is worth
+   * `captureThreshold` points and a capture is worth `transportThreshold`
+   * points. That makes `transportThreshold` transports OR `captureThreshold`
+   * captures (or any mix) fill exactly one level — all integer math, no floats.
+   * Overflow carries into the next level (only a warship kill resets it).
+   */
+  private addVeterancyProgress(source: UnitType): void {
+    if (this._warshipState === undefined) {
+      return;
+    }
+    const maxVeterancy = this.mg.config().warshipMaxVeterancy();
+    if (this._warshipState.veterancy >= maxVeterancy) {
+      return;
+    }
+    const transportThreshold = this.mg
+      .config()
+      .warshipVeterancyTransportKills();
+    const captureThreshold = this.mg.config().warshipVeterancyTradeCaptures();
+    const pointsPerLevel = transportThreshold * captureThreshold;
+    this._warshipState.veterancyProgress +=
+      source === UnitType.TransportShip ? captureThreshold : transportThreshold;
+    while (
+      this._warshipState.veterancyProgress >= pointsPerLevel &&
+      this._warshipState.veterancy < maxVeterancy
+    ) {
+      this._warshipState.veterancyProgress -= pointsPerLevel;
+      this.increaseVeterancy();
+    }
+    if (this._warshipState.veterancy >= maxVeterancy) {
+      this._warshipState.veterancyProgress = 0;
+    }
   }
 
   setTrainStation(trainStation: boolean): void {

@@ -30,7 +30,9 @@ import {
 import { replacer } from "../core/Util";
 import { getPlayToken } from "./Auth";
 import { LobbyConfig } from "./ClientGameRunner";
+import { showInGameAlert } from "./InGameModal";
 import { LocalServer } from "./LocalServer";
+import { translateText } from "./Utils";
 import { PlayerView } from "./view";
 
 export class PauseGameIntentEvent implements GameEvent {
@@ -55,6 +57,7 @@ export class SendUpgradeStructureIntentEvent implements GameEvent {
   constructor(
     public readonly unitId: number,
     public readonly unitType: UnitType,
+    public readonly amount: number = 1,
   ) {}
 }
 
@@ -93,6 +96,7 @@ export class BuildUnitIntentEvent implements GameEvent {
     public readonly unit: UnitType,
     public readonly tile: TileRef,
     public readonly rocketDirectionUp?: boolean,
+    public readonly amount?: number,
   ) {}
 }
 
@@ -166,6 +170,12 @@ export class SendHashEvent implements GameEvent {
     public readonly tick: Tick,
     public readonly hash: number,
   ) {}
+}
+
+// Emitted when the server tells us the host started a successor lobby, carrying
+// the new game id to move the group to.
+export class NewLobbyEvent implements GameEvent {
+  constructor(public readonly gameID: string) {}
 }
 
 export class MoveWarshipIntentEvent implements GameEvent {
@@ -346,10 +356,10 @@ export class Transport {
   ) {
     this.startPing();
     this.killExistingSocket();
-    const wsHost = window.location.host;
-    const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    // WS origin comes from ClientEnv (same-origin on web, audience-derived on
+    // the desktop app://openfront origin), not window.location.host.
     const workerPath = ClientEnv.workerPath(this.lobbyConfig.gameID);
-    this.socket = new WebSocket(`${wsProtocol}//${wsHost}/${workerPath}`);
+    this.socket = new WebSocket(`${ClientEnv.serverWsBase()}/${workerPath}`);
     this.onconnect = onconnect;
     this.onmessage = onmessage;
     this.socket.onopen = () => {
@@ -394,8 +404,11 @@ export class Transport {
         `WebSocket closed. Code: ${event.code}, Reason: ${event.reason}`,
       );
       if (event.code === 1002) {
-        // TODO: make this a modal
-        alert(`connection refused: ${event.reason}`);
+        showInGameAlert(
+          translateText("error_modal.connection_refused", {
+            reason: event.reason,
+          }),
+        );
       } else if (event.code !== 1000) {
         console.log(`received error code ${event.code}, reconnecting`);
         this.reconnect();
@@ -521,6 +534,7 @@ export class Transport {
       type: "upgrade_structure",
       unit: event.unitType,
       unitId: event.unitId,
+      amount: event.amount,
     });
   }
 
@@ -586,6 +600,7 @@ export class Transport {
       unit: event.unit,
       tile: event.tile,
       rocketDirectionUp: event.rocketDirectionUp,
+      amount: event.amount,
     });
   }
 

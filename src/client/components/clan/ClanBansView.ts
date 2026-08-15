@@ -2,7 +2,7 @@ import { html, LitElement } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { type ClanBan, fetchClanBans, unbanClanMember } from "../../ClanApi";
 import { translateText } from "../../Utils";
-import "../CopyButton";
+import { playerNameLink } from "../ui/PlayerNameLink";
 import {
   formatClanDate,
   renderLoadingSpinner,
@@ -94,9 +94,13 @@ export class ClanBansView extends LitElement {
 
     const totalPages = Math.ceil(this.bansTotal / this.bansLimit);
     const filtered = this.memberSearch
-      ? this.bans.filter((b) =>
-          b.publicId.toLowerCase().includes(this.memberSearch.toLowerCase()),
-        )
+      ? this.bans.filter((b) => {
+          const q = this.memberSearch.toLowerCase();
+          return (
+            b.publicId.toLowerCase().includes(q) ||
+            (b.username?.toLowerCase().includes(q) ?? false)
+          );
+        })
       : this.bans;
 
     return html`
@@ -110,6 +114,7 @@ export class ClanBansView extends LitElement {
         </div>
         ${renderMemberSearchInput(
           (e) => this.onSearchInput(e),
+          this.memberSearch,
           "clan_modal.search_members_placeholder",
         )}
         ${filtered.length === 0
@@ -146,23 +151,15 @@ export class ClanBansView extends LitElement {
                             />
                           </svg>
                         </div>
-                        <copy-button
-                          compact
-                          .copyText=${ban.publicId}
-                          .displayText=${ban.publicId}
-                          .showVisibilityToggle=${false}
-                          .showCopyIcon=${false}
-                        ></copy-button>
+                        ${playerNameLink(this, ban.username, ban.publicId)}
                         <span class="text-white/30 text-xs shrink-0"
                           >${translateText("clan_modal.banned_by_label")}</span
                         >
-                        <copy-button
-                          compact
-                          .copyText=${ban.bannedBy}
-                          .displayText=${ban.bannedBy}
-                          .showVisibilityToggle=${false}
-                          .showCopyIcon=${false}
-                        ></copy-button>
+                        ${playerNameLink(
+                          this,
+                          ban.bannedByUsername,
+                          ban.bannedBy,
+                        )}
                         <span class="text-white/30 text-xs shrink-0"
                           >${formatClanDate(ban.createdAt)}</span
                         >

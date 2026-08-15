@@ -13,6 +13,7 @@ import {
 import { MotionPlanRecord } from "./MotionPlans";
 import { RailNetwork } from "./RailNetwork";
 import { Stats } from "./Stats";
+import { ReadonlyTileSet } from "./TileSet";
 import { UnitPredicate } from "./UnitGrid";
 
 function isEnumValue<T extends Record<string, string | number>>(
@@ -32,11 +33,22 @@ export type WarshipState = {
   retreatPort?: TileRef;
   isInCombat?: boolean;
   lastCombatTick: number;
+  // Veterancy level (0–max) plus a shared integer progress meter fed by
+  // transport kills and trade captures (see UnitImpl.addVeterancyProgress).
+  veterancy: number;
+  veterancyProgress: number;
 };
 
 export type TransportShipState = {
   isRetreating: boolean;
   troops: number;
+};
+
+export type NukeState = {
+  trajectory: TrajectoryTile[];
+  trajectoryIndex: number;
+  targetedBySam: boolean;
+  waitTicks: number;
 };
 
 export const AllPlayers = "AllPlayers" as const;
@@ -100,10 +112,12 @@ export {
   GameMapType,
   mapCategoryOrder,
   maps,
+  type CustomTribe,
   type GameMapName,
   type MapCategory,
   type MapInfo,
 } from "./Maps.gen";
+
 export enum GameType {
   Singleplayer = "Singleplayer",
   Public = "Public",
@@ -119,6 +133,7 @@ export enum GameMode {
 
 export enum RankedType {
   OneVOne = "1v1",
+  TwoVTwo = "2v2",
 }
 
 export const isGameMode = (value: unknown): value is GameMode =>
@@ -142,10 +157,17 @@ export interface PublicGameModifiers {
   isSAMsDisabled?: boolean;
   isPeaceTime?: boolean;
   isWaterNukes?: boolean;
+  isDoomsdayClock?: boolean;
 }
 
+// Largest bulk-purchase amount an intent may carry (mirrored by the intent
+// schemas' max). Also the length of BuildableUnit.upgradeCosts.
+export const MAX_UPGRADE_AMOUNT = 50;
+
 export interface UnitInfo {
-  cost: (game: Game, player: Player) => Gold;
+  // extraUnits shifts the cost curve as if the player already had that many
+  // additional units/levels — used to price the later steps of a bulk upgrade.
+  cost: (game: Game, player: Player, extraUnits?: number) => Gold;
   maxHealth?: number;
   damage?: number;
   constructionDuration?: number;
@@ -241,7 +263,9 @@ export interface UnitParamsMap {
 
   [UnitType.Shell]: Record<string, never>;
 
-  [UnitType.SAMMissile]: Record<string, never>;
+  [UnitType.SAMMissile]: {
+    targetUnit: Unit;
+  };
 
   [UnitType.Port]: Record<string, never>;
 
@@ -251,6 +275,15 @@ export interface UnitParamsMap {
   };
 
   [UnitType.HydrogenBomb]: {
+    targetTile?: number;
+    trajectory: TrajectoryTile[];
+  };
+
+  [UnitType.MIRV]: {
+    targetTile?: number;
+  };
+
+  [UnitType.MIRVWarhead]: {
     targetTile?: number;
     trajectory: TrajectoryTile[];
   };
@@ -275,14 +308,6 @@ export interface UnitParamsMap {
   [UnitType.SAMLauncher]: Record<string, never>;
 
   [UnitType.City]: Record<string, never>;
-
-  [UnitType.MIRV]: {
-    targetTile?: number;
-  };
-
-  [UnitType.MIRVWarhead]: {
-    targetTile?: number;
-  };
 }
 
 // Type helper to get params type for a specific unit type
@@ -333,6 +358,7 @@ export enum TerrainType {
   Highland,
   Mountain,
   Ocean,
+  Impassable,
 }
 
 export enum PlayerType {
@@ -411,6 +437,9 @@ export class PlayerInfo {
     public readonly isLobbyCreator: boolean = false,
     public readonly clanTag: string | null = null,
     public readonly friends: ClientID[] = [],
+    // Server-pinned team slot (index into the game's team list) for
+    // matchmade team games; null = assign normally.
+    public readonly teamIndex: number | null = null,
   ) {
     this.displayName = formatPlayerDisplayName(this.name, this.clanTag);
   }
@@ -477,10 +506,21 @@ export interface Unit {
   updateWarshipState(update: Partial<WarshipState>): void;
   transportShipState(): TransportShipState;
   updateTransportShipState(update: Partial<TransportShipState>): void;
+  nukeState(): NukeState;
+  updateNukeState(update: Partial<NukeState>): void;
+
   health(): number;
-  /** Max health from unit info (1 for units without health). */
+  /** Effective max health, including any warship veterancy bonus. */
   maxHealth(): number;
   modifyHealth(delta: number, attacker?: Player): void;
+
+  // Warship veterancy
+  /** Current veterancy level from warshipState (0 for non-warships). */
+  veterancy(): number;
+  /** Record this warship destroying an enemy unit (drives veterancy gain). */
+  recordKill(targetType: UnitType): void;
+  /** Record this warship capturing a trade ship (drives veterancy gain). */
+  recordTradeCapture(): void;
 
   // Troops
   setTroops(troops: number): void;
@@ -527,6 +567,7 @@ export interface Player {
   info(): PlayerInfo;
   name(): string;
   displayName(): string;
+  clanTag(): string | null;
   clientID(): ClientID | null;
   id(): PlayerID;
   type(): PlayerType;
@@ -540,6 +581,9 @@ export interface Player {
   markTraitor(): void;
   // Doomsday Clock (anti-stall): marked when below the rising territory bar.
   inDoomsdayClock(): boolean;
+  /** Territory is actively rotting away (the final doomsday phase). */
+  isDecaying(): boolean;
+  markRotted(): void;
   doomsdayClockTicks(): number;
   enterDoomsdayClock(): void;
   clearDoomsdayClock(): void;
@@ -554,8 +598,8 @@ export interface Player {
   spawnTile(): TileRef | undefined;
 
   // Territory
-  tiles(): ReadonlySet<TileRef>;
-  borderTiles(): ReadonlySet<TileRef>;
+  tiles(): ReadonlyTileSet;
+  borderTiles(): ReadonlyTileSet;
   numTilesOwned(): number;
   conquer(tile: TileRef): void;
   relinquish(tile: TileRef): void;
@@ -570,7 +614,13 @@ export interface Player {
   removeTroops(troops: number): number;
 
   // Units
-  units(...types: UnitType[]): Unit[];
+  // Fixed-arity + array overloads instead of a rest parameter: the rest array
+  // would be allocated on every call, and this is one of the hottest calls in
+  // the simulation. With no arguments the player's live unit array is
+  // returned — do not mutate it; typed queries return a fresh snapshot array.
+  units(): Unit[];
+  units(types: readonly UnitType[]): Unit[];
+  units(type: UnitType, type2?: UnitType, type3?: UnitType): Unit[];
   unitCount(type: UnitType): number;
   unitsConstructed(type: UnitType): number;
   unitsOwned(type: UnitType): number;
@@ -689,8 +739,13 @@ export interface Game extends GameMap {
   map(): GameMap;
   miniMap(): GameMap;
   forEachTile(fn: (tile: TileRef) => void): void;
-  // Zero-allocation neighbor iteration (cardinal only) to avoid creating arrays
+  // Zero-allocation neighbor iteration (cardinal only), in the same N, S, W, E
+  // order as neighbors().
   forEachNeighbor(tile: TileRef, callback: (neighbor: TileRef) => void): void;
+  // Writes the cardinal neighbors of ref into out (same N, S, W, E order as
+  // neighbors()) and returns the count. Reuse out across calls to avoid
+  // allocation.
+  neighbors4(ref: TileRef, out: TileRef[]): number;
   // Zero-allocation neighbor iteration for performance-critical cluster calculation
   // Alternative to neighborsWithDiag() that returns arrays
   // Avoids creating intermediate arrays and uses a callback for better performance
@@ -731,7 +786,12 @@ export interface Game extends GameMap {
   drainPackedMotionPlans(): Uint32Array | null;
   drainPackedPlayerUpdates(): Float64Array | null;
   drainPackedAttackUpdates(): Float64Array | null;
-  setWinner(winner: Player | Team, allPlayersStats: AllPlayersStats): void;
+  // null ends the game with no winner (a cancelled match, e.g. a ranked game
+  // that didn't fill): the record is archived winnerless and never ranked.
+  setWinner(
+    winner: Player | Team | null,
+    allPlayersStats: AllPlayersStats,
+  ): void;
   getWinner(): Player | Team | null;
   config(): Config;
   isPaused(): boolean;
@@ -739,7 +799,10 @@ export interface Game extends GameMap {
 
   // Units
   unit(id: number): Unit | undefined;
-  units(...types: UnitType[]): Unit[];
+  // See Player.units() for why this is not a rest parameter.
+  units(): Unit[];
+  units(types: readonly UnitType[]): Unit[];
+  units(type: UnitType, type2?: UnitType, type3?: UnitType): Unit[];
   unitCount(type: UnitType): number;
   unitInfo(type: UnitType): UnitInfo;
   hasUnitNearby(
@@ -805,6 +868,12 @@ export interface Game extends GameMap {
   getWaterComponent(tile: TileRef): number | null;
   hasWaterComponent(tile: TileRef, component: number): boolean;
   /**
+   * Returns the approximate number of water tiles in the component
+   * containing `tile`, or null if the tile has no water component. Useful for
+   * filtering tiny water bodies (e.g. preventing AI port placement on ponds).
+   */
+  getWaterComponentSize(tile: TileRef): number | null;
+  /**
    * Returns the set of water components that `player` shares with at least one
    * valid trade partner (cached). Used by nation AI for port-placement
    * heuristics. `null` means no usable water body for ports.
@@ -815,6 +884,12 @@ export interface Game extends GameMap {
 
   /** Queue a land tile for conversion to water (batched every few ticks). Tile must be unowned. */
   queueWaterConversion(tile: TileRef): void;
+
+  /** Queue a tile that was inside a nuke blast radius (for nukeable layer destruction). */
+  queueNukeImpact(tile: TileRef): void;
+
+  /** Drain all tiles from nuke impacts this tick. Called once per tick. */
+  drainNukeImpacts(): TileRef[];
 }
 
 export interface PlayerActions {
@@ -831,9 +906,42 @@ export interface BuildableUnit {
   canUpgrade: number | false;
   type: PlayerBuildableUnitType;
   cost: Gold;
+  // Cumulative cost of upgrading 1..MAX_UPGRADE_AMOUNT times (upgrade costs
+  // escalate per level, so a bulk total is NOT cost * amount). Only set when
+  // canUpgrade is not false.
+  upgradeCosts?: Gold[];
   overlappingRailroads: TileRef[];
   ghostRailPaths: TileRef[][];
 }
+
+// Total price of buying `amount` of a buildable in one intent. Upgrades use
+// the escalating totals from core; flat-cost units (nukes) scale linearly.
+export function bulkCost(bu: BuildableUnit, amount: number): Gold {
+  return bu.upgradeCosts?.[amount - 1] ?? bu.cost * BigInt(amount);
+}
+
+// Largest amount (up to MAX_UPGRADE_AMOUNT) whose bulk total fits in `gold`.
+// 0 when not even a single purchase is affordable.
+export function maxBulkAmount(bu: BuildableUnit, gold: Gold): number {
+  let max = 0;
+  for (let n = 1; n <= MAX_UPGRADE_AMOUNT; n++) {
+    // Never price upgrades past the shipped totals — beyond the array,
+    // bulkCost would silently fall back to linear pricing.
+    if (bu.upgradeCosts !== undefined && n > bu.upgradeCosts.length) {
+      break;
+    }
+    if (bulkCost(bu, n) > gold) {
+      break;
+    }
+    max = n;
+  }
+  return max;
+}
+
+// Fixed mid-ladder steps for the bulk menus. Bombs come in smaller batches
+// than structure upgrades — x2 is the standard play against a single SAM.
+export const NUKE_BULK_STEPS: readonly number[] = [2, 5];
+export const STRUCTURE_BULK_STEPS: readonly number[] = [5, 10];
 
 export interface PlayerProfile {
   relations: Record<number, Relation>;

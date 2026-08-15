@@ -22,6 +22,7 @@ import {
   EmojiMessage,
   GameMode,
   Gold,
+  MAX_UPGRADE_AMOUNT,
   MutableAlliance,
   Player,
   PlayerBuildable,
@@ -53,11 +54,15 @@ import {
   GameUpdateType,
   PlayerUpdate,
 } from "./GameUpdates";
+import { ReadonlyTileSet, TileSet } from "./TileSet";
 import {
   bestShoreDeploymentSource,
   canBuildTransportShip,
 } from "./TransportShipUtils";
 import { UnitImpl } from "./UnitImpl";
+
+// Rot re-stamps every second, so a little slack keeps the cue from strobing.
+const DECAY_CUE_GRACE_TICKS = 30;
 
 interface Target {
   tick: Tick;
@@ -84,6 +89,14 @@ const EMPTY_ATTACK_UPDATES: AttackUpdate[] = [];
 const EMPTY_ALLIANCE_VIEWS: AllianceView[] = [];
 const EMPTY_EMOJIS: EmojiMessage[] = [];
 const EMPTY_EMBARGOES = new Set<string>();
+// Reusable buffers for hot loops. The simulation is single-threaded and these
+// are fully consumed before any re-entrant call, so sharing is safe.
+const NEIGHBOR_SCRATCH: TileRef[] = [0, 0, 0, 0];
+const UNITS_SCRATCH: Unit[] = [];
+const TYPE_SET_SCRATCH = new Set<UnitType>();
+// N, S, W, E — the sampling directions used by shoreReachableNeighbors().
+const SHORE_DIRECTIONS_DX = [0, 0, -1, 1];
+const SHORE_DIRECTIONS_DY = [-1, 1, 0, 0];
 Object.freeze(EMPTY_NUMBER_ARRAY);
 Object.freeze(EMPTY_STRING_ARRAY);
 Object.freeze(EMPTY_ATTACK_UPDATES);
@@ -99,14 +112,16 @@ export class PlayerImpl implements Player {
 
   markedTraitorTick = -1;
   markedDoomsdayClockTick = -1;
+  /** Tick territory rot last took land from this player (-1 = never). */
+  private rottedAtTick = -1;
   private _betrayalCount: number = 0;
 
   private embargoes = new Map<PlayerID, Embargo>();
 
-  public _borderTiles: Set<TileRef> = new Set();
+  public _borderTiles = new TileSet();
 
   public _units: Unit[] = [];
-  public _tiles: Set<TileRef> = new Set();
+  public _tiles = new TileSet();
 
   public pastOutgoingAllianceRequests: AllianceRequest[] = [];
   private _expiredAlliances: Alliance[] = [];
@@ -298,17 +313,25 @@ export class PlayerImpl implements Player {
       }
     }
 
+    // OFM live standings: elimination info is stored on the player's stats
+    // (set live in the sim via mg.stats()), surfaced here so it rides the live
+    // PlayerUpdate every tick rather than only appearing in the game-end record.
+    const deathStats = this.mg.stats().getPlayerStats(this);
+
     return {
       type: GameUpdateType.Player,
       clientID: this.clientID(),
       name: this.name(),
       displayName: this.displayName(),
+      clanTag: this.clanTag(),
       id: this.id(),
       team: this.team() ?? undefined,
       smallID: this.smallID(),
       playerType: this.type(),
       isAlive: this.isAlive(),
       isDisconnected: this.isDisconnected(),
+      killedBy: deathStats?.killedBy ?? null,
+      deathPosition: deathStats?.deathPosition ?? null,
       tilesOwned: this.numTilesOwned(),
       gold: this._gold,
       troops: this.troops(),
@@ -317,6 +340,7 @@ export class PlayerImpl implements Player {
       isTraitor: this.isTraitor(),
       traitorRemainingTicks: this.getTraitorRemainingTicks(),
       inDoomsdayClock: this.inDoomsdayClock(),
+      isDecaying: this.isDecaying(),
       markedDoomsdayClockTick: this.markedDoomsdayClockTick,
       targets: targets,
       outgoingEmojis: outgoingEmojis,
@@ -342,7 +366,9 @@ export class PlayerImpl implements Player {
   displayName(): string {
     return this.playerInfo.displayName;
   }
-
+  clanTag(): string | null {
+    return this.playerInfo.clanTag;
+  }
   clientID(): ClientID | null {
     return this.playerInfo.clientID;
   }
@@ -355,59 +381,54 @@ export class PlayerImpl implements Player {
     return this.playerInfo.playerType;
   }
 
-  units(...types: UnitType[]): Unit[] {
-    const len = types.length;
-    if (len === 0) {
+  units(): Unit[];
+  units(types: readonly UnitType[]): Unit[];
+  units(type: UnitType, type2?: UnitType, type3?: UnitType): Unit[];
+  units(
+    first?: UnitType | readonly UnitType[],
+    second?: UnitType,
+    third?: UnitType,
+  ): Unit[] {
+    if (first === undefined) {
       return this._units;
     }
 
-    // Fast paths for common small arity calls to avoid Set allocation.
-    if (len === 1) {
-      const t0 = types[0]!;
-      const out: Unit[] = [];
-      for (const u of this._units) {
-        if (u.type() === t0) out.push(u);
-      }
-      return out;
-    }
+    // Hot path. Matches are gathered into a reusable scratch buffer and
+    // copied out with an exact-size slice, so each call allocates exactly
+    // one right-sized result array. Fixed-arity parameters (rather than a
+    // rest parameter) avoid allocating an argument array per call.
+    const scratch = UNITS_SCRATCH;
+    let n = 0;
 
-    if (len === 2) {
-      const t0 = types[0]!;
-      const t1 = types[1]!;
-      if (t0 === t1) {
-        const out: Unit[] = [];
-        for (const u of this._units) {
-          if (u.type() === t0) out.push(u);
-        }
-        return out;
+    if (Array.isArray(first)) {
+      const types = first as readonly UnitType[];
+      if (types.length === 0) {
+        return this._units;
       }
-      const out: Unit[] = [];
+      const ts = TYPE_SET_SCRATCH;
+      ts.clear();
+      for (const t of types) {
+        ts.add(t);
+      }
       for (const u of this._units) {
-        const t = u.type();
-        if (t === t0 || t === t1) out.push(u);
+        if (ts.has(u.type())) scratch[n++] = u;
       }
-      return out;
-    }
-
-    if (len === 3) {
-      const t0 = types[0]!;
-      const t1 = types[1]!;
-      const t2 = types[2]!;
-      // Keep semantics identical for duplicates in types by using direct comparisons.
-      const out: Unit[] = [];
+    } else if (second === undefined) {
+      for (const u of this._units) {
+        if (u.type() === first) scratch[n++] = u;
+      }
+    } else if (third === undefined) {
       for (const u of this._units) {
         const t = u.type();
-        if (t === t0 || t === t1 || t === t2) out.push(u);
+        if (t === first || t === second) scratch[n++] = u;
       }
-      return out;
+    } else {
+      for (const u of this._units) {
+        const t = u.type();
+        if (t === first || t === second || t === third) scratch[n++] = u;
+      }
     }
-
-    const ts = new Set(types);
-    const out: Unit[] = [];
-    for (const u of this._units) {
-      if (ts.has(u.type())) out.push(u);
-    }
-    return out;
+    return scratch.slice(0, n);
   }
 
   private numUnitsConstructed: Partial<Record<UnitType, number>> = {};
@@ -454,9 +475,13 @@ export class PlayerImpl implements Player {
   }
 
   sharesBorderWith(other: Player | TerraNullius): boolean {
+    const map = this.mg.map();
+    const otherID = other.smallID();
+    const nbuf = NEIGHBOR_SCRATCH;
     for (const border of this._borderTiles) {
-      for (const neighbor of this.mg.map().neighbors(border)) {
-        if (this.mg.map().ownerID(neighbor) === other.smallID()) {
+      const n = map.neighbors4(border, nbuf);
+      for (let i = 0; i < n; i++) {
+        if (map.ownerID(nbuf[i]) === otherID) {
           return true;
         }
       }
@@ -468,33 +493,33 @@ export class PlayerImpl implements Player {
     return this._tiles.size;
   }
 
-  tiles(): ReadonlySet<TileRef> {
-    return new Set(this._tiles.values()) as Set<TileRef>;
+  tiles(): ReadonlyTileSet {
+    return this._tiles;
   }
 
-  borderTiles(): ReadonlySet<TileRef> {
+  borderTiles(): ReadonlyTileSet {
     return this._borderTiles;
   }
 
   nearby(): (Player | TerraNullius)[] {
     const ns: Set<Player | TerraNullius> = new Set();
-    for (const border of this.borderTiles()) {
-      for (const neighbor of this.mg.map().neighbors(border)) {
-        if (this.mg.map().isLand(neighbor)) {
-          if (
-            !this.mg.map().hasOwner(neighbor) &&
-            this.mg.map().hasFallout(neighbor)
-          ) {
-            continue;
-          }
-          const owner = this.mg.map().ownerID(neighbor);
-          if (owner !== this.smallID()) {
-            ns.add(
-              this.mg.playerBySmallID(owner) satisfies Player | TerraNullius,
-            );
-          }
+    const map = this.mg.map();
+    const smallID = this.smallID();
+    const visit = (neighbor: TileRef) => {
+      if (map.isLand(neighbor) && !map.isImpassable(neighbor)) {
+        if (!map.hasOwner(neighbor) && map.hasFallout(neighbor)) {
+          return;
+        }
+        const owner = map.ownerID(neighbor);
+        if (owner !== smallID) {
+          ns.add(
+            this.mg.playerBySmallID(owner) satisfies Player | TerraNullius,
+          );
         }
       }
+    };
+    for (const border of this.borderTiles()) {
+      map.forEachNeighbor(border, visit);
     }
     for (const n of this.shoreReachableNeighbors()) {
       ns.add(n);
@@ -508,21 +533,19 @@ export class PlayerImpl implements Player {
   private shoreReachableNeighbors(): Set<Player | TerraNullius> {
     const ns: Set<Player | TerraNullius> = new Set();
     const map = this.mg.map();
-    const shores = Array.from(this.borderTiles()).filter((t) => map.isShore(t));
-    const directions: [number, number][] = [
-      [0, -1],
-      [0, 1],
-      [-1, 0],
-      [1, 0],
-    ];
 
-    for (let i = 0; i < shores.length; i += 10) {
-      const border = shores[i];
+    let shoreIdx = 0;
+    for (const border of this.borderTiles()) {
+      if (!map.isShore(border)) continue;
+      // Visit every 10th shore tile.
+      if (shoreIdx++ % 10 !== 0) continue;
 
       const bx = map.x(border);
       const by = map.y(border);
 
-      for (const [dx, dy] of directions) {
+      for (let d = 0; d < 4; d++) {
+        const dx = SHORE_DIRECTIONS_DX[d];
+        const dy = SHORE_DIRECTIONS_DY[d];
         // Only follow directions that immediately enter water; land-adjacent
         // directions are already covered by the direct neighbors() loop.
         const x1 = bx + dx;
@@ -535,6 +558,7 @@ export class PlayerImpl implements Player {
         if (!map.isValidCoord(nx, ny)) continue;
         const tile = map.ref(nx, ny);
         if (!map.isLand(tile)) continue;
+        if (map.isImpassable(tile)) continue;
         if (!map.hasOwner(tile) && map.hasFallout(tile)) continue;
         const owner = map.ownerID(tile);
         if (owner !== this.smallID()) {
@@ -762,6 +786,20 @@ export class PlayerImpl implements Player {
 
   clearDoomsdayClock(): void {
     this.markedDoomsdayClockTick = -1;
+    this.rottedAtTick = -1;
+  }
+
+  markRotted(): void {
+    this.rottedAtTick = this.mg.ticks();
+  }
+
+  // Territory actively rotting. Stamped by the execution rather than derived from
+  // troops vs the floor: that is a knife-edge equality (the drain lands exactly ON
+  // the floor) and the floor moves as rot shrinks the cap, so a client-side copy
+  // flickers.
+  isDecaying(): boolean {
+    if (!this.inDoomsdayClock() || this.rottedAtTick < 0) return false;
+    return this.mg.ticks() - this.rottedAtTick <= DECAY_CUE_GRACE_TICKS;
   }
 
   betrayals(): number {
@@ -1339,11 +1377,25 @@ export class PlayerImpl implements Player {
 
       const buildNew = canBuild !== false && canUpgrade === false;
 
+      // Cumulative bulk-upgrade totals. Each upgrade raises the unit's level
+      // and the constructed count, so step n costs the same as if the player
+      // already had n extra units — cost(mg, this, n).
+      let upgradeCosts: Gold[] | undefined;
+      if (canUpgrade !== false) {
+        upgradeCosts = new Array<Gold>(MAX_UPGRADE_AMOUNT);
+        let total = 0n;
+        for (let n = 0; n < MAX_UPGRADE_AMOUNT; n++) {
+          total += config.unitInfo(u).cost(mg, this, n);
+          upgradeCosts[n] = total;
+        }
+      }
+
       result[i] = {
         type: u,
         canBuild,
         canUpgrade,
         cost,
+        upgradeCosts,
         overlappingRailroads: buildNew
           ? rail.overlappingRailroads(u, canBuild as TileRef)
           : [],
@@ -1413,6 +1465,10 @@ export class PlayerImpl implements Player {
     if (mg.isSpawnImmunityActive()) {
       return false;
     }
+    // Impassable terrain cannot be nuked.
+    if (mg.isImpassable(tile)) {
+      return false;
+    }
     const owner = this.mg.owner(tile);
     // Allow nuking teammates after the game is over (aftergame fun)
     const gameOver = mg.getWinner() !== null;
@@ -1443,14 +1499,15 @@ export class PlayerImpl implements Player {
     }
 
     // only get missilesilos that are not on cooldown and not under construction
-    const bestSilo = findClosestBy(
-      this.units(UnitType.MissileSilo),
-      (silo) => mg.manhattanDist(silo.tile(), tile),
+    const readySilos = this.units(UnitType.MissileSilo).filter(
       (silo) =>
         silo.isActive() && !silo.isInCooldown() && !silo.isUnderConstruction(),
     );
-
-    return bestSilo?.tile() ?? false;
+    readySilos.sort(
+      (a, b) =>
+        mg.manhattanDist(a.tile(), tile) - mg.manhattanDist(b.tile(), tile),
+    );
+    return readySilos[0]?.tile() ?? false;
   }
 
   portSpawn(tile: TileRef, validTiles: TileRef[] | null): TileRef | false {
@@ -1496,7 +1553,7 @@ export class PlayerImpl implements Player {
   }
 
   landBasedUnitSpawn(tile: TileRef): TileRef | false {
-    return this.mg.isLand(tile) ? tile : false;
+    return this.mg.isLand(tile) && !this.mg.isImpassable(tile) ? tile : false;
   }
 
   landBasedStructureSpawn(
@@ -1653,7 +1710,7 @@ export class PlayerImpl implements Player {
       return false;
     }
 
-    if (!this.mg.isLand(tile)) {
+    if (!this.mg.isLand(tile) || this.mg.isImpassable(tile)) {
       return false;
     }
     if (this.mg.hasOwner(tile)) {
@@ -1662,7 +1719,7 @@ export class PlayerImpl implements Player {
       for (const t of this.mg.bfs(
         tile,
         andFN(
-          (gm, t) => !gm.hasOwner(t) && gm.isLand(t),
+          (gm, t) => !gm.hasOwner(t) && gm.isLand(t) && !gm.isImpassable(t),
           manhattanDistFN(tile, 200),
         ),
       )) {

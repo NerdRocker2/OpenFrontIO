@@ -34,6 +34,9 @@ declare global {
       turnstileSiteKey?: string;
       jwtAudience?: string;
       instanceId?: string;
+      // Desktop-only: explicit game-server host for the WebSocket origin.
+      // Absent on the web build (client falls back to same-origin location).
+      serverHost?: string;
     };
   }
 }
@@ -84,20 +87,49 @@ export const SAM_CONSTRUCTION_TICKS = 30 * 10;
 // Doomsday Clock tunables (anti-stall). Off unless enabled in GameConfig.
 // Times in seconds. The required map share rises in waves (levels + times in
 // DoomsdayClock.ts, chosen by `speed`). A side caught below the bar gets a
-// warnSeconds cooldown ("Danger, decay in Xs"), then troops bleed to zero: the
-// warn (10s) + the linear drain (~55s from full troops, sooner with fewer troops
-// or a shrinking territory) make ~1 minute from caught to wiped out.
+// warnSeconds cooldown ("Danger, decay in Xs"), then troops bleed DOWN TO A
+// FLOOR (drainFloorPercent of max), not to zero: the warn (30s) + the linear
+// drain (~90s from full troops, sooner with fewer troops or a shrinking
+// territory) make ~2 minutes from caught to the floor. A doomed side is crippled
+// to 5% of max, not eliminated, so a brief dip below the bar is recoverable (the
+// drain stops the moment it climbs back); the rising bar still guarantees a
+// finish by squeezing territory and leaving the doomed side easy to conquer.
 const DOOMSDAY_CLOCK_DEFAULTS = {
   enabled: false,
   speed: "normal" as DoomsdayClockSpeed,
-  warnSeconds: 10, // cooldown before decay after the bar catches you
+  warnSeconds: 30, // cooldown (the flashing danger cue) before decay begins
   drainStartPercent: 2, // starts bleeding at once (already beats troop income)
-  drainMaxPercent: 6,
-  drainRampSeconds: 50, // ramps LINEARLY to the max over this long
-  // Warships bleed on the same start + ramp but to a much higher ceiling than
-  // troops, so a fleet at full attrition sinks in ~2s (50% of a ship's max
-  // health per second) instead of riding out the gentle troop rate. Ships only.
+  drainMaxPercent: 5,
+  drainRampSeconds: 90, // ramps LINEARLY to the max over this long
+  drainFloorPercent: 5, // drain settles here: crippled to 5% of max, never wiped
+  // The floor decays start -> drainFloorPercent over floorDecaySeconds, leaving
+  // one comeback window with a usable army. It must not be permanent: maxTroops is
+  // sublinear (~100k at one tile), so a fixed 40% is ~40k troops on a single tile.
+  floorStartPercent: 40,
+  floorDecaySeconds: 90,
+  // TERRITORY ROT — the finisher, since the drain never kills. rotDeathSeconds is
+  // a DEADLINE, not a rate: the territory is gone this long after the skull
+  // appeared, whatever it holds. 0 disables rot. Timeline:
+  //
+  //   0s    skull blinks, warn countdown
+  //   30s   skull steady, troops draining              (warnSeconds)
+  //   120s  floor at 5%, territory rotting, skull RED  (warn + floorDecay)
+  //   150s  nothing left, eliminated                   (rotDeathSeconds)
+  rotDeathSeconds: 150,
+  // Grainy opening: pinholes across this share of the territory before the holes
+  // grow together. Held to a third of the rot window, so shortening the window
+  // shortens this too: at 20s the speckle WAS the death rather than its opening.
+  rotGrainSeconds: 10,
+  rotSpecklePercent: 15,
+  // Warships bleed on their OWN gentler start + a STEEP (convex) ramp to a much
+  // higher ceiling. A ship caught when its side is first doomed lasts about as
+  // long as troops (the low start + no income ≈ the troop net rate), but the rate
+  // curves up sharply (warshipDrainCurveExponent), so once a side has been under
+  // the clock the full ramp, ships drop to the same floor in ~2s (50%/s), not
+  // sunk. Ships only.
+  warshipDrainStartPercent: 1,
   warshipDrainMaxPercent: 50,
+  warshipDrainCurveExponent: 8, // >1 = convex: stays gentle early, then spikes
 };
 
 export class Config {
@@ -106,6 +138,7 @@ export class Config {
     private _gameConfig: GameConfig,
     private _userSettings: UserSettings | null,
     private _isReplay: boolean,
+    public readonly listed: boolean = false,
   ) {}
 
   isReplay(): boolean {
@@ -134,7 +167,15 @@ export class Config {
       drainStartPercent: d.drainStartPercent,
       drainMaxPercent: d.drainMaxPercent,
       drainRampSeconds: d.drainRampSeconds,
+      drainFloorPercent: d.drainFloorPercent,
+      floorStartPercent: d.floorStartPercent,
+      floorDecaySeconds: d.floorDecaySeconds,
+      rotDeathSeconds: d.rotDeathSeconds,
+      rotGrainSeconds: d.rotGrainSeconds,
+      rotSpecklePercent: d.rotSpecklePercent,
+      warshipDrainStartPercent: d.warshipDrainStartPercent,
       warshipDrainMaxPercent: d.warshipDrainMaxPercent,
+      warshipDrainCurveExponent: d.warshipDrainCurveExponent,
     };
   }
   spawnImmunityDuration(): Tick {
@@ -213,7 +254,12 @@ export class Config {
     return this._gameConfig.disableNavMesh ?? false;
   }
   disableAlliances(): boolean {
-    return this._gameConfig.disableAlliances ?? false;
+    // customAllianceDuration === 0 disables alliances (the "custom alliances"
+    // control at 0). The legacy boolean is still honored for older configs.
+    return (
+      this._gameConfig.customAllianceDuration === 0 ||
+      (this._gameConfig.disableAlliances ?? false)
+    );
   }
   waterNukes(): boolean {
     return this._gameConfig.waterNukes ?? false;
@@ -504,8 +550,8 @@ export class Config {
   private costWrapper(
     costFn: (units: number) => number,
     ...types: UnitType[]
-  ): (g: Game, p: Player) => bigint {
-    return (game: Game, player: Player) => {
+  ): (g: Game, p: Player, extraUnits?: number) => bigint {
+    return (game: Game, player: Player, extraUnits: number = 0) => {
       if (
         player.type() === PlayerType.Human &&
         this.hasInfiniteGoldFor(player)
@@ -518,7 +564,7 @@ export class Config {
           Math.min(player.unitsOwned(type), player.unitsConstructed(type)),
         0,
       );
-      return BigInt(costFn(numUnits));
+      return BigInt(costFn(numUnits + extraUnits));
     };
   }
 
@@ -560,6 +606,10 @@ export class Config {
     return 30 * 10;
   }
   allianceDuration(): Tick {
+    // Host can set a custom alliance duration in minutes (1-15); 0 disables
+    // alliances (see disableAlliances). Falls back to the 5 minute default.
+    const m = this._gameConfig.customAllianceDuration;
+    if (typeof m === "number" && m > 0) return m * 60 * 10;
     return 300 * 10; // 5 minutes.
   }
   temporaryEmbargoDuration(): Tick {
@@ -624,6 +674,8 @@ export class Config {
         mag = 120;
         speed = 25;
         break;
+      case TerrainType.Impassable:
+        throw new Error(`impassable terrain cannot be attacked`);
       default:
         throw new Error(`terrain type ${type} not supported`);
     }
@@ -881,8 +933,17 @@ export class Config {
     return 100;
   }
 
-  defaultNukeSpeed(): number {
-    return 10;
+  nukeSpeed(unitType: UnitType): number {
+    switch (unitType) {
+      case UnitType.AtomBomb:
+      case UnitType.HydrogenBomb:
+        return 10;
+      case UnitType.MIRV:
+        return 15;
+      case UnitType.MIRVWarhead:
+        return 22;
+    }
+    throw new Error(`Unknown nuke type: ${unitType}`);
   }
 
   defaultNukeTargetableRange(): number {
@@ -953,8 +1014,10 @@ export class Config {
     return 5;
   }
 
-  warshipRetreatHealthThreshold(): number {
-    return 750;
+  /** Health at or below which a warship retreats to repair, as a percent of its
+   *  (veterancy-adjusted) max health, so the threshold scales with max health. */
+  warshipRetreatHealthPercent(): number {
+    return 75;
   }
 
   warshipPassiveHealing(): number {
@@ -967,6 +1030,35 @@ export class Config {
 
   warshipPortSwitchThreshold(): number {
     return 0.75;
+  }
+
+  // --- Warship veterancy ---
+
+  /** Maximum veterancy level a warship can reach. */
+  warshipMaxVeterancy(): number {
+    return 3;
+  }
+
+  /** Max-health boost per veterancy level, as an integer percent of base max
+   *  health. Integer-only to keep src/core deterministic (no float constants). */
+  warshipVeterancyHealthBonus(): number {
+    return 20;
+  }
+
+  /** Shell-damage boost per veterancy level, as an integer percent of the
+   *  rolled damage. Integer-only to keep src/core deterministic. */
+  warshipVeterancyShellDamageBonus(): number {
+    return 20;
+  }
+
+  /** Transport ships a warship must destroy to gain one veterancy level. */
+  warshipVeterancyTransportKills(): number {
+    return 10;
+  }
+
+  /** Trade ships a warship must capture to gain one veterancy level. */
+  warshipVeterancyTradeCaptures(): number {
+    return 25;
   }
 
   defensePostShellAttackRate(): number {

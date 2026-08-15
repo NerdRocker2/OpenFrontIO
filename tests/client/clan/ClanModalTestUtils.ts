@@ -67,6 +67,9 @@ export function clanApiMockFactory() {
       results: [],
       nextCursor: null,
     })),
+    // ClanDetailView calls this when a clan has a discordUrl; mock the degraded
+    // plain-link result so view tests never reach the real Discord network.
+    fetchDiscordInvite: vi.fn(async (url: string) => ({ url, valid: true })),
   };
 }
 
@@ -97,6 +100,10 @@ export function utilsMockFactory() {
   return {
     translateText: vi.fn((key: string) => key),
     showToast: vi.fn(),
+    // Used by the game-history rows; identity formatting keeps assertions
+    // readable without pulling in the real duration/map lookups.
+    renderDuration: vi.fn((seconds: number) => `${seconds}s`),
+    getMapName: vi.fn((map: string) => map),
   };
 }
 

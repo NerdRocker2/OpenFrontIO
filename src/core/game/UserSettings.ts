@@ -1,7 +1,15 @@
 import {
   GraphicsOverrides,
   GraphicsOverridesSchema,
+  GraphicsPresets,
+  GraphicsPresetsSchema,
 } from "../../client/render/gl/GraphicsOverrides";
+import {
+  COLUMN_IDS,
+  ColumnId,
+  DEFAULT_STATS_COLUMNS,
+  StatsTableKind,
+} from "../../client/StatsConstants";
 import { Cosmetics } from "../CosmeticSchemas";
 import { PlayerPattern } from "../Schemas";
 
@@ -36,15 +44,14 @@ export function getDefaultKeybinds(isMac: boolean): Record<string, string> {
     moveRight: "KeyD",
     buildMenuModifier: isMac ? "MetaLeft" : "ControlLeft",
     emojiMenuModifier: "AltLeft",
+    boxSelectWarships: "ShiftLeft",
     shiftKey: "ShiftLeft",
     resetGfx: "KeyR",
     selectAllWarships: "KeyF",
     pauseGame: "KeyP",
     gameSpeedUp: "Period",
     gameSpeedDown: "Comma",
-    musicTogglePause: "Backslash",
-    musicPrevTrack: "BracketLeft",
-    musicNextTrack: "BracketRight",
+    altKey: "AltLeft",
   };
 }
 
@@ -56,13 +63,74 @@ export const USER_SETTINGS_CHANGED_EVENT = "event:user-settings-changed";
  */
 export const PATTERN_KEY = "territoryPattern";
 export const FLAG_KEY = "flag";
+export const CROWN_KEY = "crown";
 export const COLOR_KEY = "settings.territoryColor";
 export const PERFORMANCE_OVERLAY_KEY = "settings.performanceOverlay";
 export const KEYBINDS_KEY = "settings.keybinds";
 export const GRAPHICS_KEY = "settings.graphics";
+export const GRAPHICS_PRESETS_KEY = "settings.graphicsPresets";
+export const EFFECTS_KEY = "settings.effects";
+// Keep the existing storage key so the rename does not reset saved columns.
+export const PLAYER_STATS_COLUMNS_KEY = "settings.leaderboardColumns";
+export const TEAM_STATS_COLUMNS_KEY = "settings.teamStatsColumns";
+const STATS_COLUMNS_KEYS: Record<StatsTableKind, string> = {
+  player: PLAYER_STATS_COLUMNS_KEY,
+  team: TEAM_STATS_COLUMNS_KEY,
+};
+
+/**
+ * Cosmetic selections are stored per player: while logged in, the storage key
+ * is suffixed with the player's publicId so selections survive logout and are
+ * restored on the next login (#4955). Logged out, the bare key is used.
+ */
+const PER_PLAYER_KEYS: readonly string[] = [
+  PATTERN_KEY,
+  FLAG_KEY,
+  CROWN_KEY,
+  EFFECTS_KEY,
+];
 
 export class UserSettings {
   private static cache = new Map<string, string | null>();
+  /** publicId of the logged-in player, or null when logged out. */
+  private static playerId: string | null = null;
+
+  /**
+   * Sets which player's cosmetic selections are active. Called with the
+   * player's publicId when /users/@me resolves, and with null on logout.
+   *
+   * Selections made while logged out — including values written by builds
+   * that predate per-player keying — are moved into the player's scope,
+   * overwriting the stored ones (the most recent selection wins), so existing
+   * users keep their cosmetics.
+   */
+  static setPlayerId(playerId: string | null): void {
+    if (UserSettings.playerId === playerId) return;
+    UserSettings.playerId = playerId;
+    const settings = new UserSettings();
+    if (playerId !== null) {
+      for (const key of PER_PLAYER_KEYS) {
+        const bare = localStorage.getItem(key);
+        if (bare === null) continue;
+        const scopedKey = `${key}:${playerId}`;
+        localStorage.setItem(scopedKey, bare);
+        UserSettings.cache.set(scopedKey, bare);
+        localStorage.removeItem(key);
+        UserSettings.cache.set(key, null);
+      }
+    }
+    // The active selections changed with the identity; let listeners re-read.
+    for (const key of PER_PLAYER_KEYS) {
+      settings.emitChange(key, settings.getCached(key));
+    }
+  }
+
+  private storageKey(key: string): string {
+    if (UserSettings.playerId !== null && PER_PLAYER_KEYS.includes(key)) {
+      return `${key}:${UserSettings.playerId}`;
+    }
+    return key;
+  }
 
   private emitChange(key: string, value: any): void {
     try {
@@ -79,23 +147,28 @@ export class UserSettings {
   }
 
   private getCached(key: string): string | null {
-    if (!UserSettings.cache.has(key)) {
-      UserSettings.cache.set(key, localStorage.getItem(key));
+    const storageKey = this.storageKey(key);
+    if (!UserSettings.cache.has(storageKey)) {
+      UserSettings.cache.set(storageKey, localStorage.getItem(storageKey));
     }
-    return UserSettings.cache.get(key) ?? null;
+    return UserSettings.cache.get(storageKey) ?? null;
   }
 
+  // Change events always use the base key — listeners subscribe with the
+  // exported key constants, not the per-player storage key.
   private setCached(key: string, value: string, emitChange: boolean = true) {
-    localStorage.setItem(key, value);
-    UserSettings.cache.set(key, value);
+    const storageKey = this.storageKey(key);
+    localStorage.setItem(storageKey, value);
+    UserSettings.cache.set(storageKey, value);
     if (emitChange) {
       this.emitChange(key, value);
     }
   }
 
   public removeCached(key: string, emitChange: boolean = true) {
-    localStorage.removeItem(key);
-    UserSettings.cache.set(key, null);
+    const storageKey = this.storageKey(key);
+    localStorage.removeItem(storageKey);
+    UserSettings.cache.set(storageKey, null);
     if (emitChange) {
       this.emitChange(key, null);
     }
@@ -233,6 +306,21 @@ export class UserSettings {
     this.setBool("settings.goToPlayer", !this.goToPlayer());
   }
 
+  nukeAllianceSafetyDuration(): number {
+    const raw = this.getCached("settings.nukeAllianceSafetyDuration");
+    if (raw === null || raw.trim() === "") return 5;
+    const val = Number(raw);
+    if (!Number.isInteger(val) || val < 0 || val > 30) {
+      return 5;
+    }
+    return val;
+  }
+
+  setNukeAllianceSafetyDuration(duration: number) {
+    const val = Math.max(0, Math.min(30, Math.round(duration)));
+    this.setCached("settings.nukeAllianceSafetyDuration", val.toString());
+  }
+
   // For development only. Used for testing patterns, set in the console manually.
   getDevOnlyPattern(): PlayerPattern | undefined {
     const data = localStorage.getItem("dev-pattern") ?? undefined;
@@ -291,6 +379,25 @@ export class UserSettings {
     return data.startsWith(skinPrefix) ? data.slice(skinPrefix.length) : null;
   }
 
+  // For development only. Crown image URL for testing, set in the console
+  // manually (localStorage "dev-crown"), like getDevOnlyPattern.
+  getDevOnlyCrown(): string | undefined {
+    return localStorage.getItem("dev-crown") ?? undefined;
+  }
+
+  /** Returns the selected crown name, or null if none is selected. */
+  getSelectedCrownName(): string | null {
+    return this.getCached(CROWN_KEY);
+  }
+
+  setSelectedCrownName(name: string | undefined): void {
+    if (name === undefined) {
+      this.removeCached(CROWN_KEY);
+    } else {
+      this.setCached(CROWN_KEY, name);
+    }
+  }
+
   getFlag(): string | null {
     let flag = this.getCached(FLAG_KEY);
     if (!flag) return null;
@@ -313,6 +420,66 @@ export class UserSettings {
 
   clearFlag(emitChange: boolean = false): void {
     this.removeCached(FLAG_KEY, emitChange);
+  }
+
+  /**
+   * Selected effect cosmetics, keyed by selection slot (at most one per slot).
+   * A slot is the effectType for trails and the nukeType for nuke explosions —
+   * see effectTypeForSlot. Persisted as a single JSON blob under EFFECTS_KEY.
+   */
+  getSelectedEffects(): Record<string, string> {
+    const raw = this.getString(EFFECTS_KEY, "");
+    if (!raw) return {};
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? parsed
+        : {};
+    } catch {
+      return {};
+    }
+  }
+
+  getSelectedEffectName(slot: string): string | null {
+    return this.getSelectedEffects()[slot] ?? null;
+  }
+
+  setSelectedEffectName(slot: string, name: string | undefined): void {
+    const map = this.getSelectedEffects();
+    if (name === undefined) delete map[slot];
+    else map[slot] = name;
+    if (Object.keys(map).length === 0) this.removeCached(EFFECTS_KEY);
+    else this.setString(EFFECTS_KEY, JSON.stringify(map));
+  }
+
+  // Invalid/corrupt storage, unknown ids, or an empty result fall back to
+  // defaults, matching the getSelectedEffects defensive pattern. Returned
+  // order is registry (display) order regardless of stored order.
+  private getColumnIds(key: string, defaults: readonly ColumnId[]): ColumnId[] {
+    const raw = this.getString(key, "");
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          const filtered = COLUMN_IDS.filter((id) => parsed.includes(id));
+          if (filtered.length > 0) return filtered;
+        }
+      } catch {
+        // fall through to defaults
+      }
+    }
+    return [...defaults];
+  }
+
+  statsColumns(kind: StatsTableKind): ColumnId[] {
+    return this.getColumnIds(
+      STATS_COLUMNS_KEYS[kind],
+      DEFAULT_STATS_COLUMNS[kind],
+    );
+  }
+
+  setStatsColumns(kind: StatsTableKind, ids: ColumnId[]): void {
+    this.setString(STATS_COLUMNS_KEYS[kind], JSON.stringify(ids));
   }
 
   backgroundMusicVolume(): number {
@@ -350,8 +517,21 @@ export class UserSettings {
     const raw = this.getString(GRAPHICS_KEY, "");
     if (!raw) return {};
     try {
-      const parsed = GraphicsOverridesSchema.safeParse(JSON.parse(raw));
-      if (parsed.success) return parsed.data;
+      const json: unknown = JSON.parse(raw);
+      const parsed = GraphicsOverridesSchema.safeParse(json);
+      if (parsed.success) {
+        const overrides = parsed.data;
+        // Legacy: colorblind was an accessibility.colorblind boolean before
+        // the palette enum existed; the schema strips the unknown section, so
+        // translate it here. Rewritten to the new shape on the next save.
+        const legacyColorblind = (
+          json as { accessibility?: { colorblind?: unknown } }
+        ).accessibility?.colorblind;
+        if (overrides.palette === undefined && legacyColorblind === true) {
+          overrides.palette = "colorblind";
+        }
+        return overrides;
+      }
     } catch {
       // fall through
     }
@@ -360,6 +540,31 @@ export class UserSettings {
 
   setGraphicsOverrides(value: GraphicsOverrides): void {
     this.setString(GRAPHICS_KEY, JSON.stringify(value));
+  }
+
+  // Named user-saved graphics presets. Returns {} if missing, unparseable, or
+  // fails schema validation.
+  graphicsPresets(): GraphicsPresets {
+    const raw = this.getString(GRAPHICS_PRESETS_KEY, "");
+    if (!raw) return {};
+    try {
+      const parsed = GraphicsPresetsSchema.safeParse(JSON.parse(raw));
+      if (parsed.success) return parsed.data;
+    } catch {
+      // fall through
+    }
+    return {};
+  }
+
+  setGraphicsPresets(value: GraphicsPresets): void {
+    this.setString(GRAPHICS_PRESETS_KEY, JSON.stringify(value));
+  }
+
+  // Whether the presets key has ever been written. Distinguishes a player who
+  // deleted all their presets (stored "{}") from one who has never seen the
+  // preset UI — used to run the legacy-overrides migration exactly once.
+  hasGraphicsPresets(): boolean {
+    return this.getString(GRAPHICS_PRESETS_KEY, "") !== "";
   }
 
   // In case localStorage was manually edited to be invalid, return an empty object

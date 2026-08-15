@@ -1,16 +1,21 @@
 /**
  * TerrainPass — renders the terrain map as a textured quad.
  *
- * Initial upload happens once; per-tile updates flow through
- * applyTerrainDelta() so water-nuke conversions (land → water) are reflected
+ * Initial upload happens once; incremental updates flow through
+ * applyTerrainRects() so water-nuke conversions (land → water) are reflected
  * live. Vertex shader transforms the map quad by the camera mat3; fragment
  * shader samples the RGBA8 terrain texture with nearest-neighbour filtering
  * so each terrain cell stays pixel-crisp at every zoom level.
  */
 
+import type { TerrainRect } from "../../types";
 import terrainFragSrc from "../shaders/terrain/terrain.frag.glsl?raw";
 import terrainVertSrc from "../shaders/terrain/terrain.vert.glsl?raw";
-import { buildTerrainRGBA, encodeTerrainTile } from "../utils/ColorUtils";
+import {
+  buildTerrainRGBA,
+  encodeTerrainTile,
+  TerrainColorOverrides,
+} from "../utils/ColorUtils";
 import {
   createMapQuad,
   createProgram,
@@ -29,21 +34,27 @@ export class TerrainPass {
   private uCamera: WebGLUniformLocation;
   private mapW: number;
   private mapH: number;
-  // Base ocean (deep water) color; reused by applyTerrainDelta and rebuilds.
-  private oceanColor: readonly [number, number, number] | undefined;
-  // Scratch buffer for 1×1 sub-uploads; reused across applyTerrainDelta calls.
-  private readonly pixelScratch = new Uint8Array(4);
+  // Base ocean (deep water) color; reused by applyTerrainRects and rebuilds.
+  private terrainColors: TerrainColorOverrides | undefined;
+  // Scratch RGBA buffer for rect sub-uploads; grown as needed and reused
+  // across applyTerrainRects calls.
+  private rgbaScratch = new Uint8Array(0);
 
   constructor(
     private gl: WebGL2RenderingContext,
-    private terrainBytes: Uint8Array,
+    // Regenerates current per-tile terrain bytes (reflecting water-nuke
+    // conversions) for the rare full re-bake in setTerrainColors. A provider
+    // instead of a retained buffer: terrain bytes are map-sized (8 MB on the
+    // giant map).
+    private terrainSource: () => Uint8Array,
+    terrainBytes: Uint8Array,
     mapW: number,
     mapH: number,
-    oceanColor?: readonly [number, number, number],
+    terrainColors?: TerrainColorOverrides,
   ) {
     this.mapW = mapW;
     this.mapH = mapH;
-    this.oceanColor = oceanColor;
+    this.terrainColors = terrainColors;
     this.program = createProgram(
       gl,
       shaderSrc(terrainVertSrc, { MAP_W: mapW, MAP_H: mapH }),
@@ -57,7 +68,7 @@ export class TerrainPass {
       internalFormat: gl.RGBA8,
       format: gl.RGBA,
       type: gl.UNSIGNED_BYTE,
-      data: buildTerrainRGBA(terrainBytes, mapW, mapH, oceanColor),
+      data: buildTerrainRGBA(terrainBytes, mapW, mapH, terrainColors),
       filter: gl.NEAREST, // pixel-crisp at all zoom levels
     });
 
@@ -65,11 +76,11 @@ export class TerrainPass {
   }
 
   /**
-   * Replace the base ocean color and re-upload the whole terrain texture.
-   * Called when the user changes the ocean color in graphics settings.
+   * Replace the base terrain colors and re-upload the whole terrain texture.
+   * Called when the user changes the terrain colors in graphics settings.
    */
-  setOceanColor(oceanColor?: readonly [number, number, number]): void {
-    this.oceanColor = oceanColor;
+  setTerrainColors(terrainColors?: TerrainColorOverrides): void {
+    this.terrainColors = terrainColors;
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, this.tex);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
@@ -82,41 +93,55 @@ export class TerrainPass {
       this.mapH,
       gl.RGBA,
       gl.UNSIGNED_BYTE,
-      buildTerrainRGBA(this.terrainBytes, this.mapW, this.mapH, oceanColor),
+      buildTerrainRGBA(
+        this.terrainSource(),
+        this.mapW,
+        this.mapH,
+        terrainColors,
+      ),
     );
   }
 
   /**
-   * Update a subset of terrain tiles in-place (e.g. land→water from a water
-   * nuke). `bytes[i]` is the new terrain byte for `refs[i]` (parallel arrays).
-   * One 1×1 texSubImage2D per ref — fine for the small bursts a single nuke
-   * produces.
-   *
-   * Also writes back into `terrainBytes` so a later full re-upload (e.g.
-   * setOceanColor) reflects these conversions instead of reverting them.
+   * Update terrain regions in-place (e.g. land→water from a water nuke).
+   * Each rect's terrain bytes are stored row-major, concatenated in `bytes`
+   * in rect order. One texSubImage2D per rect — a massive bomb changes tens
+   * of thousands of tiles, so per-tile 1×1 uploads are too slow. A later full
+   * re-upload (setTerrainColors) regenerates from terrainSource, whose
+   * backing game map already reflects these conversions.
    */
-  applyTerrainDelta(refs: readonly number[], bytes: Uint8Array): void {
-    if (refs.length === 0) return;
+  applyTerrainRects(rects: readonly TerrainRect[], bytes: Uint8Array): void {
+    if (rects.length === 0) return;
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, this.tex);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    for (let i = 0; i < refs.length; i++) {
-      const ref = refs[i];
-      const x = ref % this.mapW;
-      const y = (ref - x) / this.mapW;
-      this.terrainBytes[ref] = bytes[i];
-      encodeTerrainTile(bytes[i], this.pixelScratch, 0, this.oceanColor);
+    let offset = 0;
+    for (const r of rects) {
+      const count = r.w * r.h;
+      if (this.rgbaScratch.length < count * 4) {
+        this.rgbaScratch = new Uint8Array(count * 4);
+      }
+      for (let i = 0; i < count; i++) {
+        encodeTerrainTile(
+          bytes[offset + i],
+          this.rgbaScratch,
+          i * 4,
+          this.terrainColors,
+        );
+      }
       gl.texSubImage2D(
         gl.TEXTURE_2D,
         0,
-        x,
-        y,
-        1,
-        1,
+        r.x,
+        r.y,
+        r.w,
+        r.h,
         gl.RGBA,
         gl.UNSIGNED_BYTE,
-        this.pixelScratch,
+        this.rgbaScratch,
+        0,
       );
+      offset += count;
     }
   }
 

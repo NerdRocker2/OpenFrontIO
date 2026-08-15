@@ -13,6 +13,7 @@
   --color-aquarius: #3fa9f5;
   --color-dawn-blue: #cccccc;
   --color-bright-white: #ffffff;
+  --color-bright-blue: #1e90ff;
 
   /* Openfront Masters sub-brand */
   --color-cyber-yellow: #ffd700;
@@ -56,6 +57,17 @@
   input::placeholder,
   textarea::placeholder {
     color: var(--color-gray-400);
+  }
+
+  .custom-plutonium-input {
+    appearance: textfield;
+    -moz-appearance: textfield;
+  }
+
+  .custom-plutonium-input::-webkit-outer-spin-button,
+  .custom-plutonium-input::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
   }
 
   button:not(:disabled),

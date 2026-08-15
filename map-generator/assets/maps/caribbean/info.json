@@ -2,7 +2,7 @@
   "id": "Caribbean",
   "name": "Caribbean",
   "translation_key": "map.caribbean",
-  "categories": ["new", "north_america"],
+  "categories": ["north_america"],
   "multiplayer_frequency": 5,
   "nations": [
     {
@@ -156,7 +156,7 @@
       "flag": "cw"
     },
     {
-      "coordinates": [3185, 13],
+      "coordinates": [2235, 2],
       "name": "Bermuda",
       "flag": "bm"
     },
@@ -317,5 +317,6 @@
       "name": "Tobago",
       "flag": "tt"
     }
-  ]
+  ],
+  "themes": ["north_america"]
 }

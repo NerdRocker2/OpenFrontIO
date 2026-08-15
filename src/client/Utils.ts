@@ -1,4 +1,5 @@
 import IntlMessageFormat from "intl-messageformat";
+import { DoomsdayClockSpeed } from "../core/game/DoomsdayClock";
 import {
   Duos,
   GameMode,
@@ -14,10 +15,14 @@ import { GameConfig } from "../core/Schemas";
 import type { LangSelector } from "./LangSelector";
 import { Platform } from "./Platform";
 
-export const TUTORIAL_VIDEO_URL = "https://www.youtube.com/embed/EN2oOog3pSs";
+export const TUTORIAL_VIDEO_URL = "https://www.youtube.com/embed/7J5zwb_s_Cg";
 
 export function normaliseMapKey(mapName: string): string {
-  return mapName.toLowerCase().replace(/[\s.]+/g, "");
+  // Asset dirs / translation keys are the map id lowercased. For most maps
+  // stripping spaces from the display name gives the same string, but not for
+  // the tourney maps (e.g. "Tourney 2 Teams" lives in maps/tourney1/).
+  const id = maps.find((m) => m.type === mapName)?.id;
+  return (id ?? mapName).toLowerCase().replace(/[\s.]+/g, "");
 }
 
 export function getMapName(mapName: string | undefined): string | null {
@@ -114,7 +119,7 @@ function getTeamSize(
 }
 
 export interface ModifierInfo {
-  /** Translation key for detailed label (e.g. "host_modal.random_spawn") */
+  /** Translation key for detailed label (e.g. "game_settings.random_spawn") */
   labelKey: string;
   /** Translation key for badge/short label (e.g. "public_game_modifier.random_spawn") */
   badgeKey: string;
@@ -131,18 +136,19 @@ export interface ModifierInfo {
  */
 export function getActiveModifiers(
   modifiers: PublicGameModifiers | undefined,
+  doomsdayClockSpeed?: DoomsdayClockSpeed,
 ): ModifierInfo[] {
   if (!modifiers) return [];
   const result: ModifierInfo[] = [];
   if (modifiers.isRandomSpawn) {
     result.push({
-      labelKey: "host_modal.random_spawn",
+      labelKey: "game_settings.random_spawn",
       badgeKey: "public_game_modifier.random_spawn",
     });
   }
   if (modifiers.isCompact) {
     result.push({
-      labelKey: "host_modal.compact_map",
+      labelKey: "game_settings.compact_map",
       badgeKey: "public_game_modifier.compact_map",
     });
   }
@@ -174,7 +180,7 @@ export function getActiveModifiers(
   }
   if (modifiers.goldMultiplier) {
     result.push({
-      labelKey: "host_modal.gold_multiplier",
+      labelKey: "game_settings.gold_multiplier",
       badgeKey: "public_game_modifier.gold_multiplier",
       badgeParams: {
         amount: modifiers.goldMultiplier,
@@ -220,6 +226,21 @@ export function getActiveModifiers(
       badgeKey: "public_game_modifier.water_nukes",
     });
   }
+  if (modifiers.isDoomsdayClock) {
+    const info: ModifierInfo = {
+      labelKey: "public_game_modifier.doomsday_clock_label",
+      badgeKey: "public_game_modifier.doomsday_clock",
+    };
+    // Name the preset when we know it; older payloads / non-rotation lobbies
+    // may not carry a speed, so keep the plain badge as a fallback.
+    if (doomsdayClockSpeed !== undefined) {
+      info.badgeKey = "public_game_modifier.doomsday_clock_with_speed";
+      info.badgeParams = {
+        speed: translateText(`doomsday_clock_speed.${doomsdayClockSpeed}`),
+      };
+    }
+    result.push(info);
+  }
   return result;
 }
 
@@ -228,8 +249,9 @@ export function getActiveModifiers(
  */
 export function getModifierLabels(
   modifiers: PublicGameModifiers | undefined,
+  doomsdayClockSpeed?: DoomsdayClockSpeed,
 ): string[] {
-  return getActiveModifiers(modifiers).map((m) =>
+  return getActiveModifiers(modifiers, doomsdayClockSpeed).map((m) =>
     translateText(m.badgeKey, m.badgeParams),
   );
 }
@@ -275,6 +297,7 @@ export async function copyToClipboard(
     }
   } catch (err) {
     console.warn("Failed to copy to clipboard", err);
+    throw err;
   }
 }
 
@@ -285,7 +308,13 @@ export function renderNumber(
   num = Number(num);
   num = Math.max(num, 0);
 
-  if (num >= 10_000_000) {
+  if (num >= 10_000_000_000) {
+    const value = Math.floor(num / 100000000) / 10;
+    return value.toFixed(fixedPoints ?? 1) + "B";
+  } else if (num >= 1_000_000_000) {
+    const value = Math.floor(num / 10000000) / 100;
+    return value.toFixed(fixedPoints ?? 2) + "B";
+  } else if (num >= 10_000_000) {
     const value = Math.floor(num / 100000) / 10;
     return value.toFixed(fixedPoints ?? 1) + "M";
   } else if (num >= 1_000_000) {
@@ -514,7 +543,6 @@ export function getMessageTypeClasses(type: MessageType): string {
     case MessageType.SAM_HIT:
     case MessageType.CAPTURED_ENEMY_UNIT:
     case MessageType.CONQUERED_PLAYER:
-    case MessageType.DONATION_RECEIVED:
     case MessageType.ALLIANCE_ACCEPTED:
       return severityColors["success"];
     case MessageType.ATTACK_FAILED:
@@ -526,6 +554,7 @@ export function getMessageTypeClasses(type: MessageType): string {
     case MessageType.ATTACK_CANCELLED:
     case MessageType.ATTACK_REQUEST:
     case MessageType.DONATION_SENT:
+    case MessageType.DONATION_RECEIVED:
       return severityColors["blue"];
     case MessageType.MIRV_INBOUND:
     case MessageType.NUKE_INBOUND:

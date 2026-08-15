@@ -156,7 +156,7 @@
       "name": "Paracel Islands"
     }
   ],
-  "categories": ["new", "asia"],
+  "categories": ["asia"],
   "display_name": "Southeast Asia",
   "id": "SoutheastAsia",
   "map": {
@@ -333,5 +333,6 @@
       "name": "Wa State"
     }
   ],
+  "themes": ["asia"],
   "translation_key": "map.southeastasia"
 }

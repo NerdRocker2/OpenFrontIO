@@ -10,11 +10,19 @@ import {
 import { GameConfig, GameID, PublicGameType } from "../core/Schemas";
 import { Client } from "./Client";
 import { GamePhase, GameServer } from "./GameServer";
+import {
+  noopMatchTelemetryEmitter,
+  type MatchTelemetryEmitter,
+} from "./telemetry/MatchTelemetry";
 
 export class GameManager {
   private games: Map<GameID, GameServer> = new Map();
 
-  constructor(private log: Logger) {
+  constructor(
+    private log: Logger,
+    private readonly telemetry: MatchTelemetryEmitter = noopMatchTelemetryEmitter,
+    private readonly telemetryBuildHash: string = "DEV",
+  ) {
     setInterval(() => this.tick(), 1000);
   }
 
@@ -25,6 +33,14 @@ export class GameManager {
   public publicLobbies(): GameServer[] {
     return Array.from(this.games.values()).filter(
       (g) => g.phase() === GamePhase.Lobby && g.isPublic(),
+    );
+  }
+
+  // Private lobbies a subscriber has listed in the public lobby browser.
+  // Leaving the Lobby phase (start/fill/expiry) delists them automatically.
+  public listedLobbies(): GameServer[] {
+    return Array.from(this.games.values()).filter(
+      (g) => g.phase() === GamePhase.Lobby && !g.isPublic() && g.isListed(),
     );
   }
 
@@ -59,6 +75,7 @@ export class GameManager {
     creatorPersistentID?: string,
     startsAt?: number,
     publicGameType?: PublicGameType,
+    matchmakingTeams?: string[][],
   ): GameServer | null {
     if (this.games.has(id)) {
       this.log.warn("cannot create game, id already exists", { gameID: id });
@@ -90,6 +107,9 @@ export class GameManager {
       creatorPersistentID,
       startsAt,
       publicGameType,
+      matchmakingTeams,
+      this.telemetry,
+      this.telemetryBuildHash,
     );
     this.games.set(id, game);
     return game;
@@ -118,8 +138,13 @@ export class GameManager {
     const active = new Map<GameID, GameServer>();
     for (const [id, game] of this.games) {
       const phase = game.phase();
+      if (phase === GamePhase.Lobby) {
+        game.maybeAutoStartListed();
+      }
       if (phase === GamePhase.Active) {
-        if (!game.hasStarted()) {
+        // A matchmade game missing a player at the start deadline is
+        // cancelled instead of started short-handed.
+        if (!game.hasStarted() && !game.cancelShortHandedMatch()) {
           // Prestart tells clients to start loading the game.
           game.prestart();
           // Start game on delay to allow time for clients to connect.

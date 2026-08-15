@@ -7,6 +7,7 @@ import type {
   ClanMemberStats,
 } from "../../ClanApi";
 import { showToast, translateText } from "../../Utils";
+import { playerNameLink } from "../ui/PlayerNameLink";
 import "./ClanStatsBreakdown";
 export { renderLoadingSpinner } from "../BaseModal";
 export { showToast };
@@ -151,6 +152,7 @@ export function renderServerPagination(
 
 export function renderMemberSearchInput(
   onInput: (e: Event) => void,
+  value: string,
   placeholderKey = "clan_modal.search_members_placeholder",
   trailing?: TemplateResult,
 ): TemplateResult {
@@ -158,6 +160,7 @@ export function renderMemberSearchInput(
     <div class="relative w-full sm:flex-1 sm:min-w-0">
       <input
         type="text"
+        .value=${value}
         @input=${onInput}
         class="w-full h-10 pl-10 pr-4 bg-white/5 border border-white/10 rounded-xl text-white placeholder-white/20 focus:outline-none focus:ring-2 focus:ring-malibu-blue/50 focus:border-malibu-blue/50 transition-all font-medium hover:bg-white/10 text-sm"
         placeholder="${translateText(placeholderKey)}"
@@ -375,9 +378,11 @@ export function renderMemberStats(
   `;
 }
 
+// `host` raises the `view-profile` event that opens the profile modal.
 export function renderMemberRow(
   member: ClanMember,
   myPublicId: string | null,
+  host: HTMLElement,
 ): TemplateResult {
   const isMe = member.publicId === myPublicId;
   return html`
@@ -399,20 +404,16 @@ export function renderMemberRow(
         <div class="flex-1 min-w-0 flex flex-col">
           <div class="flex items-center justify-between gap-2">
             <div class="min-w-0">
-              <copy-button
-                compact
-                .copyText=${member.publicId}
-                .displayText=${member.publicId}
-                .showVisibilityToggle=${false}
-                .showCopyIcon=${false}
-              ></copy-button>
+              ${playerNameLink(host, member.username, member.publicId)}
             </div>
-            <span
-              class="text-white/30 text-[10px] shrink-0 text-right whitespace-nowrap"
-              >${translateText("clan_modal.joined_date", {
-                date: formatClanDate(member.joinedAt),
-              })}</span
-            >
+            <div class="flex items-center gap-2 shrink-0">
+              <span
+                class="text-white/30 text-[10px] text-right whitespace-nowrap"
+                >${translateText("clan_modal.joined_date", {
+                  date: formatClanDate(member.joinedAt),
+                })}</span
+              >
+            </div>
           </div>
         </div>
       </div>
@@ -429,7 +430,9 @@ export function filterMembersBySearch(
   const q = search.toLowerCase();
   return members.filter(
     (m) =>
-      m.publicId.toLowerCase().includes(q) || m.role.toLowerCase().includes(q),
+      m.publicId.toLowerCase().includes(q) ||
+      m.role.toLowerCase().includes(q) ||
+      (m.username?.toLowerCase().includes(q) ?? false),
   );
 }
 
@@ -439,5 +442,9 @@ export function filterRequestsBySearch(
 ): ClanJoinRequest[] {
   if (!search) return requests;
   const q = search.toLowerCase();
-  return requests.filter((r) => r.publicId.toLowerCase().includes(q));
+  return requests.filter(
+    (r) =>
+      r.publicId.toLowerCase().includes(q) ||
+      (r.username?.toLowerCase().includes(q) ?? false),
+  );
 }

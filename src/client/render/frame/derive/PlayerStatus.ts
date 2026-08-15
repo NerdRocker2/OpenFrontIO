@@ -107,10 +107,22 @@ export function computePlayerStatus(
     const inDoomsdayClock = ps.inDoomsdayClock;
     // Past the warn grace the side is actively bleeding troops; the skull holds
     // steady then (vs blinking while merely in danger).
+    const doomsdayClockUnderTicks =
+      (opts.tick ?? 0) - ps.markedDoomsdayClockTick;
+    const doomsdayClockWarnTicks = opts.doomsdayClockWarnTicks ?? 0;
     const doomsdayClockDraining =
-      inDoomsdayClock &&
-      (opts.tick ?? 0) - ps.markedDoomsdayClockTick >=
-        (opts.doomsdayClockWarnTicks ?? 0);
+      inDoomsdayClock && doomsdayClockUnderTicks >= doomsdayClockWarnTicks;
+    // Red, static skull. From the sim — see PlayerImpl.isDecaying.
+    const doomsdayClockDecaying = inDoomsdayClock && ps.isDecaying;
+    // How far through the warn countdown (0->1); the danger skull blinks faster
+    // as this nears 1, i.e. as the side approaches draining.
+    const doomsdayClockWarnProgress =
+      inDoomsdayClock && doomsdayClockWarnTicks > 0
+        ? Math.max(
+            0,
+            Math.min(1, doomsdayClockUnderTicks / doomsdayClockWarnTicks),
+          )
+        : 0;
     const traitorRemainingTicks = ps.traitorRemainingTicks;
 
     // Relative flags
@@ -179,6 +191,8 @@ export function computePlayerStatus(
         disconnected,
         inDoomsdayClock,
         doomsdayClockDraining,
+        doomsdayClockDecaying,
+        doomsdayClockWarnProgress,
         alliance,
         allianceReq,
         target,

@@ -1,5 +1,6 @@
 import colorblindTheme from "./colorblind-theme.json";
 import defaultTheme from "./default-theme.json";
+import { PALETTE_NAMES } from "./GraphicsOverrides";
 import defaults from "./render-settings.json";
 
 /**
@@ -60,10 +61,20 @@ export interface RenderSettings {
   };
   terrain: {
     /**
+     * Map background color as a "#rrggbb" hex string — the clear color drawn
+     * outside the map quad. Impassable terrain is baked to the same color so
+     * the map keeps its non-rectangular silhouette.
+     */
+    backgroundColor: string;
+    /**
      * Base (shallowest) color of deep water as a "#rrggbb" hex string. The
      * per-depth brightness gradient is preserved relative to this color.
      */
     oceanColor: string;
+    sandColor: string;
+    plainsColor: string;
+    highlandColor: string;
+    mountainColor: string;
   };
   falloutBloom: {
     broilSpeedCold: number;
@@ -115,6 +126,11 @@ export interface RenderSettings {
   };
   mapOverlay: {
     trailAlpha: number;
+    /**
+     * Resolution of the offscreen spiral-trail buffer relative to the canvas
+     * (0..1). Lower = cheaper + softer/glowier (bilinear upsample).
+     */
+    spiralResolutionScale: number;
     defenseCheckerDarken: number;
     territoryDefenseDarken: number;
     /** Saturation of the territory fill. 1 = full color, 0 = grayscale. */
@@ -128,6 +144,7 @@ export interface RenderSettings {
     staleNukeR: number;
     staleNukeG: number;
     staleNukeB: number;
+    navalHighlight: boolean;
     highlightBrighten: number;
     highlightFillBrighten: number;
     highlightThicken: number;
@@ -227,6 +244,15 @@ export interface RenderSettings {
     colorGreenR: number;
     colorGreenG: number;
     colorGreenB: number;
+    // Warship veterancy rank pips (gold lines at the sprite's bottom-right)
+    veterancyPipW: number;
+    veterancyPipH: number;
+    veterancyPipGap: number;
+    veterancyPipOffsetX: number;
+    veterancyPipOffsetY: number;
+    veterancyR: number;
+    veterancyG: number;
+    veterancyB: number;
   };
   unit: {
     unitSize: number;
@@ -369,6 +395,12 @@ export interface RenderSettings {
     nationHighlightRadius: number; // nation black highlight radius (squared internally)
     nationHighlightAlpha: number; // nation black highlight opacity (0–1)
   };
+  smallPlayerGlow: {
+    color: number[]; // RGB, each 0–1
+    alpha: number; // peak opacity (0–1)
+    pulseSpeed: number; // breath animation speed
+    strength: number; // opacity fade: 0 = off, 1 = full brightness (default 0.35)
+  };
   altView: {
     gridFontSize: number;
     recolorStructures: boolean;
@@ -385,7 +417,7 @@ export interface RenderSettings {
   lightConfigs: Record<string, { radius: number; intensity: number }>;
 }
 
-export type ThemeName = "default" | "colorblind";
+export type ThemeName = (typeof PALETTE_NAMES)[number];
 
 // Typed so tsc validates each theme JSON against the ThemeSettings shape.
 const THEMES: Record<ThemeName, ThemeSettings> = {

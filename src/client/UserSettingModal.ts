@@ -9,6 +9,7 @@ import "./components/baseComponents/setting/SettingSelect";
 import "./components/baseComponents/setting/SettingSlider";
 import "./components/baseComponents/setting/SettingToggle";
 import { BaseModal } from "./components/BaseModal";
+import "./components/GraphicsPresetSelector";
 import { modalHeader } from "./components/ui/ModalHeader";
 import { Platform } from "./Platform";
 
@@ -96,7 +97,27 @@ export class UserSettingModal extends BaseModal {
       .filter(([k]) => k !== action)
       .map(([, v]) => v);
 
-    if (values.includes(value) && value !== "Null") {
+    // Allow specific key pairs to share physical modifier keys without reporting conflict
+    const ALLOWED_SHARED_MODIFIERS: Array<{
+      actions: [string, string];
+      keyPrefix: string;
+    }> = [
+      { actions: ["emojiMenuModifier", "altKey"], keyPrefix: "Alt" },
+      { actions: ["boxSelectWarships", "shiftKey"], keyPrefix: "Shift" },
+    ];
+
+    const isAllowedSharedModifier = ALLOWED_SHARED_MODIFIERS.some(
+      ({ actions: [a1, a2], keyPrefix }) =>
+        ((action === a1 && activeKeybinds[a2] === value) ||
+          (action === a2 && activeKeybinds[a1] === value)) &&
+        (value === `${keyPrefix}Left` || value === `${keyPrefix}Right`),
+    );
+
+    if (
+      values.includes(value) &&
+      value !== "Null" &&
+      !isAllowedSharedModifier
+    ) {
       const displayKey = formatKeyForDisplay(key || value);
       window.dispatchEvent(
         new CustomEvent("show-message", {
@@ -163,8 +184,8 @@ export class UserSettingModal extends BaseModal {
 
   private getKeyChar(action: string): string {
     const entry = this.userKeybinds[action];
-    if (!entry) return "";
-    return entry.key || "";
+    if (!entry) return formatKeyForDisplay(this.defaultKeybinds[action] || "");
+    return entry.key || formatKeyForDisplay(entry.value || "");
   }
 
   private handleEasterEggKey = (e: KeyboardEvent) => {
@@ -198,25 +219,6 @@ export class UserSettingModal extends BaseModal {
     setTimeout(() => {
       popup.remove();
     }, 5000);
-  }
-
-  /** Whether colorblind mode is currently enabled in the graphics overrides. */
-  private colorblindMode(): boolean {
-    return (
-      this.userSettings.graphicsOverrides().accessibility?.colorblind ?? false
-    );
-  }
-
-  /** Flip the colorblind-mode graphics override and persist it. */
-  private toggleColorblindMode() {
-    const overrides = this.userSettings.graphicsOverrides();
-    this.userSettings.setGraphicsOverrides({
-      ...overrides,
-      accessibility: {
-        ...overrides.accessibility,
-        colorblind: !this.colorblindMode(),
-      },
-    });
   }
 
   private toggleEmojis() {
@@ -291,6 +293,11 @@ export class UserSettingModal extends BaseModal {
       return;
     }
     this.userSettings.setAttackRatioIncrement(Math.round(value));
+    this.requestUpdate();
+  }
+
+  private sliderNukeAllianceSafetyDuration(e: CustomEvent<{ value: number }>) {
+    this.userSettings.setNukeAllianceSafetyDuration(e.detail.value);
     this.requestUpdate();
   }
 
@@ -393,6 +400,29 @@ export class UserSettingModal extends BaseModal {
         defaultKey=${this.defaultKeybinds.coordinateGrid}
         .value=${this.getKeyValue("coordinateGrid")}
         .display=${this.getKeyChar("coordinateGrid")}
+        @change=${this.handleKeybindChange}
+      ></setting-keybind>
+
+      <setting-keybind
+        action="altKey"
+        label=${translateText("user_setting.graphics_refresh_modifier")}
+        description=${translateText(
+          "user_setting.graphics_refresh_modifier_desc",
+          { key: this.getKeyChar("resetGfx").toUpperCase() },
+        )}
+        .defaultKey=${this.defaultKeybinds.altKey}
+        .value=${this.getKeyValue("altKey")}
+        .display=${this.getKeyChar("altKey")}
+        @change=${this.handleKeybindChange}
+      ></setting-keybind>
+
+      <setting-keybind
+        action="resetGfx"
+        label=${translateText("user_setting.reset_gfx")}
+        description=${translateText("user_setting.reset_gfx_desc")}
+        .defaultKey=${this.defaultKeybinds.resetGfx}
+        .value=${this.getKeyValue("resetGfx")}
+        .display=${this.getKeyChar("resetGfx")}
         @change=${this.handleKeybindChange}
       ></setting-keybind>
 
@@ -525,6 +555,26 @@ export class UserSettingModal extends BaseModal {
         .defaultKey=${this.defaultKeybinds.emojiMenuModifier}
         .value=${this.getKeyValue("emojiMenuModifier")}
         .display=${this.getKeyChar("emojiMenuModifier")}
+        @change=${this.handleKeybindChange}
+      ></setting-keybind>
+
+      <setting-keybind
+        action="boxSelectWarships"
+        label=${translateText("user_setting.box_select_warships")}
+        description=${translateText("user_setting.box_select_warships_desc")}
+        .defaultKey=${this.defaultKeybinds.boxSelectWarships}
+        .value=${this.getKeyValue("boxSelectWarships")}
+        .display=${this.getKeyChar("boxSelectWarships")}
+        @change=${this.handleKeybindChange}
+      ></setting-keybind>
+
+      <setting-keybind
+        action="selectAllWarships"
+        label=${translateText("user_setting.select_all_warships")}
+        description=${translateText("user_setting.select_all_warships_desc")}
+        .defaultKey=${this.defaultKeybinds.selectAllWarships}
+        .value=${this.getKeyValue("selectAllWarships")}
+        .display=${this.getKeyChar("selectAllWarships")}
         @change=${this.handleKeybindChange}
       ></setting-keybind>
 
@@ -782,14 +832,20 @@ export class UserSettingModal extends BaseModal {
 
   private renderBasicSettings() {
     return html`
-      <!-- 🎨 Colorblind Mode -->
-      <setting-toggle
-        label="${translateText("user_setting.colorblind_label")}"
-        description="${translateText("user_setting.colorblind_desc")}"
-        id="colorblind-toggle"
-        .checked=${this.colorblindMode()}
-        @change=${this.toggleColorblindMode}
-      ></setting-toggle>
+      <!-- 🎨 Graphics preset -->
+      <div
+        class="flex flex-col w-full p-4 bg-white/5 border border-white/10 rounded-xl hover:bg-white/10 transition-all gap-3"
+      >
+        <div class="flex flex-col min-w-0">
+          <div class="text-white font-bold text-base block mb-1">
+            ${translateText("user_setting.graphics_preset_label")}
+          </div>
+          <div class="text-white/50 text-sm leading-snug">
+            ${translateText("user_setting.graphics_preset_desc")}
+          </div>
+        </div>
+        <graphics-preset-selector></graphics-preset-selector>
+      </div>
 
       <!-- 😊 Emojis -->
       <setting-toggle
@@ -896,6 +952,22 @@ export class UserSettingModal extends BaseModal {
         .value=${String(this.userSettings.attackRatioIncrement())}
         @change=${this.changeAttackRatioIncrement}
       ></setting-select>
+
+      <setting-slider
+        label="${translateText("user_setting.nuke_alliance_safety_label")}"
+        description="${translateText("user_setting.nuke_alliance_safety_desc")}"
+        min="0"
+        max="30"
+        .value=${this.userSettings.nukeAllianceSafetyDuration()}
+        .formatValue=${(val: number) =>
+          val > 0
+            ? translateText("user_setting.nuke_alliance_safety_duration", {
+                count: val,
+                seconds: (val / 10).toFixed(1),
+              })
+            : translateText("user_setting.off")}
+        @change=${this.sliderNukeAllianceSafetyDuration}
+      ></setting-slider>
 
       ${this.showEasterEggSettings
         ? html`

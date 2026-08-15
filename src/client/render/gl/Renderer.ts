@@ -10,6 +10,9 @@
  */
 
 import type { Config } from "../../../core/configuration/Config";
+import type { MapLayer } from "../../../core/game/TerrainMapLoader";
+import { translateText } from "../../Utils";
+import type { SpiralRibbon } from "../frame/SpiralTrails";
 import type {
   AttackRingInput,
   BonusEvent,
@@ -23,10 +26,11 @@ import type {
   PlayerStatic,
   PlayerStatusData,
   RendererConfig,
-  TilePair,
+  TerrainRect,
   UnitState,
 } from "../types";
 import { Camera } from "./Camera";
+import { GLUnavailableError, initGL } from "./initGL";
 import { BarPass } from "./passes/BarPass";
 import { BorderComputePass } from "./passes/BorderComputePass";
 import { BorderStampPass } from "./passes/BorderStampPass";
@@ -37,6 +41,7 @@ import { FalloutBloomPass } from "./passes/FalloutBloomPass";
 import { FalloutLightPass } from "./passes/FalloutLightPass";
 import { FxPass } from "./passes/fx-pass";
 import { LightmapPass } from "./passes/LightmapPass";
+import { MapLayerPass } from "./passes/MapLayerPass";
 import { MoveIndicatorPass } from "./passes/MoveIndicatorPass";
 import { NamePass } from "./passes/name-pass";
 import { NightCompositePass } from "./passes/NightCompositePass";
@@ -48,8 +53,10 @@ import { RangeCirclePass } from "./passes/RangeCirclePass";
 import { SAMRadiusPass } from "./passes/SamRadiusPass";
 import { SelectionBoxPass } from "./passes/SelectionBoxPass";
 import { SkinAtlasArray } from "./passes/SkinAtlasArray";
+import { SmallPlayerGlowPass } from "./passes/SmallPlayerGlowPass";
 import type { SpawnCenter } from "./passes/SpawnOverlayPass";
 import { SpawnOverlayPass } from "./passes/SpawnOverlayPass";
+import { SpiralRibbonPass } from "./passes/SpiralRibbonPass";
 import { StructureLevelPass } from "./passes/StructureLevelPass";
 import { StructurePass } from "./passes/StructurePass";
 import { TerrainPass } from "./passes/TerrainPass";
@@ -59,7 +66,12 @@ import { UnitPass } from "./passes/UnitPass";
 import { WorldTextPass } from "./passes/WorldTextPass";
 import type { RenderSettings } from "./RenderSettings";
 import { AffiliationPalette } from "./utils/Affiliation";
-import { getPaletteSize, hexToRgb } from "./utils/ColorUtils";
+import {
+  EFFECT_PALETTE_BLOCKS,
+  getPaletteSize,
+  hexToRgb,
+  MAX_TRAIL_COLORS,
+} from "./utils/ColorUtils";
 import { renderDpr } from "./utils/Dpr";
 import {
   createTexture2D,
@@ -97,10 +109,18 @@ export class GPURenderer {
   private camera: Camera;
   private res: GPUResources;
 
+  /**
+   * Set when the context is hardware-accelerated but its MAX_TEXTURE_SIZE is
+   * below what the game needs (fingerprinting protection, #4357). The game
+   * runs, but the map may render with black areas — the owner should warn.
+   */
+  readonly glLimited: { renderer: string; maxTextureSize: number } | null;
+
   // Passes
   private terrainPass: TerrainPass;
   private territoryPass: TerritoryPass;
   private trailPass: TrailPass;
+  private spiralRibbonPass: SpiralRibbonPass;
   private borderStampPass: BorderStampPass;
   private borderPass: BorderComputePass;
   private defenseCoveragePass: DefenseCoveragePass;
@@ -128,10 +148,26 @@ export class GPURenderer {
   private affiliationPalette: AffiliationPalette;
   private coordinateGridPass: CoordinateGridPass;
   private spawnOverlayPass: SpawnOverlayPass;
+  private smallPlayerGlowPass: SmallPlayerGlowPass;
   private inSpawnPhase = false;
+
+  // Map-layer passes keyed by layer id, drawn between terrain and territory.
+  private mapLayerPasses: Map<string, MapLayerPass> = new Map();
+  /** R8UI terrain-bytes texture shared by all layer passes. */
+  private terrainBytesTex: WebGLTexture | null = null;
+  /** Stored layer definitions for context-restore re-creation. */
+  private storedLayers: MapLayer[] = [];
+  /** Stored layer images for context-restore re-creation. */
+  private storedLayerImages: Map<string, ImageBitmap> = new Map();
 
   private paletteTex: WebGLTexture;
   private paletteData: Float32Array;
+  // Per-player trail-effect palette, keyed by smallID (RGBA32F,
+  // 4096×(MAX_TRAIL_COLORS·TRAIL_EFFECT_BLOCKS)): one MAX_TRAIL_COLORS-row block
+  // per trail effectType (block 0 = transportShipTrail, block 1 = nukeTrail).
+  // Sampled by TrailPass; the shader picks the block from the trail tile's nuke
+  // bit.
+  private effectTex: WebGLTexture;
   private patternMetaTex: WebGLTexture;
   private patternDataTex: WebGLTexture;
   private skinAtlas: SkinAtlasArray;
@@ -178,7 +214,7 @@ export class GPURenderer {
   constructor(
     canvas: HTMLCanvasElement,
     header: RendererConfig,
-    terrainBytes: Uint8Array,
+    terrainSource: () => Uint8Array,
     paletteData: Float32Array,
     config: Config,
     settings: RenderSettings,
@@ -193,12 +229,25 @@ export class GPURenderer {
     this.raf = raf;
     this.caf = caf;
 
-    const gl = canvas.getContext("webgl2", {
+    // Demand a GPU-accelerated context. A software (SwiftShader) or missing
+    // WebGL2 context throws GLUnavailableError, which the game-start path
+    // turns into an actionable gate instead of letting the game crawl at
+    // ~1fps. A fingerprint-capped context ("limited" — MAX_TEXTURE_SIZE below
+    // the palette width, #4357) proceeds anyway; glLimited lets the owner
+    // warn the player that the map may render with black areas.
+    const res = initGL(canvas, {
       alpha: false,
       antialias: false,
       powerPreference: "high-performance",
     });
-    if (!gl) throw new Error("WebGL2 not supported");
+    if (res.gl === null) {
+      throw new GLUnavailableError(res.status, res.renderer);
+    }
+    this.glLimited =
+      res.status === "limited"
+        ? { renderer: res.renderer, maxTextureSize: res.maxTextureSize }
+        : null;
+    const gl = res.gl;
     this.gl = gl;
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
 
@@ -214,13 +263,38 @@ export class GPURenderer {
     this.camera = new Camera(mapW, mapH);
 
     // --- Terrain (static) ---
+    // Bake once and let the array go — nothing below retains map-sized
+    // terrain bytes; re-bakes call terrainSource again.
+    const terrainBytes = terrainSource();
     this.terrainPass = new TerrainPass(
       gl,
+      terrainSource,
       terrainBytes,
       mapW,
       mapH,
-      hexToRgb(this.settings.terrain.oceanColor) ?? undefined,
+      {
+        backgroundColor:
+          hexToRgb(this.settings.terrain.backgroundColor) ?? undefined,
+        oceanColor: hexToRgb(this.settings.terrain.oceanColor) ?? undefined,
+        sandColor: hexToRgb(this.settings.terrain.sandColor) ?? undefined,
+        plainsColor: hexToRgb(this.settings.terrain.plainsColor) ?? undefined,
+        highlandColor:
+          hexToRgb(this.settings.terrain.highlandColor) ?? undefined,
+        mountainColor:
+          hexToRgb(this.settings.terrain.mountainColor) ?? undefined,
+      },
     );
+
+    // --- Terrain bytes R8UI texture (shared by map-layer passes) ---
+    this.terrainBytesTex = createTexture2D(gl, {
+      width: mapW,
+      height: mapH,
+      internalFormat: gl.R8UI,
+      format: gl.RED_INTEGER,
+      type: gl.UNSIGNED_BYTE,
+      data: terrainBytes,
+      filter: gl.NEAREST,
+    });
 
     // --- Shared palette texture (RGBA32F, 4096×2) ---
     this.paletteData = paletteData;
@@ -232,6 +306,21 @@ export class GPURenderer {
       format: gl.RGBA,
       type: gl.FLOAT,
       data: paletteData,
+      filter: gl.NEAREST,
+    });
+
+    // Per-player effect texture: EFFECT_PALETTE_BLOCKS stacked blocks of
+    // MAX_TRAIL_COLORS rows (block 0 = transportShipTrail, block 1 = nukeTrail,
+    // block 2 = structures, block 3 = warship). Starts zeroed (color count 0
+    // everywhere = no effect → territory/player color).
+    const effectRows = MAX_TRAIL_COLORS * EFFECT_PALETTE_BLOCKS;
+    this.effectTex = createTexture2D(gl, {
+      width: palW,
+      height: effectRows,
+      internalFormat: gl.RGBA32F,
+      format: gl.RGBA,
+      type: gl.FLOAT,
+      data: new Float32Array(palW * effectRows * 4),
       filter: gl.NEAREST,
     });
 
@@ -371,15 +460,27 @@ export class GPURenderer {
       this.settings.spawnOverlay,
     );
 
-    // --- Trail (needs trailTex, paletteTex) ---
+    this.smallPlayerGlowPass = new SmallPlayerGlowPass(
+      gl,
+      mapW,
+      mapH,
+      this.res.tileTex,
+      this.settings.smallPlayerGlow,
+    );
+
+    // --- Trail (needs trailTex, paletteTex, effectTex) ---
     this.trailPass = new TrailPass(
       gl,
       mapW,
       mapH,
       this.res.trailTex,
       this.paletteTex,
+      this.effectTex,
       this.settings,
     );
+
+    // --- Spiral nukeTrail ribbons (drawn above trails, below missiles) ---
+    this.spiralRibbonPass = new SpiralRibbonPass(gl, this.settings);
 
     // --- Border stamp (needs tileTex, paletteTex, borderTex) ---
     this.borderStampPass = new BorderStampPass(
@@ -464,6 +565,7 @@ export class GPURenderer {
       gl,
       header,
       this.paletteTex,
+      this.effectTex,
       this.settings,
     );
     this.structureLevelPass = new StructureLevelPass(gl, header, this.settings);
@@ -471,6 +573,7 @@ export class GPURenderer {
       gl,
       header,
       this.paletteTex,
+      this.effectTex,
       this.settings,
       config,
     );
@@ -586,22 +689,30 @@ export class GPURenderer {
 
   uploadTileAndTrailState(
     tileState: Uint16Array,
-    trailState: Uint8Array,
+    trailState: Uint16Array,
   ): void {
     this.territoryPass.setLiveRef(tileState);
     this.trailPass.setLiveRef(trailState);
   }
 
-  uploadLiveDelta(tileState: Uint16Array, changedTiles: TilePair[]): void {
+  uploadLiveDelta(
+    tileState: Uint16Array,
+    changedTiles: readonly number[],
+  ): void {
     this.territoryPass.applyLiveDelta(tileState, changedTiles);
   }
 
   uploadLiveTrailDelta(
-    trailState: Uint8Array,
+    trailState: Uint16Array,
     dirtyRowMin: number,
     dirtyRowMax: number,
   ): void {
     this.trailPass.applyLiveDelta(trailState, dirtyRowMin, dirtyRowMax);
+  }
+
+  /** Adopt this tick's spiral nukeTrail ribbons (live refs from SpiralTrails). */
+  updateSpiralRibbons(ribbons: readonly SpiralRibbon[]): void {
+    this.spiralRibbonPass.updateRibbons(ribbons);
   }
 
   /** Re-upload palette data to the GPU texture (e.g. when players appear after initial startup). */
@@ -627,6 +738,24 @@ export class GPURenderer {
     this.samRadiusPass.setPaletteData(this.paletteData);
     // Name pass caches per-player colors and bakes them into slot rows
     this.namePass.refreshPlayerColors(this.paletteData);
+  }
+
+  /** Re-upload the per-player effect texture (style + colors by smallID). */
+  updateEffectPalette(effectData: Float32Array): void {
+    const gl = this.gl;
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.effectTex);
+    gl.texSubImage2D(
+      gl.TEXTURE_2D,
+      0,
+      0,
+      0,
+      getPaletteSize(),
+      MAX_TRAIL_COLORS * EFFECT_PALETTE_BLOCKS,
+      gl.RGBA,
+      gl.FLOAT,
+      effectData,
+    );
   }
 
   /** Register late-arriving players (updates palette + NamePass lookup maps). */
@@ -750,7 +879,8 @@ export class GPURenderer {
   updateUnits(units: Map<number, UnitState>, gameTick: number): void {
     this.lastUnits = units;
     this.frameTick++;
-    this.unitPass.updateUnits(units, this.frameTick);
+    this.unitPass.setFrameTick(this.frameTick);
+    this.unitPass.updateUnits(units, gameTick);
     this.barPass.updateBars(units, this.lastStructures, gameTick);
     this.pointLightPass.updateLights(units);
     this.heatManager.decayHeat();
@@ -818,15 +948,38 @@ export class GPURenderer {
   }
 
   /**
-   * Update terrain texels for tiles whose terrain byte changed (e.g. water
-   * nukes converting land → water). `terrainBytes[i]` is the new byte for
-   * `refs[i]`. Forwards to both TerrainPass (RGBA color) and RailroadPass
-   * (R8UI water-detection for bridges).
+   * Update terrain texels for regions whose terrain bytes changed (e.g. water
+   * nukes converting land → water). Each rect's bytes are stored row-major,
+   * concatenated in `bytes` in rect order. Forwards to both TerrainPass (RGBA
+   * color) and RailroadPass (R8UI water-detection for bridges). One
+   * texSubImage2D per rect — per-tile uploads cost hundreds of ms for a
+   * massive bomb.
    */
-  applyTerrainDelta(refs: readonly number[], terrainBytes: Uint8Array): void {
-    if (refs.length === 0) return;
-    this.terrainPass.applyTerrainDelta(refs, terrainBytes);
-    this.railroadPass.applyTerrainDelta(refs, terrainBytes);
+  applyTerrainRects(rects: readonly TerrainRect[], bytes: Uint8Array): void {
+    if (rects.length === 0) return;
+    this.terrainPass.applyTerrainRects(rects, bytes);
+    this.railroadPass.applyTerrainRects(rects, bytes);
+    // Update the shared R8UI terrain-bytes texture used by map-layer passes.
+    if (!this.terrainBytesTex) return;
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_2D, this.terrainBytesTex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    let offset = 0;
+    for (const r of rects) {
+      gl.texSubImage2D(
+        gl.TEXTURE_2D,
+        0,
+        r.x,
+        r.y,
+        r.w,
+        r.h,
+        gl.RED_INTEGER,
+        gl.UNSIGNED_BYTE,
+        bytes,
+        offset,
+      );
+      offset += r.w * r.h;
+    }
   }
 
   /**
@@ -835,9 +988,15 @@ export class GPURenderer {
    * settings change needs this explicit rebuild.
    */
   rebuildTerrain(): void {
-    this.terrainPass.setOceanColor(
-      hexToRgb(this.settings.terrain.oceanColor) ?? undefined,
-    );
+    this.terrainPass.setTerrainColors({
+      backgroundColor:
+        hexToRgb(this.settings.terrain.backgroundColor) ?? undefined,
+      oceanColor: hexToRgb(this.settings.terrain.oceanColor) ?? undefined,
+      sandColor: hexToRgb(this.settings.terrain.sandColor) ?? undefined,
+      plainsColor: hexToRgb(this.settings.terrain.plainsColor) ?? undefined,
+      highlandColor: hexToRgb(this.settings.terrain.highlandColor) ?? undefined,
+      mountainColor: hexToRgb(this.settings.terrain.mountainColor) ?? undefined,
+    });
   }
 
   applyConquestEvents(events: ConquestFx[]): void {
@@ -863,6 +1022,10 @@ export class GPURenderer {
     if (filtered.length > 0) this.worldTextPass.applyBonusEvents(filtered);
   }
 
+  triggerBlockedFlash(tileX: number, tileY: number): void {
+    this.crosshairPass.triggerBlockedFlash(tileX, tileY);
+  }
+
   updateAttackRings(rings: AttackRingInput[]): void {
     this.fxPass.updateAttackRings(rings);
   }
@@ -872,14 +1035,25 @@ export class GPURenderer {
     this.railroadPass.updateGhostPreview(data);
     this.rangeCirclePass.updateGhostPreview(data);
     this.crosshairPass.updateGhostPreview(data);
+    // The multiplier badge (x5) rides on the cost label but must show even
+    // when there is no cost line — e.g. infinite gold (cost 0) or the
+    // cursor-cost-label setting turned off.
+    const topText =
+      data?.multiplier && data.multiplier > 1
+        ? translateText("build_menu.upgrade_amount", {
+            amount: data.multiplier.toString(),
+          })
+        : undefined;
+    const showCost = data !== null && data.showCost && data.cost > 0;
     this.worldTextPass.setGhostCostLabel(
-      data && data.showCost && data.cost > 0
+      data && (showCost || topText !== undefined)
         ? {
             tileX: data.tileX,
             tileY: data.tileY,
-            cost: data.cost,
+            cost: showCost ? data.cost : 0,
             canAfford: data.canAfford,
             canPlace: data.canBuild || data.canUpgrade,
+            topText,
           }
         : null,
     );
@@ -903,6 +1077,10 @@ export class GPURenderer {
     this.spawnOverlayPass.update(inSpawnPhase, centers);
   }
 
+  updateSmallPlayerGlow(set: Uint8Array | null): void {
+    this.smallPlayerGlowPass.update(set);
+  }
+
   // ---------------------------------------------------------------------------
   // Queries
   // ---------------------------------------------------------------------------
@@ -911,13 +1089,10 @@ export class GPURenderer {
     this.borderPass.setHighlightOwner(ownerID);
     this.territoryPass.setHighlightOwner(ownerID);
     this.namePass.setHighlightOwner(ownerID);
+    this.structurePass.setHighlightOwner(ownerID);
   }
   setMouseWorldPos(x: number, y: number): void {
     this.namePass.setMouseWorldPos(x, y);
-  }
-  /** Hide a player's name plate immediately (e.g. eliminated nation during spawn). */
-  hidePlayer(playerID: string): void {
-    this.namePass.hidePlayer(playerID);
   }
   setHighlightStructureTypes(unitTypes: string[] | null): void {
     this.structurePass.setHighlightTypes(unitTypes);
@@ -1136,12 +1311,19 @@ export class GPURenderer {
   private drawBaseLayer(cam: Float32Array): void {
     const gl = this.gl;
     const pe = this.settings.passEnabled;
-    gl.clearColor(60 / 255, 60 / 255, 60 / 255, 1.0);
+    const [bgR, bgG, bgB] = hexToRgb(this.settings.terrain.backgroundColor) ?? [
+      60, 60, 60,
+    ];
+    gl.clearColor(bgR / 255, bgG / 255, bgB / 255, 1.0);
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.disable(gl.BLEND);
     if (pe.terrain) this.terrainPass.draw(cam);
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    // Map layers sit between terrain and territory.
+    for (const layerPass of this.mapLayerPasses.values()) {
+      layerPass.draw(cam);
+    }
     if (pe.territory) this.territoryPass.draw(cam);
   }
 
@@ -1163,12 +1345,17 @@ export class GPURenderer {
     this.crosshairPass.draw(cam);
     if (pe.structure) this.structurePass.draw(cam, zoom);
     if (pe.structure) this.structureLevelPass.draw(cam, zoom);
+    // Small-player glow draws after structures so buildings can't hide it.
+    this.smallPlayerGlowPass.draw(cam);
     if (pe.bar) this.barPass.draw(cam);
     this.updateSelectionBox();
     this.selectionBoxPass.draw(cam, this.frameTick);
     this.moveIndicatorPass.draw(cam, zoom);
     this.nukeTelegraphPass.draw(cam);
     if (pe.trail) this.trailPass.draw(cam);
+    // Spiral vortexes sit above the plain trails, below the missiles that
+    // trail them. Skipped in alt view — the strategic overlay stays effects-free.
+    if (!this.altView) this.spiralRibbonPass.draw(cam);
     if (pe.unit) this.unitPass.drawMissiles(cam);
 
     if (pe.fx) {
@@ -1191,14 +1378,81 @@ export class GPURenderer {
   }
 
   // ---------------------------------------------------------------------------
+  // Map-layer management
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Create map-layer passes from the loaded layer data.  Called once at game
+   * start (and again after context restore).  Layers are drawn in array order
+   * between the terrain and territory passes.
+   */
+  setMapLayers(layers: MapLayer[], images: Map<string, ImageBitmap>): void {
+    // Dispose any previous layer passes.
+    for (const p of this.mapLayerPasses.values()) p.dispose();
+    this.mapLayerPasses.clear();
+    this.storedLayers = layers;
+    this.storedLayerImages = images;
+
+    if (!this.terrainBytesTex) return;
+    const gl = this.gl;
+
+    for (const layer of layers) {
+      const image = images.get(layer.id);
+      if (!image) {
+        console.warn(`[Renderer] Layer image "${layer.id}" not found`);
+        continue;
+      }
+      const placement: 0 | 1 = layer.placement === "water" ? 1 : 0;
+      const pass = new MapLayerPass(
+        gl,
+        this.terrainBytesTex,
+        image,
+        this.mapW,
+        this.mapH,
+        placement,
+        layer.nukeable ?? false,
+      );
+      this.mapLayerPasses.set(layer.id, pass);
+    }
+  }
+
+  /** Toggle visibility of a single layer (driven by graphics settings). */
+  setLayerVisible(layerId: string, visible: boolean): void {
+    this.mapLayerPasses.get(layerId)?.setVisible(visible);
+  }
+
+  /**
+   * Mark tiles as destroyed for a nukeable layer.  Called when a nuke
+   * detonates; batches all tile updates into a single GPU upload.
+   */
+  markLayerTilesDestroyed(layerId: string, tileIndices: number[]): void {
+    this.mapLayerPasses.get(layerId)?.markTilesDestroyed(tileIndices);
+  }
+
+  /**
+   * Bulk-destroy tiles for a nukeable layer (used when replaying or restoring
+   * state).
+   */
+  setLayerDestroyedMask(layerId: string, mask: Uint8Array): void {
+    this.mapLayerPasses.get(layerId)?.updateDestroyedMask(mask);
+  }
+
+  // ---------------------------------------------------------------------------
   // Lifecycle
   // ---------------------------------------------------------------------------
 
   dispose(): void {
     this.stopLoop();
+    for (const p of this.mapLayerPasses.values()) p.dispose();
+    this.mapLayerPasses.clear();
+    if (this.terrainBytesTex) {
+      this.gl.deleteTexture(this.terrainBytesTex);
+      this.terrainBytesTex = null;
+    }
     this.terrainPass.dispose();
     this.territoryPass.dispose();
     this.trailPass.dispose();
+    this.spiralRibbonPass.dispose();
     this.borderStampPass.dispose();
     this.borderPass.dispose();
     this.defenseCoveragePass.dispose();
@@ -1211,6 +1465,7 @@ export class GPURenderer {
     this.affiliationPalette.dispose();
     this.coordinateGridPass.dispose();
     this.spawnOverlayPass.dispose();
+    this.smallPlayerGlowPass.dispose();
     this.railroadPass.dispose();
     this.rangeCirclePass.dispose();
     this.samRadiusPass.dispose();
@@ -1228,6 +1483,7 @@ export class GPURenderer {
     this.barPass.dispose();
     disposeGPUResources(this.gl, this.res);
     this.gl.deleteTexture(this.paletteTex);
+    this.gl.deleteTexture(this.effectTex);
     this.gl.deleteTexture(this.patternMetaTex);
     this.gl.deleteTexture(this.patternDataTex);
     this.gl.deleteTexture(this.skinLayerTex);

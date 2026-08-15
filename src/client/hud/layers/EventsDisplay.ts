@@ -16,6 +16,7 @@ import {
   TargetPlayerUpdate,
   UnitIncomingUpdate,
 } from "../../../core/game/GameUpdates";
+import { UserSettings } from "../../../core/game/UserSettings";
 import { Controller } from "../../Controller";
 import { SendAllianceRequestIntentEvent } from "../../Transport";
 
@@ -81,6 +82,7 @@ export class EventsDisplay extends LitElement implements Controller {
   private active: boolean = false;
   private events: GameEvent[] = [];
   private timestampRefreshInterval: number | null = null;
+  private userSettings = new UserSettings();
 
   @state() private _isVisible: boolean = false;
   @state() private timestampNowMs = Date.now();
@@ -586,6 +588,9 @@ export class EventsDisplay extends LitElement implements Controller {
   }
 
   onEmojiMessageEvent(update: EmojiUpdate) {
+    // Honor the "Disable emojis" setting: don't surface received emojis in the
+    // events feed either (#4430).
+    if (!this.userSettings.emojis()) return;
     const myPlayer = this.game.myPlayer();
     if (!myPlayer) return;
 

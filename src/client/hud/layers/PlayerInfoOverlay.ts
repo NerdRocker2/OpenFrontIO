@@ -39,6 +39,7 @@ import "./RelationSmiley";
 import { SpawnBarVisibleEvent } from "./SpawnTimer";
 const soldierIconAquarius = assetUrl("images/SoldierIconAquarius.svg");
 const allianceIcon = assetUrl("images/AllianceIcon.svg");
+const traitorIcon = assetUrl("images/TraitorIcon.svg");
 const warshipIcon = assetUrl("images/BattleshipIconWhite.svg");
 const cityIcon = assetUrl("images/CityIconWhite.svg");
 const factoryIcon = assetUrl("images/FactoryIconWhite.svg");
@@ -234,25 +235,15 @@ export class PlayerInfoOverlay extends LitElement implements Controller {
     return renderDuration(remainingSeconds);
   }
 
-  private renderPlayerNameIcons(player: PlayerView) {
-    const firstPlace = getFirstPlacePlayer(this.game);
-    const icons = getPlayerIcons({
-      game: this.game,
-      player,
-      // Because we already show the alliance icon next to the alliance expiration timer, we don't need to show it a second time in this render
-      includeAllianceIcon: false,
-      firstPlace,
-      alliancesDisabled: this.game.config().disableAlliances(),
-    });
-
+  private renderPlayerNameIcons(icons: ReturnType<typeof getPlayerIcons>) {
     if (icons.length === 0) {
       return html``;
     }
 
-    return html`<span class="flex items-center gap-1 ml-1 shrink-0">
+    return html`<span class="flex items-center gap-1 shrink-0">
       ${icons.map((icon) =>
         icon.kind === EMOJI_ICON_KIND && icon.text
-          ? html`<span class="text-sm shrink-0" translate="no"
+          ? html`<span class="h-4 w-4 font-mono text-sm shrink-0" translate="no"
               >${icon.text}</span
             >`
           : icon.kind === IMAGE_ICON_KIND && icon.src
@@ -262,11 +253,112 @@ export class PlayerInfoOverlay extends LitElement implements Controller {
     </span>`;
   }
 
+  /**
+   * Returns a CSS font-size value for the player name that scales down when
+   * icon pressure + name length would overflow the available row width.
+   * Uses calc(var(--text-lg) * scale) so the result always respects the
+   * CSS variable; min is var(--text-lg)/2, max is var(--text-lg).
+   */
+  private getNameFontSize(params: {
+    nameLength: number;
+    iconCount: number;
+    hasFlag: boolean;
+    hasBetrayal: boolean;
+    hasAlliance: boolean;
+    hasTeam: boolean;
+  }): { fontSize: string; isAllianceWrapped: boolean } {
+    const {
+      nameLength,
+      iconCount,
+      hasFlag,
+      hasBetrayal,
+      hasAlliance,
+      hasTeam,
+    } = params;
+
+    // Approximate char-widths each element occupies at --text-lg.
+    const DESKTOP_PRESSURE = {
+      playerType: 3.5,
+      perIcon: 2.0,
+      icon: 0.5,
+      flag: 3.5,
+      betrayal: 4.2,
+      alliance: 6.7,
+      allianceWrapped: 3.9,
+      team: 1.0,
+    } as const;
+
+    const MOBILE_PRESSURE = {
+      playerType: 3.5,
+      perIcon: 2.2,
+      icon: 0.5,
+      flag: 4.2,
+      betrayal: 4.6,
+      alliance: 8.6,
+      allianceWrapped: 4.8,
+      team: 1.0,
+    } as const;
+
+    const width = window.innerWidth;
+    const isDesktop = width >= 1024;
+
+    const PRESSURE = isDesktop ? DESKTOP_PRESSURE : MOBILE_PRESSURE;
+
+    const basePressure =
+      PRESSURE.playerType +
+      iconCount * PRESSURE.perIcon +
+      (iconCount ? PRESSURE.icon : 0) +
+      (hasFlag ? PRESSURE.flag : 0) +
+      (hasBetrayal ? PRESSURE.betrayal : 0) +
+      (hasTeam ? PRESSURE.team : 0);
+
+    let capacity: number;
+
+    if (width < 640) {
+      // Below 640px, overlay 100% viewport width.
+      // space grows dynamically with width
+      capacity = 28.1 + (Math.max(360, width) - 360) * 0.119;
+    } else if (width < 768) {
+      // 640px - 767px: sm:w-[500px], troop col w-28
+      // space = 376px / 8.4px = 44.8 chars.
+      capacity = 44.8;
+    } else if (width < 1024) {
+      // 768px - 1023px: sm:w-[500px],  troop col md:w-36
+      // space = 344px / 8.4px = 41.0 chars.
+      capacity = 41.0;
+    } else {
+      // >= 1024px: sm:w-[500px], font-size text-lg (18px, 10.8px/char).
+      // space = 336px / 10.8px = 31.1 chars.
+      capacity = 31.1;
+    }
+
+    let isAllianceWrapped = false;
+    let alliancePressure = hasAlliance ? PRESSURE.alliance : 0;
+    let scale = (capacity - (basePressure + alliancePressure)) / nameLength;
+
+    // If alliance active and font scale < 0.85
+    // word-wrap alliance (icon & duration) to reduce width.
+    if (hasAlliance && scale < 0.85) {
+      isAllianceWrapped = true;
+      alliancePressure = PRESSURE.allianceWrapped;
+      scale = (capacity - (basePressure + alliancePressure)) / nameLength;
+    }
+
+    const textSize = isDesktop ? "lg" : "sm";
+    const fontSize = `clamp(var(--text-${textSize}) * .65, var(--text-${textSize}) * ${scale.toFixed(3)}, var(--text-${textSize}))`;
+
+    return { fontSize, isAllianceWrapped };
+  }
+
   private renderPlayerInfo(player: PlayerView) {
     const myPlayer = this.game.myPlayer();
     const isFriendly = myPlayer?.isFriendly(player);
     const isAllied = myPlayer?.isAlliedWith(player);
+    const traitorTicks = player.getTraitorRemainingTicks();
     let allianceHtml: TemplateResult | null = null;
+    let betrayalHtml: TemplateResult | null = null;
+    const firstPlace = getFirstPlacePlayer(this.game);
+    const playerIcons = getPlayerIcons({ game: this.game, player, firstPlace });
     const maxTroops = this.game.config().maxTroops(player);
     const attackingTroops = player
       .outgoingAttacks()
@@ -274,19 +366,6 @@ export class PlayerInfoOverlay extends LitElement implements Controller {
       .reduce((a, b) => a + b, 0);
     const totalTroops = player.troops();
 
-    if (isAllied) {
-      const alliance = myPlayer
-        ?.alliances()
-        .find((alliance) => alliance.other === player.id());
-      if (alliance !== undefined) {
-        allianceHtml = html` <div
-          class="flex items-center ml-auto mr-0 gap-1 text-sm font-bold leading-tight"
-        >
-          <img src=${allianceIcon} width="20" height="20" />
-          ${this.allianceExpirationText(alliance)}
-        </div>`;
-      }
-    }
     let playerType = "";
     switch (player.type()) {
       case PlayerType.Bot:
@@ -301,13 +380,71 @@ export class PlayerInfoOverlay extends LitElement implements Controller {
     }
     const playerTeam = getTranslatedPlayerTeamLabel(player.team());
 
+    const { fontSize, isAllianceWrapped } = this.getNameFontSize({
+      nameLength: player.displayName().length,
+      iconCount: playerIcons.length,
+      hasFlag: !!player.cosmetics.flag,
+      hasBetrayal: traitorTicks > 0,
+      hasAlliance: isAllied ?? false,
+      hasTeam: playerTeam !== "" && player.type() !== PlayerType.Bot,
+    });
+
+    if (isAllied) {
+      const alliance = myPlayer
+        ?.alliances()
+        .find((alliance) => alliance.other === player.id());
+      if (alliance !== undefined) {
+        allianceHtml = isAllianceWrapped
+          ? html`<div
+              class="${traitorTicks === 0
+                ? "ml-auto"
+                : ""} flex flex-col items-center gap-0 text-xs font-bold leading-none shrink-0"
+            >
+              <img
+                src=${allianceIcon}
+                width="14"
+                height="14"
+                class="shrink-0"
+              />
+              <span class="text-[10px] leading-tight"
+                >${this.allianceExpirationText(alliance)}</span
+              >
+            </div>`
+          : html`<div
+              class="${traitorTicks === 0
+                ? "ml-auto"
+                : ""} flex items-center mr-0 gap-1 text-xs font-bold leading-tight shrink-0"
+            >
+              <img
+                src=${allianceIcon}
+                width="18"
+                height="18"
+                class="shrink-0"
+              />
+              <span>${this.allianceExpirationText(alliance)}</span>
+            </div>`;
+      }
+    }
+
+    if (traitorTicks > 0) {
+      betrayalHtml = html`<span class="flex ml-auto items-center shrink-0 "
+        ><img src=${traitorIcon} alt="" class="w-4 h-4 shrink-0" />
+        <span
+          class="text-sm text-red-900 
+          drop-shadow-[-.2px_-.2px_.8px_rgba(0,0,0,.7),.2px_.2px_.8px_rgba(0,0,0,.7)]"
+        >
+          ${renderDuration(Math.floor(traitorTicks / 10))} </span
+        ><span></span
+      ></span>`;
+    }
+
     return html`
       <div class="flex items-start gap-1 lg:gap-2 p-1 lg:p-1.5">
         <!-- Left: Gold & Troop bar -->
         <div class="flex flex-col gap-1 shrink-0 w-28 md:w-36">
           <div class="flex items-center gap-1">
             <div
-              class="flex flex-1 items-center justify-center px-1 py-0.5 border rounded-md border-yellow-400 font-bold text-yellow-400 text-sm lg:gap-1"
+              class="flex items-center justify-center px-1 py-0.5 border rounded-md border-yellow-400 font-bold text-yellow-400 text-sm lg:gap-1"
               translate="no"
             >
               <img src=${goldCoinIcon} width="13" height="13" />
@@ -340,19 +477,27 @@ export class PlayerInfoOverlay extends LitElement implements Controller {
           </div>
         </div>
         <!-- Right: Player identity + Units below -->
-        <div class="flex flex-col justify-between self-stretch">
+        <div
+          class="flex flex-col justify-between self-stretch w-[100%] flex-grow-1"
+        >
           <div
-            class="flex items-center gap-2 font-bold text-sm lg:text-lg ${this.getPlayerNameColor(
+            class="flex items-center gap-1 lg:gap-2 font-bold text-sm lg:text-lg ${this.getPlayerNameColor(
               isFriendly ?? false,
             )}"
           >
             ${player.cosmetics.flag
               ? html`<img
-                  class="h-6 object-contain"
+                  class="h-6 object-contain shrink-0"
                   src=${assetUrl(player.cosmetics.flag!)}
                 />`
               : html``}
-            <span>${player.displayName()}</span>
+            <div class="shrink min-w-0">
+              <span
+                class="font-mono inline-block leading-[1.2] wrap-anywhere"
+                style="font-size: ${fontSize}"
+                >${player.displayName()}</span
+              >
+            </div>
             ${this.getRelationSmiley(player, myPlayer)}
             ${playerTeam !== "" && player.type() !== PlayerType.Bot
               ? html`<div class="flex flex-col leading-tight">
@@ -372,7 +517,8 @@ export class PlayerInfoOverlay extends LitElement implements Controller {
               : html`<span class="text-gray-400 text-xs font-normal"
                   >${playerType}</span
                 >`}
-            ${this.renderPlayerNameIcons(player)} ${allianceHtml ?? ""}
+            ${this.renderPlayerNameIcons(playerIcons)} ${betrayalHtml ?? ""}
+            ${allianceHtml ?? ""}
           </div>
           <div class="flex gap-0.5 lg:gap-1 items-center mt-0.5">
             ${this.displayUnitCount(player, UnitType.City, cityIcon)}

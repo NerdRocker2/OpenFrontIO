@@ -4,7 +4,7 @@
   "id": "NorthAmerica",
   "map": {
     "height": 1448,
-    "num_land_tiles": 1243623,
+    "num_land_tiles": 1243929,
     "width": 2800
   },
   "map16x": {
@@ -364,7 +364,18 @@
       "coordinates": [1811, 782],
       "flag": "Massachusetts",
       "name": "Massachusetts"
+    },
+    {
+      "coordinates": [2719, 1264],
+      "flag": "cv",
+      "name": "Cabo Verde"
+    },
+    {
+      "coordinates": [2638, 840],
+      "flag": "pt-azores",
+      "name": "Azores"
     }
   ],
+  "themes": ["north_america"],
   "translation_key": "map.northamerica"
 }

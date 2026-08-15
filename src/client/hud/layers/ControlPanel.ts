@@ -20,8 +20,7 @@ import {
 } from "../../Utils";
 import { GameView } from "../../view";
 import { PlayerView } from "../../view/PlayerView";
-const goldCoinIcon = assetUrl("images/GoldCoinIcon.svg");
-const soldierIcon = assetUrl("images/SoldierIcon.svg");
+import { goldCoinIcon, soldierIcon } from "../HotbarIcons";
 const swordIcon = assetUrl("images/SwordIcon.svg");
 
 @customElement("control-panel")
@@ -494,7 +493,7 @@ export class ControlPanel extends LitElement implements Controller {
         <div class="flex-1">${this.renderDesktopTroopBar()}</div>
         <!-- Gold -->
         <div
-          class="flex items-center gap-1 shrink-0 border rounded-md border-yellow-400 font-bold text-yellow-400 text-sm py-0.5 px-1 w-[4.5rem] relative"
+          class="flex items-center gap-1 shrink-0 border rounded-md border-yellow-400 font-bold text-yellow-400 text-sm py-0.5 px-1 min-w-[4.5rem] relative"
           translate="no"
         >
           ${this._goldGain !== null

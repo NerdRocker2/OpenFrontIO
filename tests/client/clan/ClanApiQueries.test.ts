@@ -28,6 +28,8 @@ const userWithClans = (tags: string[]): UserMeResponse =>
     player: {
       publicId: "p1",
       adfree: false,
+      unlimitedRanked: false,
+      canCreatePublicLobbies: false,
       flares: [],
       achievements: { singleplayerMap: [] },
       friends: [],
@@ -344,6 +346,24 @@ describe("fetchClanMembers", () => {
     const url = new URL(calledUrl);
     expect(url.searchParams.get("page")).toBe("3");
     expect(url.searchParams.get("limit")).toBe("50");
+  });
+
+  it("passes a trimmed member search with pagination and sorting", async () => {
+    const fetchSpy = vi.fn(
+      (_input: string | URL | Request, _init?: RequestInit) =>
+        Promise.resolve(okJson(membersResponse)),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await fetchClanMembers("TEST", 3, 50, "winsTotal", "desc", "  d3G1QO8Z  ");
+
+    const calledUrl = fetchSpy.mock.calls[0]![0] as string;
+    const url = new URL(calledUrl);
+    expect(url.searchParams.get("page")).toBe("3");
+    expect(url.searchParams.get("limit")).toBe("50");
+    expect(url.searchParams.get("sort")).toBe("winsTotal");
+    expect(url.searchParams.get("order")).toBe("desc");
+    expect(url.searchParams.get("search")).toBe("d3G1QO8Z");
   });
 
   it("includes the optional pendingRequests field", async () => {

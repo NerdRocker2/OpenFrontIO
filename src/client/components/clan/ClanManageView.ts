@@ -16,7 +16,7 @@ import {
 } from "../../ClanApi";
 import { translateText } from "../../Utils";
 import "../ConfirmDialog";
-import "../CopyButton";
+import { playerNameLink } from "../ui/PlayerNameLink";
 import {
   type ClanRole,
   defaultOrderForSort,
@@ -43,6 +43,7 @@ export class ClanManageView extends LitElement {
 
   @state() private manageName = "";
   @state() private manageDescription = "";
+  @state() private manageDiscordUrl = "";
   @state() private manageIsOpen = true;
   @state() private saving = false;
   @state() private members: ClanMember[] = [];
@@ -57,14 +58,16 @@ export class ClanManageView extends LitElement {
   @state() private confirmTargetId: string | null = null;
   @state() private pendingRequestCount = 0;
   @state() private actionPending = false;
-  private memberSearch = "";
+  @state() private memberSearch = "";
   private memberSearchDebounce: ReturnType<typeof setTimeout> | null = null;
+  private memberLoadSeq = 0;
 
   connectedCallback() {
     super.connectedCallback();
     if (this.selectedClan) {
       this.manageName = this.selectedClan.name;
       this.manageDescription = this.selectedClan.description ?? "";
+      this.manageDiscordUrl = this.selectedClan.discordUrl ?? "";
       this.manageIsOpen = this.selectedClan.isOpen ?? true;
     }
     this.loadMembers(1);
@@ -72,31 +75,47 @@ export class ClanManageView extends LitElement {
 
   disconnectedCallback() {
     if (this.memberSearchDebounce) clearTimeout(this.memberSearchDebounce);
+    this.memberLoadSeq++;
     super.disconnectedCallback();
   }
 
-  private async loadMembers(page: number) {
+  private async loadMembers(page: number, search = this.memberSearch) {
+    const seq = ++this.memberLoadSeq;
     if (this.members.length === 0) this.loading = true;
-    const res = await fetchClanMembers(
-      this.clanTag,
-      page,
-      this.membersPerPage,
-      this.memberSort,
-      this.memberOrder,
-    );
+    const res = search
+      ? await fetchClanMembers(
+          this.clanTag,
+          page,
+          this.membersPerPage,
+          this.memberSort,
+          this.memberOrder,
+          search,
+        )
+      : await fetchClanMembers(
+          this.clanTag,
+          page,
+          this.membersPerPage,
+          this.memberSort,
+          this.memberOrder,
+        );
+    if (seq !== this.memberLoadSeq || search !== this.memberSearch) return;
     if (!res) {
       this.loading = false;
       return;
     }
     if (res.results.length === 0 && page > 1) {
-      await this.loadMembers(1);
+      await this.loadMembers(1, search);
       return;
     }
     this.members = res.results;
     this.membersTotal = res.total;
     this.memberPage = page;
     this.pendingRequestCount = res.pendingRequests ?? 0;
-    if (this.selectedClan && this.selectedClan.memberCount !== res.total) {
+    if (
+      !search &&
+      this.selectedClan &&
+      this.selectedClan.memberCount !== res.total
+    ) {
       this.dispatchEvent(
         new CustomEvent("clan-updated", {
           detail: { memberCount: res.total },
@@ -111,10 +130,20 @@ export class ClanManageView extends LitElement {
   private async handleSaveSettings() {
     const clan = this.selectedClan;
     if (!clan) return;
-    const patch: { name?: string; description?: string; isOpen?: boolean } = {};
+    const patch: {
+      name?: string;
+      description?: string;
+      discordUrl?: string;
+      isOpen?: boolean;
+    } = {};
     if (this.manageName !== clan.name) patch.name = this.manageName;
     if ((this.manageDescription ?? "") !== (clan.description ?? ""))
       patch.description = this.manageDescription;
+    // Discord URL is leader-only; the input only renders for leaders, so this
+    // diff is a no-op for officers (server also enforces it). "" clears the
+    // link — the server trims and coerces it to null.
+    if ((this.manageDiscordUrl ?? "") !== (clan.discordUrl ?? ""))
+      patch.discordUrl = this.manageDiscordUrl;
     if (this.manageIsOpen !== (clan.isOpen ?? true))
       patch.isOpen = this.manageIsOpen;
     if (Object.keys(patch).length === 0) return;
@@ -131,6 +160,7 @@ export class ClanManageView extends LitElement {
         detail: {
           name: result.name,
           description: result.description,
+          discordUrl: result.discordUrl,
           isOpen: result.isOpen,
         },
         bubbles: true,
@@ -241,10 +271,13 @@ export class ClanManageView extends LitElement {
   }
 
   private onSearchInput(e: Event) {
+    const search = (e.target as HTMLInputElement).value.trim();
+    if (search === this.memberSearch) return;
+    this.memberSearch = search;
     if (this.memberSearchDebounce) clearTimeout(this.memberSearchDebounce);
     this.memberSearchDebounce = setTimeout(() => {
-      this.memberSearch = (e.target as HTMLInputElement).value;
-      this.requestUpdate();
+      this.memberSearchDebounce = null;
+      void this.loadMembers(1, search);
     }, 200);
   }
 
@@ -358,6 +391,30 @@ export class ClanManageView extends LitElement {
               class="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-white/20 focus:outline-none focus:ring-2 focus:ring-malibu-blue/50 focus:border-malibu-blue/50 transition-all font-medium hover:bg-white/10 text-sm resize-none"
             ></textarea>
           </div>
+          ${this.myRole === "leader"
+            ? html`
+                <div>
+                  <label
+                    class="block text-[10px] font-bold text-white/40 uppercase tracking-wider mb-2"
+                    >${translateText("clan_modal.discord_url_label")}</label
+                  >
+                  <input
+                    type="url"
+                    .value=${this.manageDiscordUrl}
+                    @input=${(e: Event) =>
+                      (this.manageDiscordUrl = (
+                        e.target as HTMLInputElement
+                      ).value)}
+                    placeholder="https://discord.gg/..."
+                    maxlength="255"
+                    class="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-white/20 focus:outline-none focus:ring-2 focus:ring-malibu-blue/50 focus:border-malibu-blue/50 transition-all font-medium hover:bg-white/10 text-sm"
+                  />
+                  <p class="text-white/40 text-xs mt-2">
+                    ${translateText("clan_modal.discord_url_hint")}
+                  </p>
+                </div>
+              `
+            : ""}
           <div class="flex items-center justify-between">
             <div>
               <div class="text-white text-sm font-bold">
@@ -405,6 +462,7 @@ export class ClanManageView extends LitElement {
           </h3>
           ${renderMemberSearchInput(
             (e) => this.onSearchInput(e),
+            this.memberSearch,
             undefined,
             renderMemberSortControl(
               this.memberSort,
@@ -517,13 +575,7 @@ export class ClanManageView extends LitElement {
           >
             ${renderRoleIcon(member.role)}
           </div>
-          <copy-button
-            compact
-            .copyText=${member.publicId}
-            .displayText=${member.publicId}
-            .showVisibilityToggle=${false}
-            .showCopyIcon=${false}
-          ></copy-button>
+          ${playerNameLink(this, member.username, member.publicId)}
           <span class="text-white/30 text-[10px] whitespace-nowrap">
             ${translateText("clan_modal.joined_date", {
               date: formatClanDate(member.joinedAt),

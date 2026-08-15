@@ -1,5 +1,5 @@
 {
-  "categories": ["new", "asia"],
+  "categories": ["asia"],
   "id": "HongKong",
   "map": {
     "height": 1996,
@@ -375,5 +375,6 @@
       "name": "Tai Mo Shan"
     }
   ],
+  "themes": ["asia"],
   "translation_key": "map.hongkong"
 }
