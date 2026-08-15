@@ -65,6 +65,9 @@ const DEFAULT_OPTIONS = {
   waterNukes: false,
   doomsdayClock: false,
   doomsdayClockSpeed: "normal" as DoomsdayClockSpeed,
+  pauseAfterSpawn: false,
+  eliminateNationsEnabled: false,
+  eliminateNationsMax: 1,
 } as const;
 
 // A map earns achievements only if it has nations to conquer — the same rule
@@ -153,6 +156,11 @@ export class SinglePlayerModal extends BaseModal {
   @state() private doomsdayClock: boolean = DEFAULT_OPTIONS.doomsdayClock;
   @state() private doomsdayClockSpeed: DoomsdayClockSpeed =
     DEFAULT_OPTIONS.doomsdayClockSpeed;
+  @state() private pauseAfterSpawn: boolean = DEFAULT_OPTIONS.pauseAfterSpawn;
+  @state() private eliminateNationsEnabled: boolean =
+    DEFAULT_OPTIONS.eliminateNationsEnabled;
+  @state() private eliminateNationsMax: number =
+    DEFAULT_OPTIONS.eliminateNationsMax;
 
   private mapLoader = terrainMapFileLoader;
 
@@ -394,6 +402,27 @@ export class SinglePlayerModal extends BaseModal {
         .onInput=${this.handleCustomAllianceMinutesInput}
         .onKeyDown=${this.handleCustomAllianceMinutesKeyDown}
       ></toggle-input-card>`,
+      html`<toggle-input-card
+        .labelKey=${"single_modal.eliminate_nation"}
+        .checked=${this.eliminateNationsEnabled}
+        .disabledCheckbox=${!this.pauseAfterSpawn}
+        .disabledMessage=${translateText(
+          "single_modal.eliminate_nations_requires_pause",
+        )}
+        .inputId=${"eliminate-nations-max"}
+        .inputMin=${1}
+        .inputMax=${20}
+        .inputValue=${this.eliminateNationsMax}
+        .inputAriaLabel=${translateText("single_modal.max_nations")}
+        .inputPlaceholder=${translateText(
+          "single_modal.max_nations_placeholder",
+        )}
+        .defaultInputValue=${1}
+        .minValidOnEnable=${1}
+        .onToggle=${this.handleEliminateNationsToggle}
+        .onInput=${this.handleEliminateNationsMaxChanges}
+        .onKeyDown=${this.handleEliminateNationsMaxKeyDown}
+      ></toggle-input-card>`,
     ];
 
     return html`
@@ -464,6 +493,10 @@ export class SinglePlayerModal extends BaseModal {
                     checked: this.doomsdayClock,
                     doomsdayClockSpeed: this.doomsdayClockSpeed,
                   },
+                  {
+                    labelKey: "single_modal.pause_after_spawn",
+                    checked: this.pauseAfterSpawn,
+                  },
                 ],
                 inputCards,
               },
@@ -528,6 +561,9 @@ export class SinglePlayerModal extends BaseModal {
       // Pace only matters when the mode is on (startGame drops it when off).
       (this.doomsdayClock &&
         this.doomsdayClockSpeed !== DEFAULT_OPTIONS.doomsdayClockSpeed) ||
+      this.pauseAfterSpawn !== DEFAULT_OPTIONS.pauseAfterSpawn ||
+      this.eliminateNationsEnabled !== DEFAULT_OPTIONS.eliminateNationsEnabled ||
+      this.eliminateNationsMax !== DEFAULT_OPTIONS.eliminateNationsMax ||
       this.disabledUnits.length > 0
     );
   }
@@ -559,6 +595,9 @@ export class SinglePlayerModal extends BaseModal {
     this.waterNukes = DEFAULT_OPTIONS.waterNukes;
     this.doomsdayClock = DEFAULT_OPTIONS.doomsdayClock;
     this.doomsdayClockSpeed = DEFAULT_OPTIONS.doomsdayClockSpeed;
+    this.pauseAfterSpawn = DEFAULT_OPTIONS.pauseAfterSpawn;
+    this.eliminateNationsEnabled = DEFAULT_OPTIONS.eliminateNationsEnabled;
+    this.eliminateNationsMax = DEFAULT_OPTIONS.eliminateNationsMax;
   }
 
   protected onOpen(): void {
@@ -595,8 +634,28 @@ export class SinglePlayerModal extends BaseModal {
     this.handleDifficultySelection(customEvent.detail.difficulty);
   };
 
-  private handleConfigDoomsdayClockSpeedSelected = (e: Event) => {
-    const customEvent = e as CustomEvent<{ speed: DoomsdayClockSpeed }>;
+  private handleEliminateNationsToggle = (
+    checked: boolean,
+    n: number | undefined,
+  ) => {
+    this.eliminateNationsEnabled = checked;
+    if (n !== undefined) {
+      this.eliminateNationsMax = n;
+    }
+  };
+
+  private handleEliminateNationsMaxKeyDown = (e: KeyboardEvent) => {
+    if (e.key === "Enter") (e.target as HTMLInputElement)?.blur();
+  };
+
+  private handleEliminateNationsMaxChanges = (e: Event) => {
+    const value = parseInt((e.target as HTMLInputElement).value, 10);
+    if (!isNaN(value) && value >= 1 && value <= 20) {
+      this.eliminateNationsMax = value;
+    }
+  };
+
+  private handleConfigDoomsdayClockSpeedSelected = (e: Event) => {    const customEvent = e as CustomEvent<{ speed: DoomsdayClockSpeed }>;
     this.doomsdayClockSpeed = customEvent.detail.speed;
   };
 
@@ -648,6 +707,12 @@ export class SinglePlayerModal extends BaseModal {
         break;
       case "game_settings.doomsday_clock":
         this.doomsdayClock = checked;
+        break;
+      case "single_modal.pause_after_spawn":
+        this.pauseAfterSpawn = checked;
+        if (!checked) {
+          this.eliminateNationsEnabled = false;
+        }
         break;
       default:
         break;
@@ -892,6 +957,10 @@ export class SinglePlayerModal extends BaseModal {
                       speed: this.doomsdayClockSpeed,
                     },
                   }
+                : {}),
+              ...(!this.pauseAfterSpawn ? {} : { pauseAfterSpawn: true }),
+              ...(this.eliminateNationsEnabled && this.pauseAfterSpawn
+                ? { eliminateNations: this.eliminateNationsMax }
                 : {}),
             },
             lobbyCreatedAt: Date.now(), // ms; server should be authoritative in MP
