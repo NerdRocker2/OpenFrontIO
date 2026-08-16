@@ -65,7 +65,7 @@ const DEFAULT_OPTIONS = {
   waterNukes: false,
   doomsdayClock: false,
   doomsdayClockSpeed: "normal" as DoomsdayClockSpeed,
-  pauseAfterSpawn: false,
+  pauseAfterSpawn: true,
   eliminateNationsEnabled: false,
   eliminateNationsMax: 1,
 } as const;
