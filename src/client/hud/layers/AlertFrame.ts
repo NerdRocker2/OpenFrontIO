@@ -23,7 +23,7 @@ export class AlertFrame extends LitElement implements Controller {
   @state()
   private isActive = false;
   @state()
-  private alertType: "betrayal" | "land-attack" = "betrayal";
+  private alertType: "betrayal" | "land-attack" | "win" | "defeat" = "betrayal";
 
   private animationTimeout: number | null = null;
   private seenAttackIds: Set<string> = new Set();
@@ -51,6 +51,18 @@ export class AlertFrame extends LitElement implements Controller {
 
     .alert-border.land-attack {
       border-color: #ffa500;
+    }
+
+    .alert-border.win {
+      border-color: #00cc44;
+    }
+
+    .alert-border.defeat {
+      border-color: #ee0000;
+    }
+
+    .alert-border.solid {
+      opacity: 1;
     }
 
     .alert-border.animate {
@@ -246,9 +258,25 @@ export class AlertFrame extends LitElement implements Controller {
     this.requestUpdate();
   }
 
+  public showOutcomeBorder(won: boolean) {
+    this.alertType = won ? "win" : "defeat";
+    this.isActive = true;
+    if (this.animationTimeout) {
+      clearTimeout(this.animationTimeout);
+    }
+    this.animationTimeout = window.setTimeout(() => this.dismissAlert(), 10_000);
+    this.requestUpdate();
+  }
+
   render() {
     if (!this.isActive) {
       return html``;
+    }
+
+    if (this.alertType === "win" || this.alertType === "defeat") {
+      return html`
+        <div class=${`alert-border solid ${this.alertType}`}></div>
+      `;
     }
 
     return html`

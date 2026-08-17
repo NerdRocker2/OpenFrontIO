@@ -3,7 +3,7 @@ import { customElement, query, state } from "lit/decorators.js";
 import { DirectiveResult } from "lit/directive.js";
 import { unsafeHTML, UnsafeHTMLDirective } from "lit/directives/unsafe-html.js";
 import { EventBus } from "../../../core/EventBus";
-import { AllPlayers, MessageType } from "../../../core/game/Game";
+import { AllPlayers, GameType, MessageType } from "../../../core/game/Game";
 import {
   AllianceExpiredUpdate,
   AllianceRequestReplyUpdate,
@@ -15,6 +15,7 @@ import {
   GameUpdateType,
   TargetPlayerUpdate,
   UnitIncomingUpdate,
+  WinUpdate,
 } from "../../../core/game/GameUpdates";
 import { UserSettings } from "../../../core/game/UserSettings";
 import { Controller } from "../../Controller";
@@ -205,6 +206,50 @@ export class EventsDisplay extends LitElement implements Controller {
     });
   }
 
+  private onWinEvent(wu: WinUpdate) {
+    if (
+      this.game.config().gameConfig().gameType !== GameType.Singleplayer ||
+      this.game.config().isReplay()
+    ) {
+      return;
+    }
+    if (wu.winner === undefined) {
+      // Cancelled match — no message needed in solo.
+      return;
+    }
+
+    let winnerName: string;
+    let humanWon: boolean;
+
+    if (wu.winner[0] === "player") {
+      const winnerPlayer = this.game.playerByClientID(wu.winner[1]);
+      winnerName = winnerPlayer?.displayName() ?? "Unknown";
+      humanWon = wu.winner[1] === this.game.myPlayer()?.clientID();
+    } else if (wu.winner[0] === "nation") {
+      winnerName = wu.winner[1];
+      humanWon = false;
+    } else {
+      // team — shouldn't occur in solo, but handle gracefully
+      winnerName = wu.winner[1];
+      humanWon = false;
+    }
+
+    const description = humanWon
+      ? translateText("events_display.solo_won", { name: winnerName })
+      : translateText("events_display.solo_defeated", { name: winnerName });
+
+    this.addEvent({
+      description,
+      type: MessageType.CONQUERED_PLAYER,
+      createdAt: this.game.ticks(),
+    });
+
+    const alertFrame = document.querySelector("alert-frame") as
+      | (HTMLElement & { showOutcomeBorder?: (won: boolean) => void })
+      | null;
+    alertFrame?.showOutcomeBorder?.(humanWon);
+  }
+
   tick() {
     this.active = true;
 
@@ -230,6 +275,14 @@ export class EventsDisplay extends LitElement implements Controller {
     }
 
     const myPlayer = this.game.myPlayer();
+
+    // Process solo-game win updates before the alive guard so we catch the
+    // case where the human is already dead when the WinUpdate fires.
+    const earlyUpdates = this.game.updatesSinceLastTick();
+    earlyUpdates?.[GameUpdateType.Win]?.forEach((wu) =>
+      this.onWinEvent(wu as WinUpdate),
+    );
+
     if (!myPlayer || !myPlayer.isAlive()) {
       if (this._isVisible) {
         this._isVisible = false;

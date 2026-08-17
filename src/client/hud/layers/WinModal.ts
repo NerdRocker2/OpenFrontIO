@@ -7,7 +7,7 @@ import {
   TUTORIAL_VIDEO_URL,
 } from "../../../client/Utils";
 import { EventBus } from "../../../core/EventBus";
-import { RankedType } from "../../../core/game/Game";
+import { GameType, RankedType } from "../../../core/game/Game";
 import { GameUpdateType } from "../../../core/game/GameUpdates";
 import { getUserMe } from "../../Api";
 import "../../components/CosmeticCard";
@@ -310,17 +310,22 @@ export class WinModal extends LitElement implements Controller {
     const updates = this.game.updatesSinceLastTick();
     const winUpdates = updates !== null ? updates[GameUpdateType.Win] : [];
     winUpdates.forEach((wu) => {
+      const isSolo =
+        this.game.config().gameConfig().gameType === GameType.Singleplayer &&
+        !this.game.config().isReplay();
       if (wu.winner === undefined) {
         // Match cancelled (e.g. a ranked 2v2 that didn't fill or fully
         // spawn): the game ends with no winner. Still vote the result to the
         // server so the record is archived winnerless (never ranked).
         this.eventBus.emit(new SendWinnerEvent(undefined, wu.allPlayersStats));
+        if (isSolo) return;
         this._title = translateText("win_modal.match_cancelled");
         this.isWin = false;
         history.replaceState(null, "", `${window.location.pathname}?replay`);
         this.show();
       } else if (wu.winner[0] === "team") {
         this.eventBus.emit(new SendWinnerEvent(wu.winner, wu.allPlayersStats));
+        if (isSolo) return;
         if (wu.winner[1] === this.game.myPlayer()?.team()) {
           this._title = translateText("win_modal.your_team");
           this.isWin = true;
@@ -335,6 +340,7 @@ export class WinModal extends LitElement implements Controller {
         this.show();
       } else if (wu.winner[0] === "nation") {
         this.eventBus.emit(new SendWinnerEvent(wu.winner, wu.allPlayersStats));
+        if (isSolo) return;
         this._title = translateText("win_modal.nation_won", {
           nation: wu.winner[1],
         });
@@ -349,6 +355,7 @@ export class WinModal extends LitElement implements Controller {
             new SendWinnerEvent(["player", winnerClient], wu.allPlayersStats),
           );
         }
+        if (isSolo) return;
         if (
           winnerClient !== null &&
           winnerClient === this.game.myPlayer()?.clientID()
