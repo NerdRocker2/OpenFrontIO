@@ -11,7 +11,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-# ── Safety checks ───────────────────────────────────────────────────────────
+# --- Safety checks -----------------------------------------------------------
 
 $branch = git branch --show-current
 if (-not $branch) {
@@ -19,7 +19,7 @@ if (-not $branch) {
     exit 1
 }
 if ($branch -eq "main") {
-    Write-Error "Already on main — nothing to ship."
+    Write-Error "Already on main -- nothing to ship."
     exit 1
 }
 
@@ -39,7 +39,7 @@ if ($confirm -notmatch '^[Yy]$') {
     exit 0
 }
 
-# ── Steps ───────────────────────────────────────────────────────────────────
+# --- Steps -------------------------------------------------------------------
 
 function Run([string]$desc, [scriptblock]$cmd) {
     Write-Host "`n==> $desc"
