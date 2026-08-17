@@ -57,8 +57,8 @@ const DEFAULT_OPTIONS = {
   teamCount: 2 as TeamCountConfig,
   goldMultiplier: false,
   goldMultiplierValue: undefined as number | undefined,
-  startingGold: false,
-  startingGoldValue: undefined as number | undefined,
+  startingGold: true,
+  startingGoldValue: 1 as number | undefined,
   disabledUnits: [] as UnitType[],
   customAlliances: false,
   customAllianceMinutes: undefined as number | undefined,
@@ -66,8 +66,8 @@ const DEFAULT_OPTIONS = {
   doomsdayClock: false,
   doomsdayClockSpeed: "normal" as DoomsdayClockSpeed,
   pauseAfterSpawn: true,
-  eliminateNationsEnabled: false,
-  eliminateNationsMax: 1,
+  eliminateNationsEnabled: true,
+  eliminateNationsMax: 3,
 } as const;
 
 // A map earns achievements only if it has nations to conquer — the same rule
@@ -379,8 +379,8 @@ export class SinglePlayerModal extends BaseModal {
         .inputStep=${"any"}
         .inputValue=${this.startingGoldValue}
         .inputAriaLabel=${translateText("game_settings.starting_gold")}
-        .inputPlaceholder=${"5"}
-        .defaultInputValue=${5}
+        .inputPlaceholder=${"1"}
+        .defaultInputValue=${1}
         .minValidOnEnable=${0.1}
         .onToggle=${this.handleStartingGoldToggle}
         .onChange=${this.handleStartingGoldValueChanges}
@@ -417,7 +417,7 @@ export class SinglePlayerModal extends BaseModal {
         .inputPlaceholder=${translateText(
           "single_modal.max_nations_placeholder",
         )}
-        .defaultInputValue=${1}
+        .defaultInputValue=${3}
         .minValidOnEnable=${1}
         .onToggle=${this.handleEliminateNationsToggle}
         .onInput=${this.handleEliminateNationsMaxChanges}
