@@ -7,10 +7,18 @@ import { getProprietaryDir, getResourcesDir } from "./PublicAssetManifest";
 
 const log = logger.child({ comp: "music" });
 
-const MUSIC_GLOB = "sounds/music/*.mp3";
 const STATIC_MUSIC_ROUTE = "/music/static";
 const UPLOADED_MUSIC_ROUTE = "/music/uploads";
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024; // 50 MB
+const DELETE_RETRY_DELAYS_MS = [0, 75, 150, 300, 600] as const;
+const RETRYABLE_DELETE_CODES = new Set(["EBUSY", "EPERM"]);
+
+interface MusicTrackResponse {
+  filename: string;
+  url: string;
+  source: "bundled" | "upload";
+  deletable: boolean;
+}
 
 function sanitizeFilename(name: string): string {
   const base = path.basename(name);
@@ -22,6 +30,27 @@ function sanitizeFilename(name: string): string {
 
 export function getUploadsDir(baseDir: string): string {
   return path.join(baseDir, "uploads", "music");
+}
+
+export async function deleteUploadedFile(
+  target: string,
+  unlink: (path: string) => Promise<void> = fs.promises.unlink,
+  wait: (milliseconds: number) => Promise<void> = (milliseconds) =>
+    new Promise((resolve) => setTimeout(resolve, milliseconds)),
+): Promise<void> {
+  let lastError: unknown;
+  for (const delay of DELETE_RETRY_DELAYS_MS) {
+    if (delay > 0) await wait(delay);
+    try {
+      await unlink(target);
+      return;
+    } catch (err) {
+      lastError = err;
+      const code = (err as NodeJS.ErrnoException).code;
+      if (!code || !RETRYABLE_DELETE_CODES.has(code)) throw err;
+    }
+  }
+  throw lastError;
 }
 
 export function registerMusicFileRoutes(app: Express, baseDir: string): void {
@@ -50,7 +79,11 @@ export function registerMusicFileRoutes(app: Express, baseDir: string): void {
   app.use("/uploads/music", express.static(uploadsDir, { maxAge: 0 }));
 }
 
-export function registerMusicRoutes(app: Express, baseDir: string): void {
+export function registerMusicRoutes(
+  app: Express,
+  baseDir: string,
+  maxUploadBytes = MAX_UPLOAD_BYTES,
+): void {
   const resourcesDir = getResourcesDir(baseDir);
   const proprietaryDir = getProprietaryDir(baseDir);
   const uploadsDir = getUploadsDir(baseDir);
@@ -61,7 +94,7 @@ export function registerMusicRoutes(app: Express, baseDir: string): void {
   // Returns server paths for both static and uploaded files.
   app.get("/api/music/tracks", (_req, res) => {
     try {
-      const tracks: { filename: string; url: string }[] = [];
+      const tracks: MusicTrackResponse[] = [];
       const seen = new Set<string>();
 
       // Static files — proprietary takes precedence over resources.
@@ -79,6 +112,8 @@ export function registerMusicRoutes(app: Express, baseDir: string): void {
           tracks.push({
             filename,
             url: `${STATIC_MUSIC_ROUTE}/${encodeURIComponent(filename)}`,
+            source: "bundled",
+            deletable: false,
           });
         }
       }
@@ -91,6 +126,8 @@ export function registerMusicRoutes(app: Express, baseDir: string): void {
         tracks.push({
           filename: file,
           url: `${UPLOADED_MUSIC_ROUTE}/${encodeURIComponent(file)}`,
+          source: "upload",
+          deletable: true,
         });
       }
 
@@ -110,7 +147,27 @@ export function registerMusicRoutes(app: Express, baseDir: string): void {
   // Accept raw audio/mpeg body for upload — must be registered before the route.
   app.use(
     "/api/music/upload",
-    express.raw({ type: "audio/mpeg", limit: MAX_UPLOAD_BYTES }),
+    express.raw({ type: "audio/mpeg", limit: maxUploadBytes }),
+  );
+  app.use(
+    "/api/music/upload",
+    (
+      err: Error & { status?: number; type?: string },
+      _req: express.Request,
+      res: express.Response,
+      next: express.NextFunction,
+    ) => {
+      if (err.status === 413 || err.type === "entity.too.large") {
+        res.status(413).json({
+          code: "file_too_large",
+          error: `The MP3 exceeds the ${Math.ceil(
+            maxUploadBytes / 1024 / 1024,
+          )} MB upload limit.`,
+        });
+        return;
+      }
+      next(err);
+    },
   );
 
   // POST /api/music/upload — upload a new MP3 track.
@@ -134,8 +191,17 @@ export function registerMusicRoutes(app: Express, baseDir: string): void {
     const filename = sanitizeFilename(decodedName);
 
     try {
-      fs.writeFileSync(path.join(uploadsDir, filename), req.body as Buffer);
-    } catch {
+      fs.writeFileSync(path.join(uploadsDir, filename), req.body as Buffer, {
+        flag: "wx",
+      });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "EEXIST") {
+        res.status(409).json({
+          code: "duplicate_file",
+          error: "A track with this filename already exists.",
+        });
+        return;
+      }
       res.status(500).json({ error: "Failed to save file." });
       return;
     }
@@ -143,6 +209,65 @@ export function registerMusicRoutes(app: Express, baseDir: string): void {
     res.json({
       url: `${UPLOADED_MUSIC_ROUTE}/${encodeURIComponent(filename)}`,
       filename,
+      source: "upload",
+      deletable: true,
     });
+  });
+
+  // DELETE /api/music/uploads/:filename — delete one uploaded MP3. This route
+  // intentionally has no account gate, but its filesystem scope is strict:
+  // only a regular .mp3 file directly inside uploads/music can be removed.
+  app.delete("/api/music/uploads/:filename", async (req, res) => {
+    const filename = req.params.filename;
+    if (
+      !filename ||
+      path.basename(filename) !== filename ||
+      !filename.toLowerCase().endsWith(".mp3")
+    ) {
+      res
+        .status(400)
+        .json({ error: "Only uploaded MP3 files can be deleted." });
+      return;
+    }
+
+    const uploadsRoot = path.resolve(uploadsDir);
+    const target = path.resolve(uploadsRoot, filename);
+    if (path.dirname(target) !== uploadsRoot) {
+      res.status(400).json({ error: "Invalid upload path." });
+      return;
+    }
+
+    try {
+      const stat = fs.lstatSync(target);
+      if (!stat.isFile() || stat.isSymbolicLink()) {
+        res
+          .status(400)
+          .json({ error: "Only uploaded MP3 files can be deleted." });
+        return;
+      }
+      await deleteUploadedFile(target);
+      res.status(204).end();
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        res.status(404).json({ error: "Uploaded track not found." });
+        return;
+      }
+      log.error("DELETE /api/music/uploads/:filename failed:", err);
+      const fileError = err as NodeJS.ErrnoException;
+      res.status(500).json({
+        error: "Failed to delete uploaded track.",
+        code: fileError.code ?? "UNKNOWN",
+        attempts: DELETE_RETRY_DELAYS_MS.length,
+        ...(process.env.GAME_ENV !== "prod"
+          ? {
+              details: {
+                message: fileError.message,
+                stack: fileError.stack,
+                target,
+              },
+            }
+          : {}),
+      });
+    }
   });
 }

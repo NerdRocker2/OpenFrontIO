@@ -52,6 +52,7 @@ export const modalHeader = ({
     <div class="${wrapperClass}">
       <div class="${leftClass}">
         <button
+          type="button"
           @click=${onBack}
           class="${buttonClass}"
           aria-label="${ariaLabel}"

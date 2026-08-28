@@ -10,12 +10,13 @@ import {
   AlternateViewEvent,
   ToggleRenderDebugGuiEvent,
 } from "../../InputHandler";
-import { translateText } from "../../Utils";
+import { uploadMusicTrack } from "../../MusicApi";
 import {
   AddMusicTrackEvent,
   SetBackgroundMusicVolumeEvent,
   SetSoundEffectsVolumeEvent,
 } from "../../sound/Sounds";
+import { translateText } from "../../Utils";
 import { ShowGraphicsSettingsModalEvent } from "./GraphicsSettingsModal";
 const cursorPriceIcon = assetUrl("images/CursorPriceIconWhite.svg");
 const emojiIcon = assetUrl("images/EmojiIconWhite.svg");
@@ -214,22 +215,7 @@ export class SettingsModal extends LitElement implements Controller {
 
     this.uploadStatus = "uploading";
     try {
-      const response = await fetch("/api/music/upload", {
-        method: "POST",
-        headers: {
-          "Content-Type": "audio/mpeg",
-          "X-Filename": encodeURIComponent(file.name),
-        },
-        body: file,
-      });
-      if (!response.ok) {
-        const err = await response.json().catch(() => ({})) as { error?: string };
-        throw new Error(err.error ?? `HTTP ${response.status}`);
-      }
-      const { url, filename } = (await response.json()) as {
-        url: string;
-        filename?: string;
-      };
+      const { url, filename } = await uploadMusicTrack(file);
       this.eventBus.emit(new AddMusicTrackEvent(url, true, filename));
       this.uploadStatus = "done";
       setTimeout(() => {

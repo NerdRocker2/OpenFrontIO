@@ -218,7 +218,9 @@
 
       <!-- Main container with responsive padding -->
       <main-layout class="contents">
-        <play-page class="contents"></play-page>
+        <div id="page-play" class="w-full min-h-0">
+          <play-page class="contents"></play-page>
+        </div>
         <matchmaking-modal
           id="page-matchmaking"
           inline
@@ -259,6 +261,10 @@
           inline
           class="hidden w-full h-full page-content relative z-50"
         ></leaderboard-modal>
+        <music-page
+          id="page-music"
+          class="hidden w-full h-full min-h-0 page-content relative z-50"
+        ></music-page>
         <troubleshooting-modal
           id="page-troubleshooting"
           inline
