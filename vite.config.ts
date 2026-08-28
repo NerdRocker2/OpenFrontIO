@@ -331,7 +331,15 @@ export default defineConfig(({ mode }) => {
     server: {
       port: 9000,
       host: process.env.VITE_HOST === "lan",
-      allowedHosts: ["jeffsslopoke.chickenkiller.com", "openfront.jefflawlor.com"],
+      // Uploads are runtime data, not source assets. Watching them causes a
+      // full-page reload whenever music is uploaded or deleted in dev mode.
+      watch: {
+        ignored: ["**/uploads/**"],
+      },
+      allowedHosts: [
+        "jeffsslopoke.chickenkiller.com",
+        "openfront.jefflawlor.com",
+      ],
       // Automatically open the browser when the server starts
       open: process.env.SKIP_BROWSER_OPEN !== "true",
       proxy: {
@@ -340,7 +348,7 @@ export default defineConfig(({ mode }) => {
           ws: true,
           changeOrigin: true,
         },
-        "/music": {
+        "^/music/(?:static|uploads)(?:/|$)": {
           target: "http://localhost:3000",
           changeOrigin: true,
           secure: false,

@@ -13,7 +13,17 @@ export function closeMobileSidebar() {
 }
 
 export function initNavigation() {
-  const showPage = (pageId: string) => {
+  const showPage = (pageId: string, syncHistory = true) => {
+    if (syncHistory) {
+      if (pageId === "page-music" && window.location.pathname !== "/music") {
+        history.pushState(history.state, "", "/music");
+      } else if (
+        pageId !== "page-music" &&
+        window.location.pathname === "/music"
+      ) {
+        history.pushState(history.state, "", "/");
+      }
+    }
     window.currentPageId = pageId;
 
     // Close mobile sidebar if a nav item was clicked
@@ -76,7 +86,15 @@ export function initNavigation() {
     window.dispatchEvent(new CustomEvent("showPage", { detail: pageId }));
   };
 
-  window.showPage = showPage;
+  window.showPage = (pageId: string) => showPage(pageId);
+
+  window.addEventListener("popstate", () => {
+    if (window.location.pathname === "/music") {
+      showPage("page-music", false);
+    } else if (window.currentPageId === "page-music") {
+      showPage("page-play", false);
+    }
+  });
 
   // Use event delegation for navigation items (they may be inside Lit components)
   document.addEventListener("click", async (e) => {
@@ -113,6 +131,10 @@ export function initNavigation() {
 
     if (mainEl) {
       mainEl.addEventListener("click", async (e: Event) => {
+        // Dedicated pages own the full content surface. Unlike inline modals,
+        // clicking their background must not dismiss them back to Play.
+        if (window.currentPageId === "page-music") return;
+
         const target = e.target as HTMLElement;
         const isPlayPageHidden = document
           .getElementById("page-play")
@@ -156,6 +178,23 @@ export function initNavigation() {
     }
   });
 
-  // Ensure Play is the default visible/active page on load.
-  showPage("page-play");
+  // Route the dedicated music path; otherwise Play remains the default page.
+  const initialPage =
+    window.location.pathname === "/music" ? "page-music" : "page-play";
+  showPage(initialPage, false);
+
+  // Lit children can finish their first render after bootstrap. Re-apply the
+  // deep route once <play-page> is ready so its home content cannot appear on
+  // top of /music even if the static wrapper is changed or omitted later.
+  if (initialPage === "page-music") {
+    void customElements.whenDefined("play-page").then(async () => {
+      const playPage = document.querySelector("play-page") as
+        | (HTMLElement & { updateComplete?: Promise<unknown> })
+        | null;
+      await playPage?.updateComplete;
+      if (window.location.pathname === "/music") {
+        showPage("page-music", false);
+      }
+    });
+  }
 }
