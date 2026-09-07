@@ -6,6 +6,7 @@ export enum GameMapType {
   Achiran = "Achiran", // map-generator/assets/maps/achiran/info.json
   Aegean = "Aegean", // map-generator/assets/maps/aegean/info.json
   Africa = "Africa", // map-generator/assets/maps/africa/info.json
+  AintNobodyHereButUsChickens = "Ain't Nobody Here But Us Chickens", // map-generator/assets/maps/aintnobodyherebutuschickens/info.json
   Alps = "Alps", // map-generator/assets/maps/alps/info.json
   AmazonRiver = "Amazon River", // map-generator/assets/maps/amazonriver/info.json
   Antarctica = "Antarctica", // map-generator/assets/maps/antarctica/info.json
@@ -39,6 +40,7 @@ export enum GameMapType {
   DeglaciatedAntarctica = "Deglaciated Antarctica", // map-generator/assets/maps/deglaciatedantarctica/info.json
   Didier = "Didier", // map-generator/assets/maps/didier/info.json
   DidierFrance = "Didier France", // map-generator/assets/maps/didierfrance/info.json
+  Dynamite = "Dynamite", // map-generator/assets/maps/dynamite/info.json
   Dyslexdria = "Dyslexdria", // map-generator/assets/maps/dyslexdria/info.json
   EastAsia = "East Asia", // map-generator/assets/maps/eastasia/info.json
   Europe = "Europe", // map-generator/assets/maps/europe/info.json
@@ -228,6 +230,13 @@ export const maps: readonly MapInfo[] = [
     multiplayerFrequency: 7,
     featuredRank: 6,
     themes: ["africa"],
+  },
+  {
+    id: "AintNobodyHereButUsChickens",
+    type: GameMapType.AintNobodyHereButUsChickens,
+    translationKey: "map.aintnobodyherebutuschickens",
+    categories: ["featured", "continental"],
+    multiplayerFrequency: 6,
   },
   {
     id: "Alps",
@@ -494,6 +503,13 @@ export const maps: readonly MapInfo[] = [
     translationKey: "map.didierfrance",
     categories: ["arcade"],
     multiplayerFrequency: 1,
+  },
+  {
+    id: "Dynamite",
+    type: GameMapType.Dynamite,
+    translationKey: "map.dynamite",
+    categories: ["featured", "arcade"],
+    multiplayerFrequency: 6,
   },
   {
     id: "Dyslexdria",

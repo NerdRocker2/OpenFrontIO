@@ -2,7 +2,7 @@
   "id": "AintNobodyHereButUsChickens",
   "name": "Ain't Nobody Here But Us Chickens",
   "translation_key": "map.aintnobodyherebutuschickens",
-  "categories": ["continental"],
+  "categories": ["featured", "continental"],
   "multiplayer_frequency": 6,
   "nations": [
     { "coordinates": [677, 270], "flag": "us", "name": "Baby Chicks" },
