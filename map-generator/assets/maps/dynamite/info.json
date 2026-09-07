@@ -2,7 +2,7 @@
   "id": "Dynamite",
   "name": "Dynamite",
   "translation_key": "map.dynamite",
-  "categories": ["arcade"],
+  "categories": ["featured", "arcade"],
   "multiplayer_frequency": 6,
   "nations": [
     { "coordinates": [370, 378], "flag": "", "name": "Kaboom Town" },
