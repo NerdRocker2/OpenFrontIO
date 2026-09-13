@@ -17,13 +17,20 @@ export interface Id3Metadata {
   year?: string;
   duration?: number;
   artwork?: Id3Artwork;
+  replayGainTrackGainDb?: number;
+  replayGainTrackPeak?: number;
 }
 
 export async function fetchId3Metadata(
   url: string,
-  { includeArtwork = false }: { includeArtwork?: boolean } = {},
+  {
+    includeArtwork = false,
+    includeDuration = true,
+  }: { includeArtwork?: boolean; includeDuration?: boolean } = {},
 ): Promise<Id3Metadata> {
-  const durationPromise = readAudioDuration(url);
+  const durationPromise = includeDuration
+    ? readAudioDuration(url)
+    : Promise.resolve(undefined);
   let metadata: Id3Metadata = {};
   try {
     const initialResponse = await fetch(url, {
@@ -33,8 +40,11 @@ export async function fetchId3Metadata(
       let buffer = new Uint8Array(await initialResponse.arrayBuffer());
 
       const declaredSize = getDeclaredTagBytes(buffer);
+      metadata = parseId3v2(buffer);
       if (
-        includeArtwork &&
+        (includeArtwork ||
+          metadata.replayGainTrackGainDb === undefined ||
+          metadata.replayGainTrackPeak === undefined) &&
         initialResponse.status === 206 &&
         declaredSize > buffer.length &&
         declaredSize <= MAX_TAG_BYTES
@@ -44,10 +54,9 @@ export async function fetchId3Metadata(
         });
         if (fullTagResponse.ok || fullTagResponse.status === 206) {
           buffer = new Uint8Array(await fullTagResponse.arrayBuffer());
+          metadata = parseId3v2(buffer);
         }
       }
-
-      metadata = parseId3v2(buffer);
     }
   } catch {
     // Metadata is best-effort; duration may still be available to the browser.
@@ -207,6 +216,20 @@ export function parseId3v2(data: Uint8Array): Id3Metadata {
         const year = value.match(/^\s*(\d{4})(?:\D|$)/)?.[1];
         if (year) result.year = year;
       }
+    } else if (frameId === "TXXX") {
+      const userText = decodeUserTextFrame(data, pos, frameSize);
+      const description = userText?.description.trim().toUpperCase();
+      if (description === "REPLAYGAIN_TRACK_GAIN") {
+        const gain = Number.parseFloat(userText?.value ?? "");
+        if (Number.isFinite(gain) && gain >= -60 && gain <= 60) {
+          result.replayGainTrackGainDb = gain;
+        }
+      } else if (description === "REPLAYGAIN_TRACK_PEAK") {
+        const peak = Number.parseFloat(userText?.value ?? "");
+        if (Number.isFinite(peak) && peak > 0 && peak <= 16) {
+          result.replayGainTrackPeak = peak;
+        }
+      }
     } else if (frameId === "APIC" && result.artwork === undefined) {
       result.artwork = decodeAttachedPicture(data, pos, frameSize);
     }
@@ -215,6 +238,27 @@ export function parseId3v2(data: Uint8Array): Id3Metadata {
   }
 
   return result;
+}
+
+function decodeUserTextFrame(
+  data: Uint8Array,
+  start: number,
+  size: number,
+): { description: string; value: string } | undefined {
+  if (size < 3) return undefined;
+  const decoded = decodeEncodedText(
+    data[start],
+    data.subarray(start + 1, start + size),
+  );
+  const separator = decoded.indexOf("\0");
+  if (separator === -1) return undefined;
+  return {
+    description: decoded.slice(0, separator),
+    value: decoded
+      .slice(separator + 1)
+      .replace(/\0+$/, "")
+      .trim(),
+  };
 }
 
 function decodeAttachedPicture(
@@ -258,14 +302,20 @@ function decodeTextFrame(
   size: number,
 ): string {
   if (size < 2) return "";
-  const encoding = data[start];
-  const raw = data.subarray(start + 1, start + size);
+  return decodeEncodedText(data[start], data.subarray(start + 1, start + size))
+    .replace(/\0+$/, "")
+    .trim();
+}
+
+function decodeEncodedText(encoding: number, raw: Uint8Array): string {
   try {
     let charset: string;
     switch (encoding) {
       case 1:
-      case 2:
         charset = "utf-16";
+        break;
+      case 2:
+        charset = "utf-16be";
         break;
       case 3:
         charset = "utf-8";
@@ -273,7 +323,7 @@ function decodeTextFrame(
       default:
         charset = "latin1";
     }
-    return new TextDecoder(charset).decode(raw).replace(/\0+$/, "").trim();
+    return new TextDecoder(charset).decode(raw);
   } catch {
     return "";
   }

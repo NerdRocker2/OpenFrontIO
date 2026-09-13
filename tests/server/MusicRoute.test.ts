@@ -7,6 +7,7 @@ import path from "path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   deleteUploadedFile,
+  MusicUploadProcessor,
   registerMusicFileRoutes,
   registerMusicRoutes,
 } from "../../src/server/MusicRoute";
@@ -16,7 +17,19 @@ describe("MusicRoute", () => {
   let tempDir: string | null = null;
   let server: http.Server | null = null;
 
-  async function createTempApp(maxUploadBytes?: number): Promise<string> {
+  async function createTempApp(
+    maxUploadBytes?: number,
+    uploadProcessor: MusicUploadProcessor = async (audio) => ({
+      audio,
+      loudness: {
+        integratedLufs: -18,
+        loudnessRangeLu: 4,
+        truePeakDbtp: -1,
+        replayGainDb: 0,
+        replayGainPeak: 0.891251,
+      },
+    }),
+  ): Promise<string> {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "music-route-"));
 
     const proprietaryMusicDir = path.join(
@@ -46,7 +59,7 @@ describe("MusicRoute", () => {
       setNoStoreHeaders(res);
       next();
     });
-    registerMusicRoutes(app, tempDir, maxUploadBytes);
+    registerMusicRoutes(app, tempDir, maxUploadBytes, uploadProcessor);
 
     server = http.createServer(app);
     await new Promise<void>((resolve) => {
@@ -245,6 +258,30 @@ describe("MusicRoute", () => {
     });
     await expect(
       fs.stat(path.join(tempDir!, "uploads", "music", "Huge Song.mp3")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  test("does not save an upload when loudness analysis fails", async () => {
+    const origin = await createTempApp(undefined, async () => {
+      throw new Error("invalid MPEG audio");
+    });
+
+    const response = await fetch(`${origin}/api/music/upload`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "audio/mpeg",
+        "X-Filename": encodeURIComponent("Invalid Track.mp3"),
+      },
+      body: Buffer.from("not really an mp3"),
+    });
+
+    expect(response.status).toBe(422);
+    expect(await response.json()).toEqual({
+      code: "invalid_audio",
+      error: "The MP3 could not be analyzed and tagged.",
+    });
+    await expect(
+      fs.stat(path.join(tempDir!, "uploads", "music", "Invalid Track.mp3")),
     ).rejects.toMatchObject({ code: "ENOENT" });
   });
 

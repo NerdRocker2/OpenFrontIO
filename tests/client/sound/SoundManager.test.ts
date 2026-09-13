@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Silence fetch — loadTracksFromServer() and fetchId3Metadata() both call it.
 // Return an empty track list for the tracks endpoint and an empty buffer
@@ -74,6 +74,7 @@ vi.mock("../../../src/client/sound/Sounds", async (importOriginal) => {
 
 import {
   MAX_CONCURRENT_SOUNDS,
+  MUSIC_DUCK_DB,
   SoundManager,
 } from "../../../src/client/sound/SoundManager";
 import {
@@ -96,6 +97,12 @@ describe("SoundManager", () => {
   let userSettings: UserSettings;
   let soundManager: SoundManager;
 
+  beforeAll(() => {
+    vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+  });
+
   beforeEach(() => {
     howlCtor.mockClear();
     howlInstances.length = 0;
@@ -112,8 +119,7 @@ describe("SoundManager", () => {
   it("lazy-loads a sound effect once and reuses it", () => {
     eventBus.emit(new PlaySoundEffectEvent("click"));
     eventBus.emit(new PlaySoundEffectEvent("click"));
-    // 3 background music Howls (seeded in beforeEach) + 1 Click Howl = 4
-    expect(howlCtor).toHaveBeenCalledTimes(4);
+    expect(howlCtor).toHaveBeenCalledTimes(1);
   });
 
   it("plays a sound effect when PlaySoundEffectEvent is emitted", () => {
@@ -131,11 +137,7 @@ describe("SoundManager", () => {
     sm.addTrack("mock/bg1.mp3", false);
     sm.addTrack("mock/bg2.mp3", false);
     sm.addTrack("mock/bg3.mp3", false);
-    const bgHowls = howlInstances.slice(0, 3);
-    bgHowls.forEach((h) => {
-      // Slider position is curved (squared) into perceptual gain: 0.5² = 0.25.
-      expect(h.volume).toHaveBeenCalledWith(0.25);
-    });
+    expect((sm as any).musicAudio.volume).toBe(0.25);
   });
 
   it("applies current sfx volume to lazily-loaded sounds", () => {
@@ -153,11 +155,7 @@ describe("SoundManager", () => {
 
   it("responds to SetBackgroundMusicVolumeEvent", () => {
     eventBus.emit(new SetBackgroundMusicVolumeEvent(0.7));
-    const bgHowls = howlInstances.slice(0, 3);
-    bgHowls.forEach((h) => {
-      // 0.7² = 0.49 perceptual gain.
-      expect(h.volume).toHaveBeenCalledWith(0.7 * 0.7);
-    });
+    expect((soundManager as any).musicAudio.volume).toBeCloseTo(0.7 * 0.7);
   });
 
   it("responds to SetSoundEffectsVolumeEvent", () => {
@@ -171,26 +169,16 @@ describe("SoundManager", () => {
 
   it("clamps volume values between 0 and 1", () => {
     eventBus.emit(new SetBackgroundMusicVolumeEvent(2));
-    const bgHowls = howlInstances.slice(0, 3);
-    bgHowls.forEach((h) => {
-      expect(h.volume).toHaveBeenCalledWith(1);
-    });
-
-    bgHowls.forEach((h) => h.volume.mockClear());
+    expect((soundManager as any).musicAudio.volume).toBe(1);
     eventBus.emit(new SetBackgroundMusicVolumeEvent(-0.5));
-    bgHowls.forEach((h) => {
-      expect(h.volume).toHaveBeenCalledWith(0);
-    });
+    expect((soundManager as any).musicAudio.volume).toBe(0);
   });
 
   it("curves the slider position into perceptual gain so the top of the range is audibly distinct", () => {
-    const bgHowls = howlInstances.slice(0, 3);
     // Linear gain would make 0.9 and 1.0 nearly indistinguishable; squaring
     // spreads the top end (0.9 → 0.81) so reductions are noticeable sooner.
     eventBus.emit(new SetBackgroundMusicVolumeEvent(0.9));
-    bgHowls.forEach((h) => {
-      expect(h.volume).toHaveBeenLastCalledWith(0.81);
-    });
+    expect((soundManager as any).musicAudio.volume).toBeCloseTo(0.81);
   });
 
   it("dispose() unsubscribes from EventBus so events no longer play sounds", () => {
@@ -214,15 +202,34 @@ describe("SoundManager", () => {
     expect(clickHowl.unload).toHaveBeenCalled();
   });
 
-  it("dispose() stops and unloads background music", () => {
-    const bgHowls = howlInstances.slice(0, 3);
-
+  it("dispose() stops background music and releases its source", () => {
+    const audio = (soundManager as any).musicAudio as HTMLAudioElement;
+    const pause = vi.spyOn(audio, "pause");
+    audio.src = "mock/bg1.mp3";
     soundManager.dispose();
+    expect(pause).toHaveBeenCalled();
+    expect(audio.hasAttribute("src")).toBe(false);
+  });
 
-    bgHowls.forEach((h) => {
-      expect(h.stop).toHaveBeenCalled();
-      expect(h.unload).toHaveBeenCalled();
-    });
+  it("applies ReplayGain track gain before the user volume", () => {
+    eventBus.emit(new SetBackgroundMusicVolumeEvent(1));
+    (soundManager as any).backgroundMusic[0].replayGainTrackGainDb = -6;
+    (soundManager as any).applyCurrentTrackGain();
+    expect((soundManager as any).musicAudio.volume).toBeCloseTo(
+      10 ** (-6 / 20),
+    );
+  });
+
+  it("ducks music by only 3 dB while an effect is active", () => {
+    eventBus.emit(new SetBackgroundMusicVolumeEvent(1));
+    eventBus.emit(new PlaySoundEffectEvent("click"));
+    const clickHowl = howlInstances[howlInstances.length - 1];
+    expect((soundManager as any).musicAudio.volume).toBeCloseTo(
+      10 ** (MUSIC_DUCK_DB / 20),
+    );
+
+    clickHowl._fireEvent("end", 1);
+    expect((soundManager as any).musicAudio.volume).toBe(1);
   });
 
   it("does not throw when playSoundEffect is called directly", () => {

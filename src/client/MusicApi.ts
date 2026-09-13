@@ -10,6 +10,7 @@ export const MAX_MUSIC_UPLOAD_BYTES = 50 * 1024 * 1024;
 export type MusicUploadErrorCode =
   | "duplicate_file"
   | "file_too_large"
+  | "invalid_audio"
   | "upload_failed";
 
 export class MusicUploadError extends Error {
@@ -90,7 +91,9 @@ export async function uploadMusicTrack(file: File): Promise<MusicTrack> {
         ? "file_too_large"
         : response.status === 409 || error.code === "duplicate_file"
           ? "duplicate_file"
-          : "upload_failed";
+          : response.status === 422 || error.code === "invalid_audio"
+            ? "invalid_audio"
+            : "upload_failed";
     throw new MusicUploadError(
       code,
       error.error ?? `Upload failed with HTTP ${response.status}.`,
