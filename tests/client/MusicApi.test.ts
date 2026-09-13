@@ -76,6 +76,7 @@ describe("MusicApi", () => {
   it.each([
     [409, "duplicate_file"],
     [413, "file_too_large"],
+    [422, "invalid_audio"],
   ] as const)("maps HTTP %i to %s", async (status, code) => {
     vi.stubGlobal(
       "fetch",

@@ -3,7 +3,11 @@ import express from "express";
 import fs from "fs";
 import path from "path";
 import { logger } from "./Logger";
+import type { TaggedMusic } from "./MusicLoudness";
+import { processMusicUpload } from "./MusicLoudnessWorkerClient";
 import { getProprietaryDir, getResourcesDir } from "./PublicAssetManifest";
+
+export { processMusicUpload } from "./MusicLoudnessWorkerClient";
 
 const log = logger.child({ comp: "music" });
 
@@ -19,6 +23,8 @@ interface MusicTrackResponse {
   source: "bundled" | "upload";
   deletable: boolean;
 }
+
+export type MusicUploadProcessor = (audio: Buffer) => Promise<TaggedMusic>;
 
 function sanitizeFilename(name: string): string {
   const base = path.basename(name);
@@ -83,6 +89,7 @@ export function registerMusicRoutes(
   app: Express,
   baseDir: string,
   maxUploadBytes = MAX_UPLOAD_BYTES,
+  uploadProcessor: MusicUploadProcessor = processMusicUpload,
 ): void {
   const resourcesDir = getResourcesDir(baseDir);
   const proprietaryDir = getProprietaryDir(baseDir);
@@ -172,7 +179,7 @@ export function registerMusicRoutes(
 
   // POST /api/music/upload — upload a new MP3 track.
   // Expects Content-Type: audio/mpeg and X-Filename header (URI-encoded).
-  app.post("/api/music/upload", (req, res) => {
+  app.post("/api/music/upload", async (req, res) => {
     if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
       res.status(400).json({ error: "No MP3 data received." });
       return;
@@ -189,11 +196,35 @@ export function registerMusicRoutes(
     }
 
     const filename = sanitizeFilename(decodedName);
+    const target = path.join(uploadsDir, filename);
+
+    if (fs.existsSync(target)) {
+      res.status(409).json({
+        code: "duplicate_file",
+        error: "A track with this filename already exists.",
+      });
+      return;
+    }
+
+    let tagged: TaggedMusic;
+    try {
+      tagged = await uploadProcessor(req.body as Buffer);
+    } catch (err) {
+      log.warn(`Failed to analyze uploaded music ${filename}:`, err);
+      res.status(422).json({
+        code: "invalid_audio",
+        error: "The MP3 could not be analyzed and tagged.",
+      });
+      return;
+    }
 
     try {
-      fs.writeFileSync(path.join(uploadsDir, filename), req.body as Buffer, {
+      fs.writeFileSync(target, tagged.audio, {
         flag: "wx",
       });
+      log.info(
+        `Tagged uploaded music ${filename}: ${tagged.loudness.integratedLufs.toFixed(2)} LUFS, ${tagged.loudness.replayGainDb.toFixed(2)} dB ReplayGain`,
+      );
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "EEXIST") {
         res.status(409).json({
@@ -202,6 +233,7 @@ export function registerMusicRoutes(
         });
         return;
       }
+      log.error(`Failed to save uploaded music ${filename}:`, err);
       res.status(500).json({ error: "Failed to save file." });
       return;
     }
