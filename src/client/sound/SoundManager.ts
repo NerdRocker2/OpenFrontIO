@@ -1,6 +1,12 @@
 import { Howl } from "howler";
 import { EventBus } from "../../core/EventBus";
 import { UserSettings } from "../../core/game/UserSettings";
+import {
+  deleteMusicTrack,
+  fetchMusicTracks,
+  MUSIC_LIBRARY_CHANGED_EVENT,
+} from "../MusicApi";
+import { translateText } from "../Utils";
 import { fetchId3Metadata, metadataFromFilename } from "./Id3Reader";
 import {
   AddMusicTrackEvent,
@@ -24,6 +30,8 @@ const MUSIC_COMPRESSOR_MAKEUP_DB = 1.5;
 
 interface BackgroundTrack {
   url: string;
+  filename: string;
+  deletable: boolean;
   title: string;
   artist: string;
   replayGainTrackGainDb?: number;
@@ -39,6 +47,8 @@ export class SoundManager {
   private activeSounds: { howl: Howl; id: number }[] = [];
   private pendingPlay = false;
   private musicPlaybackRequested = false;
+  private deletingTrack = false;
+  private disposed = false;
   private eventBus: EventBus;
   private onPlaySoundEffect: (e: PlaySoundEffectEvent) => void;
   private onSetBackgroundMusicVolume: (
@@ -54,7 +64,11 @@ export class SoundManager {
   private musicDuckGain: GainNode | null = null;
   private musicOutputGain: GainNode | null = null;
 
-  constructor(eventBus: EventBus, userSettings: UserSettings) {
+  constructor(
+    eventBus: EventBus,
+    userSettings: UserSettings,
+    private readonly enableDeleteShortcut = false,
+  ) {
     this.eventBus = eventBus;
     this.initMusicPlayback();
     this.setBackgroundMusicVolume(userSettings.backgroundMusicVolume());
@@ -73,13 +87,18 @@ export class SoundManager {
     eventBus.on(MusicNextTrackEvent, this.onMusicNextTrack);
     eventBus.on(MusicPrevTrackEvent, this.onMusicPrevTrack);
     eventBus.on(AddMusicTrackEvent, (e) =>
-      this.addTrack(e.url, e.playImmediately, e.filename),
+      this.addTrack(e.url, e.playImmediately, e.filename, true),
     );
+    if (this.enableDeleteShortcut) {
+      window.addEventListener("keydown", this.onDeleteShortcut);
+    }
     this.initMediaSession();
     this.loadTracksFromServer();
   }
 
   public dispose(): void {
+    this.disposed = true;
+    window.removeEventListener("keydown", this.onDeleteShortcut);
     this.eventBus.off(PlaySoundEffectEvent, this.onPlaySoundEffect);
     this.eventBus.off(
       SetBackgroundMusicVolumeEvent,
@@ -223,16 +242,16 @@ export class SoundManager {
   }
 
   private loadTracksFromServer(): void {
-    fetch("/api/music/tracks")
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json() as Promise<{
-          tracks: { filename: string; url: string }[];
-        }>;
-      })
-      .then(({ tracks }) => {
+    fetchMusicTracks()
+      .then((tracks) => {
+        if (this.disposed) return;
         for (const track of tracks) {
-          this.addTrack(track.url, false, track.filename);
+          this.addTrack(
+            track.url,
+            false,
+            track.filename,
+            track.source === "upload" && track.deletable,
+          );
         }
         if (this.pendingPlay && this.backgroundMusic.length > 0) {
           this.pendingPlay = false;
@@ -248,20 +267,26 @@ export class SoundManager {
     url: string,
     playImmediately: boolean,
     filename?: string,
+    deletable = false,
   ): void {
     this.safely("add track", () => {
       const fallback = metadataFromFilename(filename ?? url);
       const newIndex = this.backgroundMusic.length;
-      this.backgroundMusic.push({ url, ...fallback });
+      const track: BackgroundTrack = {
+        url,
+        filename: filename ?? url,
+        deletable,
+        ...fallback,
+      };
+      this.backgroundMusic.push(track);
 
       fetchId3Metadata(url, { includeDuration: false }).then((id3) => {
-        const track = this.backgroundMusic[newIndex];
-        if (!track) return;
+        if (!this.backgroundMusic.includes(track)) return;
         track.title = id3.title ?? fallback.title;
         track.artist = id3.artist ?? fallback.artist;
         track.replayGainTrackGainDb = id3.replayGainTrackGainDb;
         track.replayGainTrackPeak = id3.replayGainTrackPeak;
-        if (newIndex === this.currentTrack) {
+        if (this.backgroundMusic[this.currentTrack] === track) {
           this.applyCurrentTrackGain();
           this.updateMediaSessionState(!this.musicAudio.paused);
         }
@@ -371,6 +396,79 @@ export class SoundManager {
     this.playBackgroundMusic();
   };
 
+  private onDeleteShortcut = (event: KeyboardEvent): void => {
+    const target = event.target as HTMLElement | null;
+    if (
+      !event.ctrlKey ||
+      event.code !== "Delete" ||
+      event.repeat ||
+      target?.tagName === "INPUT" ||
+      target?.tagName === "TEXTAREA" ||
+      target?.isContentEditable
+    ) {
+      return;
+    }
+    event.preventDefault();
+    void this.deleteCurrentTrack();
+  };
+
+  private showDeleteMessage(key: string, color: "green" | "red"): void {
+    window.dispatchEvent(
+      new CustomEvent("show-message", {
+        detail: { message: translateText(key), color, duration: 3000 },
+      }),
+    );
+  }
+
+  private async deleteCurrentTrack(): Promise<void> {
+    if (this.deletingTrack) return;
+    const track = this.backgroundMusic[this.currentTrack];
+    if (!track) return;
+    if (!track.deletable) {
+      this.showDeleteMessage("music_page.delete_bundled_error", "red");
+      return;
+    }
+
+    this.deletingTrack = true;
+    const keepPlaying = this.musicPlaybackRequested;
+    this.musicAudio.pause();
+    this.musicAudio.removeAttribute("src");
+    this.musicAudio.load();
+    // Release the streaming file handle before deletion, especially on Windows.
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    if (this.disposed) {
+      this.deletingTrack = false;
+      return;
+    }
+
+    try {
+      await deleteMusicTrack(track.filename);
+      if (this.disposed) return;
+      const index = this.backgroundMusic.indexOf(track);
+      if (index === -1) return;
+      this.backgroundMusic.splice(index, 1);
+      window.dispatchEvent(new Event(MUSIC_LIBRARY_CHANGED_EVENT));
+      if (this.backgroundMusic.length > 0) {
+        this.currentTrack = Math.min(index, this.backgroundMusic.length - 1);
+        this.prepareCurrentTrack();
+        if (keepPlaying) this.playBackgroundMusic();
+      } else {
+        this.currentTrack = 0;
+        this.musicPlaybackRequested = false;
+        this.updateMediaSessionState(false);
+      }
+      this.showDeleteMessage("music_page.delete_done", "green");
+    } catch (err) {
+      if (this.disposed) return;
+      console.error("SoundManager: failed to delete music track", err);
+      this.prepareCurrentTrack();
+      if (keepPlaying) this.playBackgroundMusic();
+      this.showDeleteMessage("music_page.delete_error", "red");
+    } finally {
+      this.deletingTrack = false;
+    }
+  }
+
   private onMusicPlay = (): void => this.updateMediaSessionState(true);
   private onMusicPause = (): void => this.updateMediaSessionState(false);
   private onMusicError = (): void => {
@@ -393,7 +491,7 @@ export class SoundManager {
 
   public skipToNextTrack(): void {
     this.safely("skip to next track", () => {
-      if (this.backgroundMusic.length === 0) return;
+      if (this.deletingTrack || this.backgroundMusic.length === 0) return;
       this.musicAudio.pause();
       this.currentTrack = (this.currentTrack + 1) % this.backgroundMusic.length;
       this.prepareCurrentTrack();
@@ -403,7 +501,7 @@ export class SoundManager {
 
   public skipToPrevTrack(): void {
     this.safely("skip to previous track", () => {
-      if (this.backgroundMusic.length === 0) return;
+      if (this.deletingTrack || this.backgroundMusic.length === 0) return;
       this.musicAudio.pause();
       this.currentTrack =
         (this.currentTrack - 1 + this.backgroundMusic.length) %

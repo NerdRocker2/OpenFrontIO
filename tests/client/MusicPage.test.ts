@@ -47,6 +47,7 @@ vi.mock("../../src/client/MusicApi", () => ({
   deleteMusicTrack,
   fetchMusicTracks,
   MAX_MUSIC_UPLOAD_BYTES: 50 * 1024 * 1024,
+  MUSIC_LIBRARY_CHANGED_EVENT: "music-library-changed",
   MusicUploadError,
   normalizeMusicUploadFilename: (name: string) => name,
   uploadMusicTrack,
@@ -122,6 +123,30 @@ describe("MusicPage", () => {
     await page.updateComplete;
     expect(deleteMusicTrack).not.toHaveBeenCalled();
     expect(page.textContent).toContain("music_page.delete_bundled_error");
+  });
+
+  it("refreshes a cached playlist after a track is deleted during a game", async () => {
+    const page = await mount();
+    page.querySelectorAll<HTMLElement>("tbody tr")[1].click();
+    await page.updateComplete;
+    fetchMusicTracks.mockResolvedValueOnce([
+      {
+        filename: "Bundled Song.mp3",
+        url: "/music/static/Bundled%20Song.mp3",
+        source: "bundled",
+        deletable: false,
+      },
+    ]);
+
+    window.dispatchEvent(new Event("music-library-changed"));
+    window.dispatchEvent(new CustomEvent("showPage", { detail: "page-music" }));
+    await vi.waitFor(() => {
+      expect(page.querySelectorAll("tbody tr")).toHaveLength(1);
+      expect(fetchMusicTracks).toHaveBeenCalledTimes(2);
+    });
+    expect(page.querySelector("tbody tr")?.getAttribute("aria-current")).toBe(
+      "true",
+    );
   });
 
   it("keeps live playlist totals below the scrolling rows", async () => {

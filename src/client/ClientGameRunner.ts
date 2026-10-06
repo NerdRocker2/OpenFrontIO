@@ -14,6 +14,7 @@ import {
 import { createPartialGameRecord, findClosestBy, replacer } from "../core/Util";
 import {
   BuildableUnit,
+  GameType,
   PlayerType,
   Structures,
   UnitType,
@@ -45,9 +46,9 @@ import {
   DoRetaliateAttackEvent,
   EliminateNationAnimationEvent,
   InputHandler,
-  PauseAfterSpawnFreezeEvent,
   MouseMoveEvent,
   MouseUpEvent,
+  PauseAfterSpawnFreezeEvent,
   TickMetricsEvent,
   ToggleRenderDebugGuiEvent,
 } from "./InputHandler";
@@ -578,7 +579,11 @@ async function createClientGame(
   inputOverlay.style.touchAction = "none";
   document.body.appendChild(inputOverlay);
 
-  const soundManager = new SoundManager(eventBus, userSettings);
+  const soundManager = new SoundManager(
+    eventBus,
+    userSettings,
+    lobbyConfig.gameStartInfo.config.gameType === GameType.Singleplayer,
+  );
   try {
     // Resolve render settings (defaults + user overrides) up front so the
     // renderer is built with the final values — no construct-with-defaults,
