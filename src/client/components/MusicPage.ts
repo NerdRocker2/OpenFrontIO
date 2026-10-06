@@ -5,6 +5,7 @@ import {
   deleteMusicTrack,
   fetchMusicTracks,
   MAX_MUSIC_UPLOAD_BYTES,
+  MUSIC_LIBRARY_CHANGED_EVENT,
   MusicTrack,
   MusicUploadError,
   normalizeMusicUploadFilename,
@@ -72,6 +73,10 @@ export class MusicPage extends LitElement {
     this.audio.addEventListener("error", this.onAudioError);
     window.addEventListener("keydown", this.onKeyDown);
     window.addEventListener("showPage", this.onShowPage);
+    window.addEventListener(
+      MUSIC_LIBRARY_CHANGED_EVENT,
+      this.onMusicLibraryChanged,
+    );
     this.refreshDeleteVisibility();
     if (window.location.pathname === "/music") void this.loadTracks();
   }
@@ -88,6 +93,10 @@ export class MusicPage extends LitElement {
     this.audio.removeEventListener("error", this.onAudioError);
     window.removeEventListener("keydown", this.onKeyDown);
     window.removeEventListener("showPage", this.onShowPage);
+    window.removeEventListener(
+      MUSIC_LIBRARY_CHANGED_EVENT,
+      this.onMusicLibraryChanged,
+    );
     this.revokeTrackUrls(this.tracks);
     super.disconnectedCallback();
   }
@@ -104,6 +113,10 @@ export class MusicPage extends LitElement {
     }
   };
 
+  private onMusicLibraryChanged = () => {
+    this.loaded = false;
+  };
+
   private refreshDeleteVisibility() {
     this.allowDelete =
       new URLSearchParams(window.location.search).get("allowdelete") === "true";
@@ -115,8 +128,11 @@ export class MusicPage extends LitElement {
     this.statusMessage = "";
     try {
       const tracks = await fetchMusicTracks();
+      this.revokeTrackUrls(this.tracks);
       this.tracks = tracks.map((track) => this.withFallbackMetadata(track));
-      this.currentUrl ??= this.tracks[0]?.url ?? null;
+      if (!this.tracks.some((track) => track.url === this.currentUrl)) {
+        this.currentUrl = this.tracks[0]?.url ?? null;
+      }
       this.setAudioSourceForCurrentTrack();
       this.loaded = true;
       this.enrichingCount += this.tracks.length;

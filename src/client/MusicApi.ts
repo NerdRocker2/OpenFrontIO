@@ -5,6 +5,8 @@ export interface MusicTrack {
   deletable: boolean;
 }
 
+export const MUSIC_LIBRARY_CHANGED_EVENT = "music-library-changed";
+
 export const MAX_MUSIC_UPLOAD_BYTES = 50 * 1024 * 1024;
 
 export type MusicUploadErrorCode =

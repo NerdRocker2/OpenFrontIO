@@ -241,6 +241,151 @@ describe("SoundManager", () => {
     expect(() => soundManager.stopBackgroundMusic()).not.toThrow();
   });
 
+  it("deletes the current upload with Ctrl+Delete during solo play and continues to the next track", async () => {
+    const solo = new SoundManager(eventBus, userSettings, true);
+    solo.addTrack("/music/static/Bundled.mp3", false, "Bundled.mp3");
+    solo.addTrack("/music/uploads/First.mp3", false, "First.mp3", true);
+    solo.addTrack("/music/uploads/Second.mp3", true, "Second.mp3", true);
+    const message = vi.fn();
+    window.addEventListener("show-message", message);
+
+    const shortcut = new KeyboardEvent("keydown", {
+      code: "Delete",
+      ctrlKey: true,
+      cancelable: true,
+    });
+    window.dispatchEvent(shortcut);
+    expect(shortcut.defaultPrevented).toBe(true);
+    await vi.waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith("/api/music/uploads/Second.mp3", {
+        method: "DELETE",
+      });
+      expect((solo as any).backgroundMusic).toHaveLength(2);
+    });
+    expect((solo as any).musicAudio.getAttribute("src")).toBe(
+      "/music/uploads/First.mp3",
+    );
+    expect(message).toHaveBeenCalledWith(
+      expect.objectContaining({
+        detail: expect.objectContaining({
+          message: "music_page.delete_done",
+          color: "green",
+        }),
+      }),
+    );
+
+    const deleteCalls = vi
+      .mocked(fetch)
+      .mock.calls.filter(
+        ([, options]) =>
+          options && "method" in options && options.method === "DELETE",
+      ).length;
+    solo.dispose();
+    window.removeEventListener("show-message", message);
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", { code: "Delete", ctrlKey: true }),
+    );
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.filter(
+          ([, options]) =>
+            options && "method" in options && options.method === "DELETE",
+        ),
+    ).toHaveLength(deleteCalls);
+  });
+
+  it("protects bundled tracks and ignores Ctrl+Delete in text fields", () => {
+    const solo = new SoundManager(eventBus, userSettings, true);
+    solo.addTrack("/music/static/Bundled.mp3", true, "Bundled.mp3");
+    const deleteCalls = vi
+      .mocked(fetch)
+      .mock.calls.filter(
+        ([, options]) =>
+          options && "method" in options && options.method === "DELETE",
+      ).length;
+    const message = vi.fn();
+    window.addEventListener("show-message", message);
+    const input = document.createElement("input");
+    document.body.appendChild(input);
+
+    input.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        code: "Delete",
+        ctrlKey: true,
+        bubbles: true,
+      }),
+    );
+    expect(message).not.toHaveBeenCalled();
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", { code: "Delete", ctrlKey: true }),
+    );
+    expect(message).toHaveBeenCalledWith(
+      expect.objectContaining({
+        detail: expect.objectContaining({
+          message: "music_page.delete_bundled_error",
+          color: "red",
+        }),
+      }),
+    );
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.filter(
+          ([, options]) =>
+            options && "method" in options && options.method === "DELETE",
+        ),
+    ).toHaveLength(deleteCalls);
+
+    input.remove();
+    solo.dispose();
+    window.removeEventListener("show-message", message);
+  });
+
+  it("restores the current track when deletion fails", async () => {
+    const fetchMock = vi.mocked(fetch);
+    const originalFetch = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((input, init) =>
+      init?.method === "DELETE"
+        ? Promise.resolve({
+            ok: false,
+            status: 500,
+            json: async () => ({ error: "delete failed" }),
+          } as Response)
+        : originalFetch(input, init),
+    );
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+    const solo = new SoundManager(eventBus, userSettings, true);
+    solo.addTrack("/music/uploads/Current.mp3", true, "Current.mp3", true);
+    const message = vi.fn();
+    window.addEventListener("show-message", message);
+
+    try {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { code: "Delete", ctrlKey: true }),
+      );
+      await vi.waitFor(() =>
+        expect(message).toHaveBeenCalledWith(
+          expect.objectContaining({
+            detail: expect.objectContaining({
+              message: "music_page.delete_error",
+              color: "red",
+            }),
+          }),
+        ),
+      );
+      expect((solo as any).backgroundMusic).toHaveLength(1);
+      expect((solo as any).musicAudio.getAttribute("src")).toBe(
+        "/music/uploads/Current.mp3",
+      );
+    } finally {
+      solo.dispose();
+      window.removeEventListener("show-message", message);
+      fetchMock.mockImplementation(originalFetch);
+      errorLog.mockRestore();
+    }
+  });
+
   it("swallows errors from Howler and does not propagate", () => {
     howlInstances.forEach((h) => {
       h.play.mockImplementation(() => {
