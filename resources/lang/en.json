@@ -1560,9 +1560,12 @@
   "single_modal": {
     "eliminate_nation": "Elimi-nation",
     "eliminate_nations_requires_pause": "Requires Pause After Spawn",
+    "eliminate_tribe": "Die-a-Tribe",
     "max_nations": "Max Nations",
     "max_nations_placeholder": "1",
     "max_timer_invalid": "Please enter a valid max timer value (1-120 minutes)",
+    "max_tribes": "Max Tribes",
+    "max_tribes_placeholder": "1",
     "medals_earned": "Medals",
     "medals_of_maps": "out of {total} maps",
     "options_changed_no_achievements": "Custom settings – achievements disabled",

@@ -54,7 +54,8 @@ export type Intent =
   | TogglePauseIntent
   | UpdateGameConfigIntent
   | ToggleGameStartTimer
-  | EliminateNationIntent;
+  | EliminateNationIntent
+  | EliminateTribeIntent;
 
 export type AttackIntent = z.infer<typeof AttackIntentSchema>;
 export type CancelAttackIntent = z.infer<typeof CancelAttackIntentSchema>;
@@ -400,6 +401,7 @@ export const GameConfigSchema = z.object({
   waterNukes: z.boolean().nullable().optional(),
   pauseAfterSpawn: z.boolean().nullable().optional(),
   eliminateNations: z.number().int().min(1).max(20).nullable().optional(),
+  eliminateTribes: z.number().int().min(1).max(50).nullable().optional(),
   randomSpawn: z.boolean(),
   maxPlayers: z.number().optional(),
   // OFM: allowlist of publicIds allowed to join (admin-only, see create_game).
@@ -627,6 +629,12 @@ export const EliminateNationIntentSchema = z.object({
 });
 export type EliminateNationIntent = z.infer<typeof EliminateNationIntentSchema>;
 
+export const EliminateTribeIntentSchema = z.object({
+  type: z.literal("eliminate_tribe"),
+  targetID: ID,
+});
+export type EliminateTribeIntent = z.infer<typeof EliminateTribeIntentSchema>;
+
 export const IntentSchema = z.discriminatedUnion("type", [
   AttackIntentSchema,
   CancelAttackIntentSchema,
@@ -654,6 +662,7 @@ export const IntentSchema = z.discriminatedUnion("type", [
   UpdateGameConfigIntentSchema,
   ToggleGameStartTimerIntentSchema,
   EliminateNationIntentSchema,
+  EliminateTribeIntentSchema,
 ]);
 
 // StampedIntent = Intent with server-stamped clientID (used in turns and execution)

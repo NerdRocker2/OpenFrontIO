@@ -203,6 +203,11 @@ export class WebGLFrameBuilder {
     });
   }
 
+  /** Hide a tribe's name plate immediately (tribes have no spawn overlay). */
+  hidePlayerName(playerID: string): void {
+    this.view.hidePlayer(playerID);
+  }
+
   /**
    * Refresh only the spawn overlay and start the fade animation loop if
    * any nations are currently fading out. Used when the game is paused so
@@ -233,7 +238,8 @@ export class WebGLFrameBuilder {
     });
   }
 
-  refreshPalette(gameView: GameView): void {    for (const p of gameView.players()) {
+  refreshPalette(gameView: GameView): void {
+    for (const p of gameView.players()) {
       this.writePaletteEntry(p.smallID(), p.territoryColor(), p.borderColor());
     }
     this.view.updatePalette(this.palette);

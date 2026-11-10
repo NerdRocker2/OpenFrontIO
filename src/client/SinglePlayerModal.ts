@@ -68,6 +68,8 @@ const DEFAULT_OPTIONS = {
   pauseAfterSpawn: true,
   eliminateNationsEnabled: true,
   eliminateNationsMax: 3,
+  eliminateTribesEnabled: true,
+  eliminateTribesMax: 10,
 } as const;
 
 // A map earns achievements only if it has nations to conquer — the same rule
@@ -161,6 +163,10 @@ export class SinglePlayerModal extends BaseModal {
     DEFAULT_OPTIONS.eliminateNationsEnabled;
   @state() private eliminateNationsMax: number =
     DEFAULT_OPTIONS.eliminateNationsMax;
+  @state() private eliminateTribesEnabled: boolean =
+    DEFAULT_OPTIONS.eliminateTribesEnabled;
+  @state() private eliminateTribesMax: number =
+    DEFAULT_OPTIONS.eliminateTribesMax;
 
   private mapLoader = terrainMapFileLoader;
 
@@ -423,6 +429,27 @@ export class SinglePlayerModal extends BaseModal {
         .onInput=${this.handleEliminateNationsMaxChanges}
         .onKeyDown=${this.handleEliminateNationsMaxKeyDown}
       ></toggle-input-card>`,
+      html`<toggle-input-card
+        .labelKey=${"single_modal.eliminate_tribe"}
+        .checked=${this.eliminateTribesEnabled}
+        .disabledCheckbox=${!this.pauseAfterSpawn}
+        .disabledMessage=${translateText(
+          "single_modal.eliminate_nations_requires_pause",
+        )}
+        .inputId=${"eliminate-tribes-max"}
+        .inputMin=${1}
+        .inputMax=${50}
+        .inputValue=${this.eliminateTribesMax}
+        .inputAriaLabel=${translateText("single_modal.max_tribes")}
+        .inputPlaceholder=${translateText(
+          "single_modal.max_tribes_placeholder",
+        )}
+        .defaultInputValue=${10}
+        .minValidOnEnable=${1}
+        .onToggle=${this.handleEliminateTribesToggle}
+        .onInput=${this.handleEliminateTribesMaxChanges}
+        .onKeyDown=${this.handleEliminateNationsMaxKeyDown}
+      ></toggle-input-card>`,
     ];
 
     return html`
@@ -562,8 +589,11 @@ export class SinglePlayerModal extends BaseModal {
       (this.doomsdayClock &&
         this.doomsdayClockSpeed !== DEFAULT_OPTIONS.doomsdayClockSpeed) ||
       this.pauseAfterSpawn !== DEFAULT_OPTIONS.pauseAfterSpawn ||
-      this.eliminateNationsEnabled !== DEFAULT_OPTIONS.eliminateNationsEnabled ||
+      this.eliminateNationsEnabled !==
+        DEFAULT_OPTIONS.eliminateNationsEnabled ||
       this.eliminateNationsMax !== DEFAULT_OPTIONS.eliminateNationsMax ||
+      this.eliminateTribesEnabled !== DEFAULT_OPTIONS.eliminateTribesEnabled ||
+      this.eliminateTribesMax !== DEFAULT_OPTIONS.eliminateTribesMax ||
       this.disabledUnits.length > 0
     );
   }
@@ -598,6 +628,8 @@ export class SinglePlayerModal extends BaseModal {
     this.pauseAfterSpawn = DEFAULT_OPTIONS.pauseAfterSpawn;
     this.eliminateNationsEnabled = DEFAULT_OPTIONS.eliminateNationsEnabled;
     this.eliminateNationsMax = DEFAULT_OPTIONS.eliminateNationsMax;
+    this.eliminateTribesEnabled = DEFAULT_OPTIONS.eliminateTribesEnabled;
+    this.eliminateTribesMax = DEFAULT_OPTIONS.eliminateTribesMax;
   }
 
   protected onOpen(): void {
@@ -648,6 +680,23 @@ export class SinglePlayerModal extends BaseModal {
     if (e.key === "Enter") (e.target as HTMLInputElement)?.blur();
   };
 
+  private handleEliminateTribesToggle = (
+    checked: boolean,
+    n: number | undefined,
+  ) => {
+    this.eliminateTribesEnabled = checked;
+    if (n !== undefined) {
+      this.eliminateTribesMax = n;
+    }
+  };
+
+  private handleEliminateTribesMaxChanges = (e: Event) => {
+    const value = parseInt((e.target as HTMLInputElement).value, 10);
+    if (!isNaN(value) && value >= 1 && value <= 50) {
+      this.eliminateTribesMax = value;
+    }
+  };
+
   private handleEliminateNationsMaxChanges = (e: Event) => {
     const value = parseInt((e.target as HTMLInputElement).value, 10);
     if (!isNaN(value) && value >= 1 && value <= 20) {
@@ -655,7 +704,8 @@ export class SinglePlayerModal extends BaseModal {
     }
   };
 
-  private handleConfigDoomsdayClockSpeedSelected = (e: Event) => {    const customEvent = e as CustomEvent<{ speed: DoomsdayClockSpeed }>;
+  private handleConfigDoomsdayClockSpeedSelected = (e: Event) => {
+    const customEvent = e as CustomEvent<{ speed: DoomsdayClockSpeed }>;
     this.doomsdayClockSpeed = customEvent.detail.speed;
   };
 
@@ -712,6 +762,7 @@ export class SinglePlayerModal extends BaseModal {
         this.pauseAfterSpawn = checked;
         if (!checked) {
           this.eliminateNationsEnabled = false;
+          this.eliminateTribesEnabled = false;
         }
         break;
       default:
@@ -961,6 +1012,9 @@ export class SinglePlayerModal extends BaseModal {
               ...(!this.pauseAfterSpawn ? {} : { pauseAfterSpawn: true }),
               ...(this.eliminateNationsEnabled && this.pauseAfterSpawn
                 ? { eliminateNations: this.eliminateNationsMax }
+                : {}),
+              ...(this.eliminateTribesEnabled && this.pauseAfterSpawn
+                ? { eliminateTribes: this.eliminateTribesMax }
                 : {}),
             },
             lobbyCreatedAt: Date.now(), // ms; server should be authoritative in MP

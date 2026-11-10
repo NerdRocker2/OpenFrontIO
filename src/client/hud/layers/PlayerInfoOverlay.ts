@@ -12,8 +12,10 @@ import {
 import { TileRef } from "../../../core/game/GameMap";
 import { AllianceView } from "../../../core/game/GameUpdates";
 import { Controller } from "../../Controller";
+import { eliminatedLabel } from "../../EliminationMarkers";
 import {
   ContextMenuEvent,
+  EliminationMarkerEvent,
   MouseMoveEvent,
   TouchEvent,
 } from "../../InputHandler";
@@ -105,7 +107,22 @@ export class PlayerInfoOverlay extends LitElement implements Controller {
 
   private lastMouseUpdate = 0;
 
+  // Nations/tribes eliminated during the spawn pause. Their territory is still
+  // drawn until the next tick, so hovering it shows the name as eliminated.
+  private eliminatedIDs = new Set<string>();
+
+  private displayNameOf(player: PlayerView): string {
+    const name = player.displayName();
+    return this.eliminatedIDs.has(player.id()) && this.game.inSpawnPhase()
+      ? eliminatedLabel(name)
+      : name;
+  }
+
   init() {
+    this.eventBus.on(EliminationMarkerEvent, (e) => {
+      this.eliminatedIDs.add(e.targetID);
+      this.requestUpdate();
+    });
     this.eventBus.on(MouseMoveEvent, (e: MouseMoveEvent) =>
       this.onMouseEvent(e),
     );
@@ -381,7 +398,7 @@ export class PlayerInfoOverlay extends LitElement implements Controller {
     const playerTeam = getTranslatedPlayerTeamLabel(player.team());
 
     const { fontSize, isAllianceWrapped } = this.getNameFontSize({
-      nameLength: player.displayName().length,
+      nameLength: this.displayNameOf(player).length,
       iconCount: playerIcons.length,
       hasFlag: !!player.cosmetics.flag,
       hasBetrayal: traitorTicks > 0,
@@ -495,7 +512,7 @@ export class PlayerInfoOverlay extends LitElement implements Controller {
               <span
                 class="font-mono inline-block leading-[1.2] wrap-anywhere"
                 style="font-size: ${fontSize}"
-                >${player.displayName()}</span
+                >${this.displayNameOf(player)}</span
               >
             </div>
             ${this.getRelationSmiley(player, myPlayer)}
