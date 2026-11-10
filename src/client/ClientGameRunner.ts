@@ -36,6 +36,10 @@ import {
 } from "../core/game/UserSettings";
 import { WorkerClient } from "../core/worker/WorkerClient";
 import { getPersistentID } from "./Auth";
+import {
+  EliminationMarkers,
+  findLeftmostOwnedTile,
+} from "./EliminationMarkers";
 import { showInGameAlert } from "./InGameModal";
 import {
   AutoUpgradeEvent,
@@ -45,6 +49,7 @@ import {
   DoRequestAllianceEvent,
   DoRetaliateAttackEvent,
   EliminateNationAnimationEvent,
+  EliminationMarkerEvent,
   InputHandler,
   MouseMoveEvent,
   MouseUpEvent,
@@ -64,6 +69,7 @@ import {
   SendBoatAttackIntentEvent,
   SendBreakAllianceIntentEvent,
   SendEliminateNationIntentEvent,
+  SendEliminateTribeIntentEvent,
   SendHashEvent,
   SendSpawnIntentEvent,
   SendUpgradeStructureIntentEvent,
@@ -705,6 +711,12 @@ async function createClientGame(
       eventBus,
     );
 
+    const eliminationMarkers = new EliminationMarkers(
+      gameView,
+      gameRenderer.transformHandler,
+      eventBus,
+    );
+
     // Releases all WebGL/DOM resources this game created. Without it, stopping
     // a game (e.g. joining another without a page reload) leaks the WebGL
     // context, canvas and input overlay — a few games and mobile browsers hit
@@ -714,6 +726,7 @@ async function createClientGame(
       if (rendererDisposed) return;
       rendererDisposed = true;
       stopFrameLoop();
+      eliminationMarkers.dispose();
       view.dispose();
       glCanvas.remove();
       inputOverlay.remove();
@@ -749,6 +762,7 @@ export class ClientGameRunner {
   private isActive = false;
   private pauseAfterSpawnFreezeEmitted = false;
   private pendingEliminations = new Set<string>();
+  private pendingTribeEliminations = new Set<string>();
 
   private turnsSeen = 0;
   private lastMousePosition: { x: number; y: number } | null = null;
@@ -1090,31 +1104,48 @@ export class ClientGameRunner {
     ) {
       this.eventBus.emit(new SendSpawnIntentEvent(tile));
       this.pendingEliminations.clear();
+      this.pendingTribeEliminations.clear();
       return;
     }
     if (this.pauseAfterSpawnFreezeEmitted && this.gameView.inSpawnPhase()) {
-      const maxEliminations =
-        this.gameView.config().gameConfig().eliminateNations ?? 0;
-      if (maxEliminations > 0) {
-        const owner = this.gameView.owner(tile);
-        if (
-          this.gameView.isLand(tile) &&
-          owner.isPlayer() &&
-          owner.type() === PlayerType.Nation &&
-          this.pendingEliminations.size < maxEliminations &&
-          !this.pendingEliminations.has(owner.id())
-        ) {
-          const nationID = owner.id();
-          this.pendingEliminations.add(nationID);
-          const nd = owner.nameLocation();
-          if (nd) {
-            this.webglBuilder?.markNationEliminated(nationID, nd.x, nd.y);
-            this.webglBuilder?.refreshSpawnOverlay(this.gameView);
-          }
-          this.eventBus.emit(new EliminateNationAnimationEvent(nationID));
-          this.eventBus.emit(new SendEliminateNationIntentEvent(nationID));
-          return;
+      const gameConfig = this.gameView.config().gameConfig();
+      const maxEliminations = gameConfig.eliminateNations ?? 0;
+      const maxTribeEliminations = gameConfig.eliminateTribes ?? 0;
+      const owner = this.gameView.owner(tile);
+      if (
+        maxEliminations > 0 &&
+        this.gameView.isLand(tile) &&
+        owner.isPlayer() &&
+        owner.type() === PlayerType.Nation &&
+        this.pendingEliminations.size < maxEliminations &&
+        !this.pendingEliminations.has(owner.id())
+      ) {
+        const nationID = owner.id();
+        this.pendingEliminations.add(nationID);
+        const nd = owner.nameLocation();
+        if (nd) {
+          this.webglBuilder?.markNationEliminated(nationID, nd.x, nd.y);
+          this.webglBuilder?.refreshSpawnOverlay(this.gameView);
         }
+        this.emitEliminationMarker(owner, "nation", tile);
+        this.eventBus.emit(new EliminateNationAnimationEvent(nationID));
+        this.eventBus.emit(new SendEliminateNationIntentEvent(nationID));
+        return;
+      }
+      if (
+        maxTribeEliminations > 0 &&
+        this.gameView.isLand(tile) &&
+        owner.isPlayer() &&
+        owner.type() === PlayerType.Bot &&
+        this.pendingTribeEliminations.size < maxTribeEliminations &&
+        !this.pendingTribeEliminations.has(owner.id())
+      ) {
+        const tribeID = owner.id();
+        this.pendingTribeEliminations.add(tribeID);
+        this.webglBuilder?.hidePlayerName(tribeID);
+        this.emitEliminationMarker(owner, "tribe", tile);
+        this.eventBus.emit(new SendEliminateTribeIntentEvent(tribeID));
+        return;
       }
     }
     if (this.gameView.inSpawnPhase()) {
@@ -1138,6 +1169,30 @@ export class ClientGameRunner {
         this.sendBoatAttackIntent(tile);
       }
     });
+  }
+
+  private emitEliminationMarker(
+    owner: PlayerView,
+    kind: "nation" | "tribe",
+    clickedTile: TileRef,
+  ) {
+    const nd = owner.nameLocation();
+    const baseX = nd?.x ?? this.gameView.x(clickedTile);
+    const baseY = nd?.y ?? this.gameView.y(clickedTile);
+    const leftmost = findLeftmostOwnedTile(
+      {
+        isValidCoord: (x, y) => this.gameView.isValidCoord(x, y),
+        isOwnedBy: (x, y) => {
+          const o = this.gameView.owner(this.gameView.ref(x, y));
+          return o.isPlayer() && o.id() === owner.id();
+        },
+      },
+      baseX,
+      baseY,
+    ) ?? { x: baseX, y: baseY };
+    this.eventBus.emit(
+      new EliminationMarkerEvent(owner.id(), kind, leftmost.x, leftmost.y),
+    );
   }
 
   private autoUpgradeEvent(event: AutoUpgradeEvent) {

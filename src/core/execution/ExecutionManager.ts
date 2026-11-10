@@ -10,9 +10,10 @@ import { AttackExecution } from "./AttackExecution";
 import { BoatRetreatExecution } from "./BoatRetreatExecution";
 import { ConstructionExecution } from "./ConstructionExecution";
 import { DeleteUnitExecution } from "./DeleteUnitExecution";
-import { EliminateNationExecution } from "./EliminateNationExecution";
 import { DonateGoldExecution } from "./DonateGoldExecution";
 import { DonateTroopsExecution } from "./DonateTroopExecution";
+import { EliminateNationExecution } from "./EliminateNationExecution";
+import { EliminateTribeExecution } from "./EliminateTribeExecution";
 import { EmbargoAllExecution } from "./EmbargoAllExecution";
 import { EmbargoExecution } from "./EmbargoExecution";
 import { EmojiExecution } from "./EmojiExecution";
@@ -138,6 +139,8 @@ export class Executor {
         return new PauseExecution(player, intent.paused);
       case "eliminate_nation":
         return new EliminateNationExecution(player, intent.targetID);
+      case "eliminate_tribe":
+        return new EliminateTribeExecution(player, intent.targetID);
       default:
         throw new Error(`intent type ${intent} not found`);
     }

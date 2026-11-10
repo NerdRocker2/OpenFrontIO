@@ -77,6 +77,10 @@ export class SendEliminateNationIntentEvent implements GameEvent {
   constructor(public readonly targetID: PlayerID) {}
 }
 
+export class SendEliminateTribeIntentEvent implements GameEvent {
+  constructor(public readonly targetID: PlayerID) {}
+}
+
 export class SendAttackIntentEvent implements GameEvent {
   constructor(
     public readonly targetID: PlayerID | null,
@@ -237,6 +241,9 @@ export class Transport {
     );
     this.eventBus.on(SendEliminateNationIntentEvent, (e) =>
       this.onSendEliminateNationIntent(e),
+    );
+    this.eventBus.on(SendEliminateTribeIntentEvent, (e) =>
+      this.onSendEliminateTribeIntent(e),
     );
     this.eventBus.on(SendAttackIntentEvent, (e) => this.onSendAttackIntent(e));
     this.eventBus.on(SendUpgradeStructureIntentEvent, (e) =>
@@ -509,6 +516,13 @@ export class Transport {
   private onSendEliminateNationIntent(event: SendEliminateNationIntentEvent) {
     this.sendIntent({
       type: "eliminate_nation",
+      targetID: event.targetID,
+    });
+  }
+
+  private onSendEliminateTribeIntent(event: SendEliminateTribeIntentEvent) {
+    this.sendIntent({
+      type: "eliminate_tribe",
       targetID: event.targetID,
     });
   }

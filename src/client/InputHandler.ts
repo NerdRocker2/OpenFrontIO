@@ -185,6 +185,15 @@ export class EliminateNationAnimationEvent implements GameEvent {
   constructor(public readonly targetID: string) {}
 }
 
+export class EliminationMarkerEvent implements GameEvent {
+  constructor(
+    public readonly targetID: string,
+    public readonly kind: "nation" | "tribe",
+    public readonly x: number,
+    public readonly y: number,
+  ) {}
+}
+
 export class CenterCameraEvent implements GameEvent {
   constructor() {}
 }
