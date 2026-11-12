@@ -1,5 +1,5 @@
 {
-  "categories": ["asia", "new"],
+  "categories": ["asia"],
   "id": "CaspianSea",
   "map": {
     "height": 1728,
@@ -16,7 +16,6 @@
     "num_land_tiles": 235925,
     "width": 504
   },
-  "multiplayer_frequency": 5,
   "name": "Caspian Sea",
   "nations": [
     {

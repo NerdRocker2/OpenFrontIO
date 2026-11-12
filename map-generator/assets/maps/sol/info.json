@@ -1,9 +1,13 @@
 {
+  "$schema": "../../../info.schema.json",
   "id": "Sol",
   "name": "Sol",
   "translation_key": "map.sol",
-  "categories": ["cosmic", "new"],
-  "multiplayer_frequency": 20,
+  "categories": ["cosmic"],
+  "author": "Tristar",
+  "forced_modifiers": ["isWaterNukes:50", "startingGold5M:100"],
+  "themes": ["space"],
+  "description": "A map of our Solar System, every World has become an open front. This is the largest map of the game in rotation, made for special modifier games. The nations include planetary powers with satellite groups and probes such as the Pioneers and Voyagers. Prepare for what will be your most brutal OpenFront match.",
   "nations": [
     {
       "coordinates": [2419, 1241],
@@ -271,7 +275,6 @@
       "flag": "uranus"
     }
   ],
-  "themes": ["space"],
   "custom_tribes": [
     {
       "coordinates": [237, 727],

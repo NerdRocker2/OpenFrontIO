@@ -14,13 +14,18 @@
  *   R8UI terrainTex           → water detection for bridge rendering (shader neighbor lookup)
  *   R16UI tileTex (shared)   → owner lookup for rail color
  *   RGBA32F paletteTex        → player color lookup
+ *   RGBA32F effectTex (shared) → per-owner railroad cosmetic effect
  */
 
 import type { GhostPreviewData, TerrainRect } from "../../types";
 import type { RenderSettings } from "../RenderSettings";
 import overlayVertSrc from "../shaders/map-overlay/overlay.vert.glsl?raw";
 import railroadFragSrc from "../shaders/railroad/railroad.frag.glsl?raw";
-import { getPaletteSize } from "../utils/ColorUtils";
+import {
+  getPaletteSize,
+  MAX_TRAIL_COLORS,
+  RAILROAD_EFFECT_BLOCK,
+} from "../utils/ColorUtils";
 import {
   createMapQuad,
   createProgram,
@@ -90,12 +95,14 @@ export class RailroadPass {
   private ghostRailTex: WebGLTexture;
   private tileTex: WebGLTexture;
   private paletteTex: WebGLTexture;
+  private effectTex: WebGLTexture;
   private terrainTex: WebGLTexture;
   private vao: WebGLVertexArrayObject;
 
   private uCamera: WebGLUniformLocation;
   private uMapSize: WebGLUniformLocation;
   private uZoom: WebGLUniformLocation;
+  private uTime: WebGLUniformLocation;
   private uRailDetailZoom: WebGLUniformLocation;
   private uRailAlpha: WebGLUniformLocation;
   private uRailFade: WebGLUniformLocation;
@@ -103,6 +110,7 @@ export class RailroadPass {
   private uGhostOwnerID: WebGLUniformLocation;
   private uLocalPlayerID: WebGLUniformLocation;
   private uLocalRailColor: WebGLUniformLocation;
+  private uHoverOwner: WebGLUniformLocation;
 
   private mapW: number;
   private mapH: number;
@@ -118,17 +126,31 @@ export class RailroadPass {
 
   /**
    * Current ghost overlay content, sparse: tile ref → texel value (1-6 =
-   * orientation, 7 = overlap highlight). Ghost paths cover at most a few
-   * thousand tiles, so tracking them beats a full-map array + full-map
-   * texture upload per preview change.
+   * orientation, 7 = overlap highlight).
    */
   private ghostTiles = new Map<number, number>();
-  /** Pending ghost texel writes, interleaved [ref, value, …]. */
-  private ghostOps: number[] = [];
+  private ghostRailData: Uint8Array;
+  private dirtyMinX = Infinity;
+  private dirtyMinY = Infinity;
+  private dirtyMaxX = -Infinity;
+  private dirtyMaxY = -Infinity;
   private ghostOwnerID = 0;
+  // BuildPreviewController re-emits the same rail arrays every animation frame
+  // while only the structure's sub-tile cursor position changes. Keep their
+  // identities so tile orientation/diff work only runs for a new worker result.
+  private lastGhostRailPaths: GhostPreviewData["ghostRailPaths"] | null = null;
+  private lastOverlappingRailroads:
+    | GhostPreviewData["overlappingRailroads"]
+    | null = null;
 
   private localPlayerID = 0;
   private localRailColor: [number, number, number] = [0.75, 0.75, 0.75];
+  /** Hovered territory's owner (0 = none) — shows that player's railroad effect. */
+  private hoverOwner = 0;
+
+  /** Wall-clock start, for uTime (seconds) — matches TrailPass so the
+   *  railroad effect animates at the same pace as the trail effects. */
+  private readonly startTime = performance.now();
 
   constructor(
     private gl: WebGL2RenderingContext,
@@ -136,6 +158,7 @@ export class RailroadPass {
     mapH: number,
     tileTex: WebGLTexture,
     paletteTex: WebGLTexture,
+    effectTex: WebGLTexture,
     terrainBytes: Uint8Array,
     settings: RenderSettings,
   ) {
@@ -143,20 +166,25 @@ export class RailroadPass {
     this.mapH = mapH;
     this.tileTex = tileTex;
     this.paletteTex = paletteTex;
+    this.effectTex = effectTex;
     this.settings = settings;
+    this.ghostRailData = new Uint8Array(mapW * mapH);
 
     this.program = createProgram(
       gl,
       overlayVertSrc,
       shaderSrc(railroadFragSrc, {
         PALETTE_SIZE: getPaletteSize(),
+        RAILROAD_EFFECT_ROW_BASE: RAILROAD_EFFECT_BLOCK * MAX_TRAIL_COLORS,
         ...TILE_DEFINES,
       }),
+      "RailroadPass",
     );
 
     this.uCamera = gl.getUniformLocation(this.program, "uCamera")!;
     this.uMapSize = gl.getUniformLocation(this.program, "uMapSize")!;
     this.uZoom = gl.getUniformLocation(this.program, "uZoom")!;
+    this.uTime = gl.getUniformLocation(this.program, "uTime")!;
     this.uRailDetailZoom = gl.getUniformLocation(
       this.program,
       "uRailDetailZoom",
@@ -176,6 +204,7 @@ export class RailroadPass {
       this.program,
       "uLocalRailColor",
     )!;
+    this.uHoverOwner = gl.getUniformLocation(this.program, "uHoverOwner")!;
 
     // Texture unit bindings + ghost defaults
     gl.useProgram(this.program);
@@ -184,6 +213,7 @@ export class RailroadPass {
     gl.uniform1i(gl.getUniformLocation(this.program, "uPalette"), 2);
     gl.uniform1i(gl.getUniformLocation(this.program, "uTerrainTex"), 3);
     gl.uniform1i(gl.getUniformLocation(this.program, "uGhostRailTex"), 4);
+    gl.uniform1i(gl.getUniformLocation(this.program, "uEffect"), 5);
     gl.uniform1f(this.uGhostOwnerID, 0);
 
     // R8UI terrain texture (static, uploaded once for bridge detection)
@@ -236,6 +266,11 @@ export class RailroadPass {
     this.localRailColor = [r, g, b];
   }
 
+  /** Hovered territory's owner (0 = none) — shows that player's railroad effect. */
+  setHighlightOwner(ownerID: number): void {
+    this.hoverOwner = ownerID;
+  }
+
   /**
    * Sub-upload terrain bytes for regions that changed (water-nuke
    * conversions). Keeps the R8UI water-detection texture in sync with the
@@ -266,6 +301,23 @@ export class RailroadPass {
   }
 
   updateGhostPreview(data: GhostPreviewData | null): void {
+    if (
+      data !== null &&
+      data.ghostRailPaths === this.lastGhostRailPaths &&
+      data.overlappingRailroads === this.lastOverlappingRailroads
+    ) {
+      this.ghostOwnerID = data.ownerID;
+      return;
+    }
+    if (
+      data === null &&
+      this.lastGhostRailPaths === null &&
+      this.lastOverlappingRailroads === null
+    ) {
+      this.ghostOwnerID = 0;
+      return;
+    }
+
     const next = new Map<number, number>();
 
     if (data) {
@@ -291,17 +343,37 @@ export class RailroadPass {
       }
 
       this.ghostOwnerID = data.ownerID;
+      this.lastGhostRailPaths = data.ghostRailPaths;
+      this.lastOverlappingRailroads = data.overlappingRailroads;
     } else {
       this.ghostOwnerID = 0;
+      this.lastGhostRailPaths = null;
+      this.lastOverlappingRailroads = null;
     }
 
-    // Queue texel writes for the diff: clear tiles that left the ghost,
+    // Write dirty tiles: clear tiles that left the ghost,
     // (re)write tiles whose value is new or changed.
     for (const ref of this.ghostTiles.keys()) {
-      if (!next.has(ref)) this.ghostOps.push(ref, 0);
+      if (!next.has(ref)) {
+        this.ghostRailData[ref] = 0;
+        const x = ref % this.mapW;
+        const y = (ref - x) / this.mapW;
+        this.dirtyMinX = Math.min(this.dirtyMinX, x);
+        this.dirtyMaxX = Math.max(this.dirtyMaxX, x);
+        this.dirtyMinY = Math.min(this.dirtyMinY, y);
+        this.dirtyMaxY = Math.max(this.dirtyMaxY, y);
+      }
     }
     for (const [ref, value] of next) {
-      if (this.ghostTiles.get(ref) !== value) this.ghostOps.push(ref, value);
+      if (this.ghostTiles.get(ref) !== value) {
+        this.ghostRailData[ref] = value;
+        const x = ref % this.mapW;
+        const y = (ref - x) / this.mapW;
+        this.dirtyMinX = Math.min(this.dirtyMinX, x);
+        this.dirtyMaxX = Math.max(this.dirtyMaxX, x);
+        this.dirtyMinY = Math.min(this.dirtyMinY, y);
+        this.dirtyMaxY = Math.max(this.dirtyMaxY, y);
+      }
     }
     this.ghostTiles = next;
   }
@@ -311,8 +383,8 @@ export class RailroadPass {
     const gl = this.gl;
     const rs = this.settings.railroad;
 
-    // Flush queued ghost texel writes even when faded out, so the op queue
-    // can't grow unboundedly while the player previews at low zoom.
+    // Flush dirty ghost texels even when faded out, so dirty rects don't linger
+    // while the player previews at low zoom.
     this.flushGhostOps();
 
     // Fade out as zoom drops below railMinZoom; fully invisible at railMinZoom - railFadeRange
@@ -348,12 +420,14 @@ export class RailroadPass {
     gl.uniformMatrix3fv(this.uCamera, false, cameraMatrix);
     gl.uniform2f(this.uMapSize, this.mapW, this.mapH);
     gl.uniform1f(this.uZoom, zoom);
+    gl.uniform1f(this.uTime, (performance.now() - this.startTime) / 1000);
     gl.uniform1f(this.uRailDetailZoom, rs.railDetailZoom);
     gl.uniform1f(this.uRailAlpha, rs.railAlpha);
     gl.uniform1f(this.uRailFade, fade);
     gl.uniform1f(this.uRailThickness, rs.railThickness);
     gl.uniform1f(this.uGhostOwnerID, this.ghostOwnerID);
     gl.uniform1f(this.uLocalPlayerID, this.localPlayerID);
+    gl.uniform1f(this.uHoverOwner, this.hoverOwner);
     gl.uniform3f(
       this.uLocalRailColor,
       this.localRailColor[0],
@@ -361,7 +435,8 @@ export class RailroadPass {
       this.localRailColor[2],
     );
 
-    // Bind textures: 0=railroad, 1=tile, 2=palette, 3=terrain, 4=ghostRail
+    // Bind textures: 0=railroad, 1=tile, 2=palette, 3=terrain, 4=ghostRail,
+    // 5=effect
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.railroadTex);
 
@@ -377,41 +452,46 @@ export class RailroadPass {
     gl.activeTexture(gl.TEXTURE4);
     gl.bindTexture(gl.TEXTURE_2D, this.ghostRailTex);
 
+    gl.activeTexture(gl.TEXTURE5);
+    gl.bindTexture(gl.TEXTURE_2D, this.effectTex);
+
     gl.bindVertexArray(this.vao);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
+    gl.activeTexture(gl.TEXTURE0);
   }
 
   /**
-   * Apply queued ghost texel writes to the ghost texture, one texel per
-   * texSubImage2D. Ghost diffs are path-sized (at most a few thousand
-   * texels), far cheaper than the full-map upload a dense mirror needs.
+   * Apply dirty ghost texels to the ghost texture in a single texSubImage2D upload.
    */
   private flushGhostOps(): void {
-    const ops = this.ghostOps;
-    if (ops.length === 0) return;
-    const gl = this.gl;
-    gl.activeTexture(gl.TEXTURE4);
-    gl.bindTexture(gl.TEXTURE_2D, this.ghostRailTex);
-    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    const scratch = new Uint8Array(1);
-    for (let i = 0; i < ops.length; i += 2) {
-      const ref = ops[i];
-      const x = ref % this.mapW;
-      const y = (ref - x) / this.mapW;
-      scratch[0] = ops[i + 1];
+    if (this.dirtyMinX <= this.dirtyMaxX) {
+      const w = this.dirtyMaxX - this.dirtyMinX + 1;
+      const h = this.dirtyMaxY - this.dirtyMinY + 1;
+      const offset = this.dirtyMinY * this.mapW + this.dirtyMinX;
+      const gl = this.gl;
+      gl.activeTexture(gl.TEXTURE4);
+      gl.bindTexture(gl.TEXTURE_2D, this.ghostRailTex);
+      gl.pixelStorei(gl.UNPACK_ROW_LENGTH, this.mapW);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
       gl.texSubImage2D(
         gl.TEXTURE_2D,
         0,
-        x,
-        y,
-        1,
-        1,
+        this.dirtyMinX,
+        this.dirtyMinY,
+        w,
+        h,
         gl.RED_INTEGER,
         gl.UNSIGNED_BYTE,
-        scratch,
+        this.ghostRailData,
+        offset,
       );
+      gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
+      gl.activeTexture(gl.TEXTURE0);
+      this.dirtyMinX = Infinity;
+      this.dirtyMaxX = -Infinity;
+      this.dirtyMinY = Infinity;
+      this.dirtyMaxY = -Infinity;
     }
-    ops.length = 0;
   }
 
   // ---- Rail orientation computation ----
@@ -447,6 +527,6 @@ export class RailroadPass {
     gl.deleteTexture(this.railroadTex);
     gl.deleteTexture(this.ghostRailTex);
     gl.deleteTexture(this.terrainTex);
-    // Don't delete tileTex or paletteTex — shared with other passes
+    // Don't delete tileTex, paletteTex, or effectTex — shared with other passes
   }
 }

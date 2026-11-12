@@ -2,6 +2,7 @@ import { LitElement, html } from "lit";
 import { customElement } from "lit/decorators.js";
 import { adGatekeeper } from "../../AdGatekeeper";
 import { Controller } from "../../Controller";
+import type { HomepagePromos } from "../../HomepagePromos";
 import { GameView } from "../../view";
 
 const AD_TYPES = [
@@ -16,7 +17,6 @@ export class InGamePromo extends LitElement implements Controller {
 
   private shouldShow: boolean = false;
   private adsVisible: boolean = false;
-  private bottomRailDestroyed: boolean = false;
   private cornerAdShown: boolean = false;
   private adCheckInterval: ReturnType<typeof setTimeout> | null = null;
   private adGateOff: (() => void) | null = null;
@@ -29,10 +29,9 @@ export class InGamePromo extends LitElement implements Controller {
 
   tick() {
     if (!this.game.inSpawnPhase()) {
-      if (!this.bottomRailDestroyed) {
-        this.bottomRailDestroyed = true;
-        this.destroyBottomRail();
-      }
+      // Every tick rather than once, so a rail loaded again mid-game cannot
+      // stay. Cheap: it returns at once unless a rail is loaded.
+      this.destroyBottomRail();
       if (!this.cornerAdShown) {
         this.cornerAdShown = true;
         console.log("[InGamePromo] Spawn phase ended, triggering showAd");
@@ -42,14 +41,11 @@ export class InGamePromo extends LitElement implements Controller {
   }
 
   private destroyBottomRail(): void {
-    if (!window.ramp) return;
-
-    try {
-      window.ramp.destroyUnits("pw-oop-bottom_rail");
-      console.log("Bottom rail ad destroyed after spawn phase");
-    } catch (e) {
-      console.error("Error destroying bottom_rail ad:", e);
-    }
+    // Through <homepage-promos>, which loaded the rail: its queued add checks
+    // the same flag, so a late ramp.js cannot add the rail back in-game.
+    (
+      document.querySelector("homepage-promos") as HomepagePromos | null
+    )?.destroyBottomRail?.();
   }
 
   private showAd(): void {
@@ -65,7 +61,7 @@ export class InGamePromo extends LitElement implements Controller {
       this.shouldShow = true;
       this.requestUpdate();
 
-      this.updateComplete.then(() => {
+      void this.updateComplete.then(() => {
         this.loadAd();
         this.checkForAds();
       });
@@ -109,11 +105,11 @@ export class InGamePromo extends LitElement implements Controller {
             AD_TYPES.map((a) => a.type),
           );
         } catch (e) {
-          console.error("Failed to add in-game ads:", e);
+          console.warn("Failed to add in-game ads:", e);
         }
       });
     } catch (error) {
-      console.error("Failed to load in-game ads:", error);
+      console.warn("Failed to load in-game ads:", error);
     }
   }
 
@@ -135,12 +131,15 @@ export class InGamePromo extends LitElement implements Controller {
     }
     this.shouldShow = false;
     try {
-      for (const { type } of AD_TYPES) {
-        window.ramp.destroyUnits(type);
-      }
-      console.log("successfully destroyed in-game bottom-left ads");
+      Promise.all(AD_TYPES.map(({ type }) => window.ramp.destroyUnits(type)))
+        .then(() =>
+          console.log("successfully destroyed in-game bottom-left ads"),
+        )
+        .catch((e: unknown) => {
+          console.warn("error destroying in-game ads:", e);
+        });
     } catch (e) {
-      console.error("error destroying in-game ads:", e);
+      console.warn("error destroying in-game ads:", e);
     }
     this.requestUpdate();
   }
@@ -153,10 +152,9 @@ export class InGamePromo extends LitElement implements Controller {
     return html`
       <div
         id="in-game-promo-container"
-        class="fixed left-0 z-[100] pointer-events-auto flex flex-col-reverse ${this
-          .adsVisible
-          ? "bg-gray-800 rounded-tr-lg p-1"
-          : ""}"
+        class="fixed left-0 z-[100] pointer-events-auto flex flex-col-reverse ${
+          this.adsVisible ? "bg-gray-800 rounded-tr-lg p-1" : ""
+        }"
         style="bottom: -0.7cm"
       >
         ${AD_TYPES.map(

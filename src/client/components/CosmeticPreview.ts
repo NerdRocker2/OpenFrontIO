@@ -1,5 +1,3 @@
-import { html, LitElement, nothing, TemplateResult } from "lit";
-import { customElement, property } from "lit/decorators.js";
 import {
   Crown,
   Effect,
@@ -9,13 +7,16 @@ import {
   Pattern,
   Skin,
   Subscription,
-} from "../../core/CosmeticSchemas";
-import { PlayerPattern } from "../../core/Schemas";
+} from "@openfront/shared/CosmeticSchemas";
+import { PlayerPattern } from "@openfront/shared/WireSchemas";
+import { html, LitElement, nothing, TemplateResult } from "lit";
+import { customElement, property, state } from "lit/decorators.js";
 import { ResolvedCosmetic } from "../Cosmetics";
 import { translateText } from "../Utils";
 import "./CapIcon";
 import { cosmeticDisplayName } from "./CosmeticPresentation";
 import "./EffectPreview";
+import { observeNear } from "./LazyVisibility";
 import { renderPatternPreview } from "./PatternPreview";
 import "./PlutoniumIcon";
 
@@ -26,6 +27,11 @@ export class CosmeticPreview extends LitElement {
 
   @property({ type: String })
   size: "card" | "detail" = "card";
+
+  // Card previews sit in grids as long as the catalog, so each one only
+  // holds its canvas, animation or image while it is near the screen.
+  @state() private near = false;
+  private stopObserving: (() => void) | null = null;
 
   createRenderRoot() {
     return this;
@@ -38,23 +44,51 @@ export class CosmeticPreview extends LitElement {
     // so previews with no intrinsic size (trail/structure effects) still get a
     // real box to paint into.
     this.classList.add("block", "h-full", "w-full");
+    this.stopObserving = observeNear(this, (near) => {
+      this.near = near;
+    });
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    this.stopObserving?.();
+    this.stopObserving = null;
+    this.near = false;
   }
 
   render() {
     return html`<div
-      data-cosmetic-preview=${this.resolved.cosmetic === null
-        ? "default"
-        : this.resolved.type}
-      class=${this.size === "detail"
-        ? "h-full w-full"
-        : // A subscription paints a wrapping list of perks, not artwork: a square
-          // box cuts the last perk off once cards are phone-width.
-          this.resolved.type === "subscription"
-          ? "w-full"
-          : "aspect-square w-full"}
+      data-cosmetic-preview=${
+        this.resolved.cosmetic === null ? "default" : this.resolved.type
+      }
+      class=${
+        this.size === "detail"
+          ? "h-full w-full"
+          : // A subscription paints a wrapping list of perks, not artwork: a square
+            // box cuts the last perk off once cards are phone-width.
+            this.resolved.type === "subscription"
+            ? "w-full"
+            : "aspect-square w-full"
+      }
     >
-      ${this.renderResolvedPreview()}
+      ${
+        this.near || !this.deferrable() ? this.renderResolvedPreview() : nothing
+      }
     </div>`;
+  }
+
+  // Text previews size their own box and cost nothing to draw; withholding
+  // them would only collapse the card until it scrolled near.
+  private deferrable(): boolean {
+    if (this.size !== "card") return false;
+    const type = this.resolved.type;
+    return (
+      type === "pattern" ||
+      type === "effect" ||
+      type === "flag" ||
+      type === "crown" ||
+      type === "skin"
+    );
   }
 
   private renderResolvedPreview(): TemplateResult {
@@ -102,10 +136,10 @@ export class CosmeticPreview extends LitElement {
           .explosion=${cosmetic.attributes}
         ></shockwave-swatch>`;
       }
-      return html`<trail-swatch
+      return html`<effect-scene
         class="block w-full h-full"
-        .trail=${cosmetic.attributes}
-      ></trail-swatch>`;
+        .effect=${cosmetic}
+      ></effect-scene>`;
     }
 
     if (this.resolved.type === "crown") {
@@ -143,64 +177,93 @@ export class CosmeticPreview extends LitElement {
         <span class="text-[10px] font-bold leading-none text-white/50 uppercase"
           >${translateText(currencyKey)}</span
         >
-        ${pack.bonusAmount > 0
-          ? html`<div
-              class="absolute top-8 -right-10 w-40 bg-green-500 text-white text-[10px] font-black py-0.5 rotate-45 shadow-md uppercase tracking-wide pointer-events-none"
-            >
-              ${translateText("cosmetics.free", {
-                numFree: pack.bonusAmount.toLocaleString(),
-              })}
-            </div>`
-          : nothing}
+        ${
+          pack.product?.price
+            ? html`<span
+                data-pack-price
+                class="pt-0.5 text-sm font-bold leading-none text-blue-300"
+                >${pack.product.price}</span
+              >`
+            : nothing
+        }
+        ${
+          pack.bonusAmount > 0
+            ? html`<div
+                class="absolute top-8 -right-10 w-40 bg-green-500 text-white text-[10px] font-black py-0.5 rotate-45 shadow-md uppercase tracking-wide pointer-events-none"
+              >
+                ${translateText("cosmetics.free", {
+                  numFree: pack.bonusAmount.toLocaleString(),
+                })}
+              </div>`
+            : nothing
+        }
       </div>`;
+    }
+
+    if (this.resolved.type === "cosmeticPack") {
+      return this.renderPackPreview(this.resolved.packItems ?? []);
     }
 
     if (this.resolved.type === "subscription") {
       const subscription = this.resolved.cosmetic as Subscription;
+      const large = this.size === "detail";
+      const iconSize = large ? 36 : 24;
+      const figureClass = large
+        ? "text-2xl font-bold text-green-400"
+        : "text-sm font-bold text-green-400";
+      const unitClass = large
+        ? "text-xs text-white/50 uppercase"
+        : "text-[10px] text-white/50 uppercase";
+      const perkClass = `self-start text-left ${large ? "text-xs" : "text-[10px]"} font-bold text-purple-300 uppercase tracking-wide`;
+      // The Steam licence a buyer of this tier must hold already confers the
+      // verified name and public lobbies, so the tier does not claim them.
+      const licencePerks = !subscription.requiresSteamLicence;
       return html`<div
         class="flex flex-col items-center justify-center h-full w-full text-center gap-2 p-1"
       >
-        <div class="flex flex-col items-center gap-1 w-full">
+        <div
+          class="flex flex-col items-center ${large ? "gap-2" : "gap-1"} w-full"
+        >
           <div class="self-start flex items-center gap-1.5">
-            <plutonium-icon .size=${24}></plutonium-icon>
-            <span class="text-sm font-bold text-green-400"
+            <plutonium-icon .size=${iconSize}></plutonium-icon>
+            <span class=${figureClass}
               >${subscription.hardCurrencySignupBonus.toLocaleString()}</span
             >
-            <span class="text-[10px] text-white/50 uppercase"
-              >${translateText("cosmetics.signup_bonus")}</span
+            <span class=${unitClass}
+              >${translateText("cosmetics.per_month")}</span
             >
           </div>
           <div class="self-start flex items-center gap-1.5">
-            <plutonium-icon .size=${24}></plutonium-icon>
-            <span class="text-sm font-bold text-green-400"
+            <plutonium-icon .size=${iconSize}></plutonium-icon>
+            <span class=${figureClass}
               >${subscription.dailyHardCurrency.toLocaleString()}</span
             >
-            <span class="text-[10px] text-white/50 uppercase"
+            <span class=${unitClass}
               >${translateText("cosmetics.per_day")}</span
             >
           </div>
-          <span
-            class="self-start text-left text-[10px] font-bold text-purple-300 uppercase tracking-wide"
-            ><span class="text-green-400">✓</span> ${translateText(
-              "cosmetics.verified_name",
-            )}</span
-          >
-          ${subscription.unlimitedRanked
-            ? html`<span
-                class="self-start text-left text-[10px] font-bold text-purple-300 uppercase tracking-wide"
-                ><span class="text-green-400">✓</span> ${translateText(
-                  "cosmetics.unlimited_ranked",
-                )}</span
-              >`
-            : nothing}
-          ${subscription.canCreatePublicLobbies
-            ? html`<span
-                class="self-start text-left text-[10px] font-bold text-purple-300 uppercase tracking-wide"
-                ><span class="text-green-400">✓</span> ${translateText(
-                  "cosmetics.public_lobbies",
-                )}</span
-              >`
-            : nothing}
+          ${
+            licencePerks
+              ? html`<span
+                  data-subscription-perk="verified_name"
+                  class=${perkClass}
+                  ><span class="text-green-400">✓</span> ${translateText(
+                    "cosmetics.verified_name",
+                  )}</span
+                >`
+              : nothing
+          }
+          ${
+            licencePerks && subscription.canCreatePublicLobbies
+              ? html`<span
+                  data-subscription-perk="public_lobbies"
+                  class=${perkClass}
+                  ><span class="text-green-400">✓</span> ${translateText(
+                    "cosmetics.public_lobbies",
+                  )}</span
+                >`
+              : nothing
+          }
         </div>
       </div>`;
     }
@@ -220,6 +283,38 @@ export class CosmeticPreview extends LitElement {
         }
       }}
     />`;
+  }
+
+  // Up to four of the pack's items tiled 2×2; more are summed up in a badge
+  // (each tile is a live preview, so a big pack shouldn't paint them all).
+  private renderPackPreview(
+    items: readonly ResolvedCosmetic[],
+  ): TemplateResult {
+    const shown = items.slice(0, 4);
+    const hidden = items.length - shown.length;
+    return html`<div
+      class="relative grid h-full w-full grid-cols-2 grid-rows-2 gap-1 overflow-hidden"
+    >
+      ${shown.map(
+        (item) =>
+          html`<div
+            data-cosmetic-pack-item=${item.key}
+            class="flex min-h-0 min-w-0 items-center justify-center overflow-hidden rounded bg-black/30 p-1"
+          >
+            <cosmetic-preview .resolved=${item} size="card"></cosmetic-preview>
+          </div>`,
+      )}
+      ${
+        hidden > 0
+          ? html`<span
+              class="absolute bottom-1 right-1 rounded-full bg-black/70 px-2 py-0.5 text-[10px] font-black uppercase tracking-wide text-white"
+              >${translateText("cosmetics.pack_more_items", {
+                count: hidden,
+              })}</span
+            >`
+          : nothing
+      }
+    </div>`;
   }
 
   private renderDefaultPreview(): TemplateResult {

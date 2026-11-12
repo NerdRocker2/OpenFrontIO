@@ -1,10 +1,11 @@
-import { html, LitElement, nothing, TemplateResult } from "lit";
-import { customElement, state } from "lit/decorators.js";
 import {
   TribeLeaderboardEntry,
   TribeLeaderboardResponse,
-} from "../../../core/ApiSchemas";
+} from "@openfront/shared/ApiSchemas";
+import { html, LitElement, nothing, TemplateResult } from "lit";
+import { customElement, state } from "lit/decorators.js";
 import { fetchTribeLeaderboard } from "../../Api";
+import { loadModal } from "../../LazyModals";
 import { translateText } from "../../Utils";
 import "../PlayerName";
 
@@ -80,7 +81,7 @@ export class LeaderboardTribeTable extends LitElement {
       this.tribeData = data;
       this.hasLoaded = true;
     } catch (error) {
-      console.error("loadTribeLeaderboard: request failed", error);
+      console.warn("loadTribeLeaderboard: request failed", error);
       this.error = translateText("leaderboard_modal.error");
     } finally {
       this.isLoading = false;
@@ -90,11 +91,15 @@ export class LeaderboardTribeTable extends LitElement {
   // Same handoff the ranked tab uses: the profile modal's back button reopens
   // the leaderboard.
   private openProfile(publicId: string) {
-    document
-      .querySelector<
-        HTMLElement & { openFromLeaderboard(publicId: string): void }
-      >("player-profile-modal")
-      ?.openFromLeaderboard(publicId);
+    loadModal("player-profile-modal").then(
+      () =>
+        document
+          .querySelector<
+            HTMLElement & { openFromLeaderboard(publicId: string): void }
+          >("player-profile-modal")
+          ?.openFromLeaderboard(publicId),
+      (err) => console.error("player-profile-modal failed to load:", err),
+    );
   }
 
   private renderLoading() {
@@ -106,7 +111,7 @@ export class LeaderboardTribeTable extends LitElement {
           class="w-12 h-12 border-4 border-blue-500/30 border-t-blue-500 rounded-full animate-spin mb-6"
         ></div>
         <p class="text-blue-200/80 text-sm font-bold tracking-widest uppercase">
-          ${translateText("leaderboard_modal.loading")}
+          ${translateText("common.loading")}
         </p>
       </div>
     `;
@@ -338,8 +343,9 @@ export class LeaderboardTribeTable extends LitElement {
                           >
                             <div
                               class="h-full bg-blue-500/50 rounded-full"
-                              style="width: ${(tribe.playerReach / maxReach) *
-                              100}%"
+                              style="width: ${
+                                (tribe.playerReach / maxReach) * 100
+                              }%"
                             ></div>
                           </div>
                         </div>

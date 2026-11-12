@@ -1,6 +1,6 @@
+import { assetUrl } from "@openfront/shared/AssetUrls";
 import { html, LitElement, nothing } from "lit";
 import { customElement, query, state } from "lit/decorators.js";
-import { assetUrl } from "../../core/AssetUrls";
 import {
   deleteMusicTrack,
   fetchMusicTracks,
@@ -395,17 +395,19 @@ export class MusicPage extends LitElement {
       data-music-upload-position="mobile"
       class="size-11 inline-flex items-center justify-center rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-40 disabled:cursor-wait transition-colors"
       ?disabled=${this.uploadStatus === "uploading"}
-      title=${this.uploadStatus === "uploading"
-        ? translateText("music_page.uploading")
-        : translateText("music_page.upload_button")}
+      title=${
+        this.uploadStatus === "uploading"
+          ? translateText("music_page.uploading")
+          : translateText("music_page.upload_button")
+      }
       aria-label=${translateText("music_page.upload_button")}
       aria-busy=${this.uploadStatus === "uploading" ? "true" : "false"}
       @click=${this.openUploadPicker}
     >
       <svg
-        class="size-6 ${this.uploadStatus === "uploading"
-          ? "animate-pulse"
-          : ""}"
+        class="size-6 ${
+          this.uploadStatus === "uploading" ? "animate-pulse" : ""
+        }"
         viewBox="0 0 24 24"
         fill="none"
         stroke="currentColor"
@@ -774,22 +776,30 @@ export class MusicPage extends LitElement {
             ?disabled=${this.uploadStatus === "uploading"}
             @click=${this.openUploadPicker}
           >
-            ${this.uploadStatus === "uploading"
-              ? translateText("music_page.uploading")
-              : translateText("music_page.upload_button")}
+            ${
+              this.uploadStatus === "uploading"
+                ? translateText("music_page.uploading")
+                : translateText("music_page.upload_button")
+            }
           </button>
-          ${this.uploadStatus === "done"
-            ? html`<span
-                data-music-upload-status
-                class="text-sm text-emerald-300"
-                >${translateText("music_page.upload_done")}</span
-              >`
-            : this.uploadStatus === "error"
-              ? html`<span data-music-upload-status class="text-sm text-red-300"
-                  >${this.uploadErrorMessage ||
-                  translateText("music_page.upload_error")}</span
+          ${
+            this.uploadStatus === "done"
+              ? html`<span
+                  data-music-upload-status
+                  class="text-sm text-emerald-300"
+                  >${translateText("music_page.upload_done")}</span
                 >`
-              : nothing}
+              : this.uploadStatus === "error"
+                ? html`<span
+                    data-music-upload-status
+                    class="text-sm text-red-300"
+                    >${
+                      this.uploadErrorMessage ||
+                      translateText("music_page.upload_error")
+                    }</span
+                  >`
+                : nothing
+          }
         </div>
 
         <section
@@ -803,9 +813,9 @@ export class MusicPage extends LitElement {
               class="size-[72px] sm:size-24 rounded-md bg-black/35 border border-white/10 flex items-center justify-center overflow-hidden"
             >
               <img
-                class="w-full h-full object-cover ${current?.artworkUrl
-                  ? ""
-                  : "p-4 opacity-70"}"
+                class="w-full h-full object-cover ${
+                  current?.artworkUrl ? "" : "p-4 opacity-70"
+                }"
                 src=${current?.artworkUrl ?? musicFallbackArt}
                 alt=${translateText("music_page.album_art_alt")}
               />
@@ -821,9 +831,11 @@ export class MusicPage extends LitElement {
               <div class="mt-2 flex gap-3 text-xs sm:text-sm text-white/60">
                 <span>${this.stateLabel()}</span>
                 <span class="tabular-nums">
-                  ${this.formatTime(this.elapsed)}${this.duration > 0
-                    ? ` / ${this.formatTime(this.duration)}`
-                    : ""}
+                  ${this.formatTime(this.elapsed)}${
+                    this.duration > 0
+                      ? ` / ${this.formatTime(this.duration)}`
+                      : ""
+                  }
                 </span>
               </div>
             </div>
@@ -855,25 +867,29 @@ export class MusicPage extends LitElement {
                 class="size-12 inline-flex items-center justify-center rounded-full bg-sky-600 hover:bg-sky-500 disabled:opacity-40 font-semibold transition-colors"
                 ?disabled=${ordered.length === 0}
                 title=${translateText("music_page.play_pause_hint")}
-                aria-label=${this.playbackState === "playing"
-                  ? translateText("music_page.pause")
-                  : translateText("music_page.play")}
+                aria-label=${
+                  this.playbackState === "playing"
+                    ? translateText("music_page.pause")
+                    : translateText("music_page.play")
+                }
                 @click=${this.togglePlayPause}
               >
-                ${this.playbackState === "playing"
-                  ? html`<span
-                      data-music-pause-icon
-                      class="inline-flex items-center gap-1"
-                      aria-hidden="true"
-                    >
-                      <span class="h-5 w-1 rounded-sm bg-current"></span>
-                      <span class="h-5 w-1 rounded-sm bg-current"></span>
-                    </span>`
-                  : html`<span
-                      class="text-2xl leading-none translate-x-px"
-                      aria-hidden="true"
-                      >&#x25B6;&#xFE0E;</span
-                    >`}
+                ${
+                  this.playbackState === "playing"
+                    ? html`<span
+                        data-music-pause-icon
+                        class="inline-flex items-center gap-1"
+                        aria-hidden="true"
+                      >
+                        <span class="h-5 w-1 rounded-sm bg-current"></span>
+                        <span class="h-5 w-1 rounded-sm bg-current"></span>
+                      </span>`
+                    : html`<span
+                        class="text-2xl leading-none translate-x-px"
+                        aria-hidden="true"
+                        >&#x25B6;&#xFE0E;</span
+                      >`
+                }
               </button>
               <button
                 type="button"
@@ -887,31 +903,35 @@ export class MusicPage extends LitElement {
                   >&#x23ED;&#xFE0E;</span
                 >
               </button>
-              ${this.allowDelete
-                ? html`<button
-                    type="button"
-                    class="size-11 inline-flex items-center justify-center rounded-full bg-red-700/80 hover:bg-red-600 disabled:opacity-35 transition-colors"
-                    ?disabled=${!current?.deletable}
-                    title=${translateText("music_page.delete_hint")}
-                    aria-label=${translateText("music_page.delete")}
-                    @click=${this.deleteCurrentTrack}
-                  >
-                    <span class="text-xl leading-none" aria-hidden="true"
-                      >&#x1F5D1;&#xFE0E;</span
+              ${
+                this.allowDelete
+                  ? html`<button
+                      type="button"
+                      class="size-11 inline-flex items-center justify-center rounded-full bg-red-700/80 hover:bg-red-600 disabled:opacity-35 transition-colors"
+                      ?disabled=${!current?.deletable}
+                      title=${translateText("music_page.delete_hint")}
+                      aria-label=${translateText("music_page.delete")}
+                      @click=${this.deleteCurrentTrack}
                     >
-                  </button>`
-                : nothing}
+                      <span class="text-xl leading-none" aria-hidden="true"
+                        >&#x1F5D1;&#xFE0E;</span
+                      >
+                    </button>`
+                  : nothing
+              }
             </div>
           </div>
 
-          ${this.statusMessage
-            ? html`<div
-                class="shrink-0 border-b border-white/10 px-4 py-2 text-sm text-amber-300"
-                role="status"
-              >
-                ${this.statusMessage}
-              </div>`
-            : nothing}
+          ${
+            this.statusMessage
+              ? html`<div
+                  class="shrink-0 border-b border-white/10 px-4 py-2 text-sm text-amber-300"
+                  role="status"
+                >
+                  ${this.statusMessage}
+                </div>`
+              : nothing
+          }
 
           <div
             id="music-playlist-scroll"
@@ -985,18 +1005,21 @@ export class MusicPage extends LitElement {
                   (track) => html`
                     <tr
                       data-music-track-url=${track.url}
-                      class="border-t border-white/8 cursor-pointer hover:bg-white/8 ${track.url ===
-                      this.currentUrl
-                        ? "bg-sky-700/35 text-white"
-                        : "text-white/80"}"
-                      aria-current=${track.url === this.currentUrl
-                        ? "true"
-                        : nothing}
+                      class="border-t border-white/8 cursor-pointer hover:bg-white/8 ${
+                        track.url === this.currentUrl
+                          ? "bg-sky-700/35 text-white"
+                          : "text-white/80"
+                      }"
+                      aria-current=${
+                        track.url === this.currentUrl ? "true" : nothing
+                      }
                       @click=${() => this.selectTrack(track, true)}
                     >
                       <td class="px-2 py-1 sm:px-3 sm:py-2 truncate">
-                        ${track.artist ||
-                        translateText("music_page.unknown_artist")}
+                        ${
+                          track.artist ||
+                          translateText("music_page.unknown_artist")
+                        }
                       </td>
                       <td class="hidden sm:table-cell px-3 py-2 tabular-nums">
                         ${track.year || "—"}
@@ -1025,16 +1048,18 @@ export class MusicPage extends LitElement {
                     </tr>
                   `,
                 )}
-                ${!this.loading && ordered.length === 0
-                  ? html`<tr>
-                      <td
-                        colspan="4"
-                        class="px-4 py-8 text-center text-white/50"
-                      >
-                        ${translateText("music_page.empty")}
-                      </td>
-                    </tr>`
-                  : nothing}
+                ${
+                  !this.loading && ordered.length === 0
+                    ? html`<tr>
+                        <td
+                          colspan="4"
+                          class="px-4 py-8 text-center text-white/50"
+                        >
+                          ${translateText("music_page.empty")}
+                        </td>
+                      </tr>`
+                    : nothing
+                }
               </tbody>
             </table>
           </div>
@@ -1058,10 +1083,9 @@ export class MusicPage extends LitElement {
                 >
                   <span class="text-white/60">${label}:</span>
                   <span
-                    class="tabular-nums font-black text-xs sm:text-base tracking-wide text-cyan-300 ${this
-                      .enrichingCount > 0
-                      ? "animate-pulse"
-                      : ""}"
+                    class="tabular-nums font-black text-xs sm:text-base tracking-wide text-cyan-300 ${
+                      this.enrichingCount > 0 ? "animate-pulse" : ""
+                    }"
                     >${value}</span
                   >
                 </div>

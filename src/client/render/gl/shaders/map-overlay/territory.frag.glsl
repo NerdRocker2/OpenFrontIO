@@ -27,6 +27,8 @@ uniform float uDefenseDarken;      // multiplier applied to fill on defended til
 uniform sampler2D uBorderTex;      // RGBA8 — border flags; R > 0.25 = border tile
 uniform float uSaturation;         // 1 = full color, 0 = grayscale
 uniform float uTerritoryAlpha;     // absolute fill opacity; 1 = fully opaque
+uniform sampler2D uAffiliation;    // RGBA8 — alt-view relation colors (row 0)
+uniform float uAltFillAlpha;       // alt-view translucent fill opacity
 
 in vec2 vWorldPos;
 out vec4 fragColor;
@@ -46,14 +48,20 @@ void main() {
   // Renders for owned tiles too so the player's territory color can't bleed
   // through dim/transparent spots in the fallout bloom above.
   if (fallout) {
-    float h = fract(sin(float(tc.x) * 12.9898 + float(tc.y) * 78.233) * 43758.5453);
+    vec2 tcMod = mod(vec2(tc), 6.2831853);
+    float h = fract(sin(tcMod.x * 12.9898 + tcMod.y * 78.233) * 43758.5453);
     float noise = uStaleNukeBase + h * uStaleNukeVariation;
     fragColor = vec4(uStaleNukeColor + vec3(noise), uStaleNukeAlpha);
     return;
   }
 
-  // Alt-view: hide owned non-fallout tiles
-  if (uAltView != 0) discard;
+  // Alt-view: translucent fill in the owner's relation color (matches the
+  // border color BorderStampPass draws in alt-view).
+  if (uAltView != 0) {
+    vec3 rel = texelFetch(uAffiliation, ivec2(int(owner), 0), 0).rgb;
+    fragColor = vec4(rel, uAltFillAlpha);
+    return;
+  }
 
   // --- Territory fill (owned, not fallout) ---
   float u = (float(owner) + 0.5) / float(PALETTE_SIZE);

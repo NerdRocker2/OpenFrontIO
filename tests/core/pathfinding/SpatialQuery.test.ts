@@ -1,17 +1,13 @@
+import { TileRef } from "@openfront/engine-api/game/GameMap";
+import { PlayerInfo, PlayerType } from "@openfront/engine-api/game/GameTypes";
+import { SpawnExecution } from "@openfront/engine/execution/SpawnExecution";
+import { Game, Player } from "@openfront/engine/game/Game";
+import { SpatialQuery } from "@openfront/engine/pathfinding/spatial/SpatialQuery";
 import { describe, expect, it } from "vitest";
-import { SpawnExecution } from "../../../src/core/execution/SpawnExecution";
-import {
-  Game,
-  Player,
-  PlayerInfo,
-  PlayerType,
-} from "../../../src/core/game/Game";
-import { TileRef } from "../../../src/core/game/GameMap";
-import { SpatialQuery } from "../../../src/core/pathfinding/spatial/SpatialQuery";
 import { createGame, L, W } from "./_fixtures";
 
 // Spawns player and **expands territory** via getSpawnTiles (euclidean dist 4)
-// Ref: src/core/execution/Util.ts
+// Ref: packages/engine-lib/src/execution/Util.ts
 function addPlayer(game: Game, tile: TileRef, id: string = "test"): Player {
   const info = new PlayerInfo(id, PlayerType.Human, null, `${id}_id`);
   game.addPlayer(info);
@@ -67,6 +63,16 @@ describe("SpatialQuery", () => {
       const result = spatial.closestShore(player, game.ref(3, 3), 1);
 
       expect(result).toBeNull();
+
+      // (2, 3) is distance 1 from shore (1, 3)
+      const near = spatial.closestShore(player, game.ref(2, 3), 1);
+      expect(near).not.toBeNull();
+      expect(game.manhattanDist(game.ref(2, 3), near!)).toBe(1);
+
+      // (1, 3) is shore itself (distance 0)
+      expect(spatial.closestShore(player, game.ref(1, 3), 0)).toBe(
+        game.ref(1, 3),
+      );
     });
 
     it("finds shore on player's island (two separate islands)", () => {
@@ -226,6 +232,43 @@ describe("SpatialQuery", () => {
       expect(result).not.toBeNull();
       expect(game.isShore(result!)).toBe(true);
       expect(game.ownerID(result!)).toBe(player.smallID());
+    });
+  });
+
+  describe("closestShoreByWater memo", () => {
+    // Three specks of land in open water: ours at x=0, then x=10, the
+    // landing at x=19.
+    function buildSpecks(): { game: Game; player: Player } {
+      const width = 20;
+      const grid: string[] = new Array(width * 3).fill(W);
+      for (const x of [0, 10, 19]) grid[width + x] = L;
+      const game = createGame({ width, height: 3, grid });
+      const info = new PlayerInfo("p", PlayerType.Human, null, "p_id");
+      game.addPlayer(info);
+      const player = game.player(info.id);
+      player.conquer(game.ref(0, 1));
+      return { game, player };
+    }
+
+    it("answers again from the same territory", () => {
+      const { game, player } = buildSpecks();
+      const spatial = new SpatialQuery(game);
+      const landing = game.ref(19, 1);
+      expect(spatial.closestShoreByWater(player, landing)).toBe(game.ref(0, 1));
+      expect(spatial.closestShoreByWater(player, landing)).toBe(game.ref(0, 1));
+    });
+
+    it("forgets the answer once the player's tiles change", () => {
+      const { game, player } = buildSpecks();
+      const spatial = new SpatialQuery(game);
+      const landing = game.ref(19, 1);
+      expect(spatial.closestShoreByWater(player, landing)).toBe(game.ref(0, 1));
+      player.conquer(game.ref(10, 1));
+      expect(spatial.closestShoreByWater(player, landing)).toBe(
+        game.ref(10, 1),
+      );
+      player.relinquish(game.ref(10, 1));
+      expect(spatial.closestShoreByWater(player, landing)).toBe(game.ref(0, 1));
     });
   });
 

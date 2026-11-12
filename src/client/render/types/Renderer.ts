@@ -1,4 +1,4 @@
-import type { TileRef } from "../../../core/game/GameMap";
+import type { TileRef } from "@openfront/engine-api/game/GameMap";
 
 /** TrainType enum — numeric values matching UnitState.trainType. */
 export enum TrainType {
@@ -66,6 +66,14 @@ export interface PlayerState {
   deathPosition: number | null;
   tilesOwned: number;
   gold: number;
+  /** Cumulative ship-trade revenue (live, from PlayerUpdate). */
+  tradeGold: number;
+  /** Cumulative train revenue: own trains + external stops (live). */
+  trainGold: number;
+  /** Cumulative piracy revenue: captured-ship payouts (live). */
+  piracyGold: number;
+  /** Cumulative gold received from all sources (live). */
+  goldEarned: number;
   troops: number;
   isTraitor: boolean;
   traitorRemainingTicks: number;
@@ -112,6 +120,10 @@ export interface UnitState {
   trainType: number | null; // 0=Engine, 1=TailEngine, 2=Carriage
   loaded: boolean | null;
   constructionStartTick: number | null;
+  samUpgradeStartTick: number | null;
+  samUpgradeStartRange: number | null;
+  samUpgradeTargetLevel: number | null;
+  samUpgradeDuration: number | null;
 }
 
 /** Minimal dead-unit data needed by the FX pass. */
@@ -160,14 +172,14 @@ interface NukeExplosionRenderParamsBase {
   colors: readonly (readonly [number, number, number])[];
   maxRadius: number;
   speed: number;
-  thickness: number;
+  thickness?: number;
   transitionSpeed: number;
 }
 
 export type NukeExplosionRenderParams =
   | (NukeExplosionRenderParamsBase & { type: "shockwave" })
-  | (NukeExplosionRenderParamsBase & { type: "sparkles"; density: number })
-  | (NukeExplosionRenderParamsBase & { type: "embers"; density: number });
+  | (NukeExplosionRenderParamsBase & { type: "sparkles"; density?: number })
+  | (NukeExplosionRenderParamsBase & { type: "embers"; density?: number });
 
 /** Default nuke-explosion color (purple) when a cosmetic has no usable color. */
 export const DEFAULT_NUKE_EXPLOSION_COLOR: readonly [number, number, number] = [
@@ -212,6 +224,7 @@ export interface PlayerStatusData {
 
 /** Ghost structure preview data for build-mode visualization. */
 export interface GhostPreviewData {
+  snapToPlacement?: boolean; // Keep displaced structure previews at the resolved build tile.
   ghostType: string; // UnitType string ("City", "Port", etc.)
   tileX: number; // Hover tile X
   tileY: number; // Hover tile Y
@@ -225,16 +238,24 @@ export interface GhostPreviewData {
   showCost: boolean;
   /** True if the player has enough gold to afford this build (drives label color). */
   canAfford: boolean;
-  ghostRailPaths: TileRef[][]; // TileRef paths (City/Port only)
+  ghostRailPaths: TileRef[][]; // TileRef paths for City/Port/Factory previews
   overlappingRailroads: TileRef[]; // TileRefs containing rails in snap zone
   ownerID: number; // Player's smallID (for color)
   /** Tile position of existing structure being upgraded (null if fresh build). */
   upgradeTargetTile: number | null;
   /** Range radius in tiles for the placement circle (0 = no circle). */
   rangeRadius: number;
-  /** True if placing here would carry a penalty (e.g. nuking an ally → traitor). */
-  rangeWarning: boolean;
+  /** What nuking here would do to your alliances (colors the range circle). */
+  rangeWarning: RangeWarning;
 }
+
+/**
+ * Range circle warning for a nuke preview: "breaksAlliance" (yellow)
+ * breaks an alliance with a traitor or disconnected ally, which carries no
+ * traitor mark; "traitor" (red) betrays an ally and marks you a
+ * traitor.
+ */
+export type RangeWarning = "none" | "breaksAlliance" | "traitor";
 
 /** Nuke trajectory preview data — Bezier control points + color thresholds. */
 export interface NukeTrajectoryData {

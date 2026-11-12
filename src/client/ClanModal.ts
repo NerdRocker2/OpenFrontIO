@@ -1,4 +1,4 @@
-import { html } from "lit";
+import { html, nothing, render, type PropertyValues } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { getUserMe, invalidateUserMe } from "./Api";
 import { type ClanInfo, type ClanMember } from "./ClanApi";
@@ -8,17 +8,23 @@ import "./components/clan/ClanBrowseView";
 import type { BrowseState } from "./components/clan/ClanBrowseView";
 import "./components/clan/ClanCard";
 import "./components/clan/ClanDetailView";
+import "./components/clan/ClanDonationsView";
 import "./components/clan/ClanGameHistoryView";
 import type { ClanGameHistoryCache } from "./components/clan/ClanGameHistoryView";
 import "./components/clan/ClanManageView";
+import "./components/clan/ClanMapView";
 import "./components/clan/ClanMyRequestsView";
 import "./components/clan/ClanRequestsView";
 import type { ClanRole } from "./components/clan/ClanShared";
 import "./components/clan/ClanTransferView";
 import "./components/ConfirmDialog";
 import "./components/CopyButton";
+import "./components/CurrencyDisplay";
 import { modalHeader } from "./components/ui/ModalHeader";
+import { signedOutNotice } from "./components/ui/SignedOutNotice";
+import "./GameStatsModal";
 import { modalRouter } from "./ModalRouter";
+import "./PlayerProfileModal";
 import type { ProfileOrigin } from "./PlayerProfileModal";
 import { translateText } from "./Utils";
 
@@ -32,9 +38,14 @@ type View =
   | "my-requests";
 
 // List tabs share BaseModal's `activeTab` slot with detail tabs ("overview" /
-// "members" / "game-history"); which set is live depends on `view`.
-const LIST_TABS = ["my-clans", "browse"] as const;
+// "members" / "game-history" / "donations"); which set is live depends on `view`.
+// "map" is first in the tab bar but not the landing tab (see the constructor).
+const LIST_TABS = ["map", "my-clans", "browse"] as const;
 type ListTab = (typeof LIST_TABS)[number];
+
+// Detail tabs a player profile can be opened from and returned to. Overview
+// has no member links of its own, so it falls back to Members.
+type DetailReturnTab = "members" | "game-history" | "donations";
 
 function isListTab(key: string): key is ListTab {
   return (LIST_TABS as readonly string[]).includes(key);
@@ -44,8 +55,18 @@ function isListTab(key: string): key is ListTab {
 export class ClanModal extends BaseModal {
   protected routerName = "clan";
 
+  constructor() {
+    super();
+    // BaseModal would otherwise default to the first tab, "map", which would
+    // mount the map iframe (and its API polling) before the modal ever opens.
+    this.activeTab = "my-clans";
+  }
+
   @state() private view: View = "list";
   @state() private loading = false;
+  // No session: the map and Browse still work; My Clans asks to sign in and
+  // the detail view offers sign-in instead of Join.
+  @state() private signedOut = false;
 
   @state() private myClans: ClanInfo[] = [];
   @state() private myPendingRequests: {
@@ -83,8 +104,8 @@ export class ClanModal extends BaseModal {
   private preserveStateForModalHandoff = false;
   private returningFromModalHandoff = false;
   // Which detail tab opened the player-profile modal, so its Back button lands
-  // on that tab (Members vs Game History) rather than always Members.
-  private profileOpenedFromGameHistory = false;
+  // on that tab (Members / Game History / Donations) rather than always Members.
+  private profileOpenedFromTab: DetailReturnTab = "members";
   // The profile whose Clans tab opened this clan, so Back can return there,
   // plus that profile's own origin — it parks here for the detour because the
   // profile modal is reused by any member profile opened along the way. Only
@@ -94,6 +115,13 @@ export class ClanModal extends BaseModal {
   private openedFromProfile: string | null = null;
   private openedFromProfileOrigin: ProfileOrigin | null = null;
   private previousListTab: ListTab = "my-clans";
+  // Where the map page's Back goes: the last list tab other than the map.
+  // Never the map itself, or a clan opened from the map would leave Back
+  // pointing at the page it's on, and the player stuck there.
+  private mapReturnTab: "my-clans" | "browse" = "my-clans";
+  // Set when the open clan was picked from the browser's boosted block, so a
+  // join from its detail page is attributed to the block.
+  private joinSource: "boosted" | undefined = undefined;
 
   private get onListView(): boolean {
     return this.view === "list" && !this.selectedClanTag;
@@ -107,6 +135,7 @@ export class ClanModal extends BaseModal {
     return {
       tabs: this.onListView
         ? [
+            { key: "map", label: translateText("clan_modal.tab_map_alpha") },
             { key: "my-clans", label: translateText("clan_modal.my_clans") },
             { key: "browse", label: translateText("clan_modal.browse") },
           ]
@@ -118,11 +147,15 @@ export class ClanModal extends BaseModal {
               },
               {
                 key: "members",
-                label: translateText("clan_modal.tab_members"),
+                label: translateText("clan_modal.members"),
               },
               {
                 key: "game-history",
                 label: translateText("clan_modal.tab_game_history"),
+              },
+              {
+                key: "donations",
+                label: translateText("clan_modal.tab_donations"),
               },
             ]
           : [],
@@ -140,7 +173,13 @@ export class ClanModal extends BaseModal {
   }
 
   protected renderBody() {
-    return html`<div class="p-4 lg:p-[1.4rem]">${this.renderInner()}</div>`;
+    // The map fills the content box edge to edge and exactly to its height
+    // (the modal is an inline page, so the scroll area has a fixed height and
+    // anything taller scrolls); everything else is padded.
+    const onMap = this.onListView && this.activeTab === "map";
+    return html`<div class=${onMap ? "h-full" : "p-4 lg:p-[1.4rem]"}>
+      ${this.renderInner()}
+    </div>`;
   }
 
   protected onTabEnter(tab: string): void {
@@ -150,8 +189,9 @@ export class ClanModal extends BaseModal {
       this.selectedClanTag = "";
       this.detailCache = null;
       this.gameHistoryCache = null;
+      if (tab === "my-clans" || tab === "browse") this.mapReturnTab = tab;
       if (tab === "my-clans") {
-        this.loadMyClans();
+        void this.loadMyClans();
       }
       return;
     }
@@ -164,6 +204,20 @@ export class ClanModal extends BaseModal {
       class="text-xs font-bold uppercase tracking-wider px-3 py-1 rounded-full bg-white/10 text-white/50 border border-white/10"
       >[${tag}]</span
     >`;
+  }
+
+  // The clan treasury, sitting in the header the way the store shows the
+  // player's own wallet. These are the clan's balances, not the viewer's, and
+  // they are public — every viewer sees them, member or not. Renders nothing
+  // when the API reported neither balance.
+  private clanBalances(clan: ClanInfo) {
+    return html`<div class="flex items-center gap-3">
+      <currency-display
+        .hard=${clan.hardBalance ?? null}
+        .soft=${clan.softBalance ?? null}
+      ></currency-display>
+      ${this.tagPill(clan.tag)}
+    </div>`;
   }
 
   // Every exit from the clan detail calls this first: when a profile opened the
@@ -240,7 +294,7 @@ export class ClanModal extends BaseModal {
         this.setActiveTab(this.previousListTab);
       },
       ariaLabel,
-      rightContent: clan ? this.tagPill(clan.tag) : undefined,
+      rightContent: clan ? this.clanBalances(clan) : undefined,
     });
   }
 
@@ -261,7 +315,7 @@ export class ClanModal extends BaseModal {
     if (targetTag) {
       this.openDetail(targetTag.toUpperCase());
     }
-    this.loadMyClans({ allowGuest: Boolean(targetTag) });
+    void this.loadMyClans();
   }
 
   protected onClose(): void {
@@ -270,6 +324,7 @@ export class ClanModal extends BaseModal {
     this.openedFromProfileOrigin = null;
     this.activeTab = "my-clans";
     this.previousListTab = "my-clans";
+    this.mapReturnTab = "my-clans";
     this.view = "list";
     this.selectedClan = null;
     this.selectedClanTag = "";
@@ -281,32 +336,20 @@ export class ClanModal extends BaseModal {
     this.returningFromModalHandoff = false;
   }
 
-  private async loadMyClans(opts: { allowGuest?: boolean } = {}) {
+  private async loadMyClans() {
     this.loading = true;
     try {
       const me = await getUserMe();
       if (!this.isModalOpen) return;
       if (!me || Object.keys(me.user).length === 0) {
-        if (opts.allowGuest) {
-          this.myPublicId = null;
-          this.myPendingRequests = [];
-          this.myClanRoles = new Map();
-          this.myClans = [];
-          return;
-        }
-        window.dispatchEvent(
-          new CustomEvent("show-message", {
-            detail: {
-              message: translateText("clan_modal.sign_in_for_clans"),
-              color: "red",
-              duration: 3000,
-            },
-          }),
-        );
-        this.close();
-        window.showPage?.("page-account");
+        this.signedOut = true;
+        this.myPublicId = null;
+        this.myPendingRequests = [];
+        this.myClanRoles = new Map();
+        this.myClans = [];
         return;
       }
+      this.signedOut = false;
       this.myPublicId = me.player.publicId;
       this.myPendingRequests = me.player.clanRequests ?? [];
       const roles = new Map<string, ClanRole>();
@@ -319,6 +362,8 @@ export class ClanModal extends BaseModal {
           description: "",
           isOpen: false,
           memberCount: c.memberCount,
+          softBalance: c.softBalance,
+          hardBalance: c.hardBalance,
         });
       }
       this.myClanRoles = roles;
@@ -388,7 +433,7 @@ export class ClanModal extends BaseModal {
           @view-profile=${(e: CustomEvent<{ publicId: string }>) =>
             this.openPlayerProfile(e.detail.publicId)}
           @leadership-transferred=${() => {
-            this.loadMyClans().then(() =>
+            void this.loadMyClans().then(() =>
               this.openDetail(this.selectedClanTag),
             );
           }}
@@ -421,12 +466,21 @@ export class ClanModal extends BaseModal {
         ></clan-bans-view>`;
       }
       // Default: detail view — dispatched by the active detail tab
+      if (this.activeTab === "donations") {
+        return html`<clan-donations-view
+          .clanTag=${this.selectedClanTag}
+          @view-profile=${(e: CustomEvent<{ publicId: string }>) =>
+            this.openPlayerProfile(e.detail.publicId)}
+        ></clan-donations-view>`;
+      }
       if (this.activeTab === "game-history") {
         return html`<clan-game-history-view
           .clanTag=${this.selectedClanTag}
-          .cachedState=${this.gameHistoryCache?.tag === this.selectedClanTag
-            ? this.gameHistoryCache
-            : null}
+          .cachedState=${
+            this.gameHistoryCache?.tag === this.selectedClanTag
+              ? this.gameHistoryCache
+              : null
+          }
           @history-updated=${(e: CustomEvent<ClanGameHistoryCache>) => {
             this.gameHistoryCache = e.detail;
           }}
@@ -439,14 +493,17 @@ export class ClanModal extends BaseModal {
       }
       return html`<clan-detail-view
         .clanTag=${this.selectedClanTag}
+        .joinSource=${this.joinSource}
         .cachedClan=${this.selectedClan}
         .myPublicId=${this.myPublicId}
         .myClanRoles=${this.myClanRoles}
         .myPendingRequests=${this.myPendingRequests}
         .detailTab=${this.activeTab === "members" ? "members" : "overview"}
-        .cachedDetail=${this.detailCache?.tag === this.selectedClanTag
-          ? this.detailCache
-          : null}
+        .cachedDetail=${
+          this.detailCache?.tag === this.selectedClanTag
+            ? this.detailCache
+            : null
+        }
         @navigate-back=${() => {
           // Raised when the clan fails to load.
           if (this.backToProfile()) return;
@@ -499,6 +556,21 @@ export class ClanModal extends BaseModal {
           this.openPlayerProfile(e.detail.publicId)}
         @navigate-manage=${() => (this.view = "manage")}
         @navigate-requests=${() => (this.view = "requests")}
+        @clan-refreshed=${(e: CustomEvent<{ clan: ClanInfo }>) => {
+          // Fresh detail after a donation or a boost purchase: the header
+          // treasury and the My Clans card both show balances, so both pick
+          // up the new figures (and the boost's time left).
+          this.selectedClan = e.detail.clan;
+          this.myClans = this.myClans.map((c) =>
+            c.tag === e.detail.clan.tag
+              ? {
+                  ...c,
+                  softBalance: e.detail.clan.softBalance,
+                  hardBalance: e.detail.clan.hardBalance,
+                }
+              : c,
+          );
+        }}
         @clan-joined=${(e: CustomEvent<{ tag: string }>) => {
           this.myClanRoles = new Map([
             ...this.myClanRoles,
@@ -532,24 +604,90 @@ export class ClanModal extends BaseModal {
       ></clan-detail-view>`;
     }
 
-    // List view (my clans / browse) — header + tabs are rendered by o-modal
+    // List view (map / my clans / browse) — header + tabs are rendered by o-modal
+    if (this.activeTab === "map") {
+      // Mounted only while open: the page polls its API while framed.
+      // The map itself is a full-screen page on <body> (syncMapPage).
+      return html``;
+    }
     return html`
-      ${this.activeTab === "my-clans"
-        ? this.renderMyClans()
-        : html`<clan-browse-view
-            .myClanRoles=${this.myClanRoles}
-            .myPendingRequests=${this.myPendingRequests}
-            .cachedState=${this.browseCache}
-            @browse-updated=${(e: CustomEvent<BrowseState>) => {
-              this.browseCache = e.detail;
-            }}
-            @clan-select=${(e: CustomEvent<{ tag: string }>) =>
-              this.openDetail(e.detail.tag)}
-          ></clan-browse-view>`}
+      ${
+        this.activeTab === "my-clans"
+          ? this.renderMyClans()
+          : html`<clan-browse-view
+              .myClanRoles=${this.myClanRoles}
+              .myPendingRequests=${this.myPendingRequests}
+              .cachedState=${this.browseCache}
+              @browse-updated=${(e: CustomEvent<BrowseState>) => {
+                this.browseCache = e.detail;
+              }}
+              @clan-select=${(
+                e: CustomEvent<{ tag: string; source?: "boosted" }>,
+              ) => this.openDetail(e.detail.tag, e.detail.source)}
+            ></clan-browse-view>`
+      }
     `;
   }
 
-  private openDetail(tag: string) {
+  // z-[9999]: just under the toasts and dialogs that use z-[10000]
+  // (MarketingConsentToast, PurchaseNudgeModal, WebGLGate), so one that
+  // appears while the map is open shows on top of it rather than behind.
+  // The clan map is its own full-screen page over the game: the map edge to
+  // edge (its sidebar floats over it) and a way back to the clan lists. It's
+  // rendered into its own element on <body>, because a `fixed` element
+  // inside the modal is positioned against the modal's box, not the screen.
+  private mapPage: HTMLDivElement | null = null;
+
+  protected updated(changed: PropertyValues): void {
+    super.updated(changed);
+    this.syncMapPage();
+  }
+
+  disconnectedCallback(): void {
+    this.removeMapPage();
+    super.disconnectedCallback();
+  }
+
+  private syncMapPage(): void {
+    // Mounted only while open: the page polls its API while framed.
+    if (!this.isModalOpen || !this.onListView || this.activeTab !== "map") {
+      this.removeMapPage();
+      return;
+    }
+    if (!this.mapPage) {
+      this.mapPage = document.createElement("div");
+      document.body.appendChild(this.mapPage);
+    }
+    render(this.renderMapPage(), this.mapPage);
+  }
+
+  private removeMapPage(): void {
+    if (!this.mapPage) return;
+    render(nothing, this.mapPage);
+    this.mapPage.remove();
+    this.mapPage = null;
+  }
+
+  private renderMapPage() {
+    return html`<div
+      data-clan-map-page
+      class="fixed inset-0 z-[9999] bg-[#3c3c3c]"
+    >
+      <clan-map-view full class="block w-full h-full"></clan-map-view>
+      <button
+        data-clan-map-back
+        type="button"
+        class="absolute top-3 left-3 flex items-center gap-2 px-4 py-2 rounded-lg bg-[#151a21]/90 border border-white/10 backdrop-blur text-white text-sm font-bold uppercase tracking-wider hover:bg-[#1b212a] cursor-pointer"
+        aria-label=${translateText("clan_modal.map_back")}
+        @click=${() => this.setActiveTab(this.mapReturnTab)}
+      >
+        <span aria-hidden="true">←</span>${translateText("clan_modal.title")}
+      </button>
+    </div>`;
+  }
+
+  private openDetail(tag: string, source?: "boosted") {
+    this.joinSource = source;
     if (this.selectedClanTag !== tag) {
       // History cache is per-clan (see `gameHistoryCache` declaration),
       // so it must be cleared on tag change. `detailCache` is left
@@ -594,8 +732,11 @@ export class ClanModal extends BaseModal {
 
     // Route the profile modal's Back button to whichever tab opened it. Only
     // the game-history tab needs its scroll position preserved on return.
-    this.profileOpenedFromGameHistory = this.activeTab === "game-history";
-    if (this.profileOpenedFromGameHistory) {
+    this.profileOpenedFromTab =
+      this.activeTab === "game-history" || this.activeTab === "donations"
+        ? this.activeTab
+        : "members";
+    if (this.profileOpenedFromTab === "game-history") {
       this.gameHistoryScrollTop = this.modalEl?.getScrollTop() ?? 0;
     }
 
@@ -610,7 +751,7 @@ export class ClanModal extends BaseModal {
   }
 
   // Entry point for the profile modal's Back button (opened via openFromClan
-  // from either the Members or Game History tab).
+  // from the Members, Game History or Donations tab).
   public returnFromPlayerProfile(): void {
     // Nothing showing means the profile detoured through one of its own clans,
     // which reset this modal. Nothing is restored — land on the clan list
@@ -626,10 +767,10 @@ export class ClanModal extends BaseModal {
       this.open({ clan: this.selectedClanTag });
       return;
     }
-    if (this.profileOpenedFromGameHistory) {
+    if (this.profileOpenedFromTab === "game-history") {
       this.returnToGameHistory();
     } else {
-      this.returnToMembers();
+      this.returnToDetailTab(this.profileOpenedFromTab);
     }
   }
 
@@ -645,12 +786,12 @@ export class ClanModal extends BaseModal {
     this.openedFromProfileOrigin = origin;
   }
 
-  public returnToMembers(): void {
+  public returnToDetailTab(tab: DetailReturnTab): void {
     const tag = this.selectedClanTag;
     if (!tag) return;
 
     this.returningFromModalHandoff = true;
-    this.open({ clan: tag, tab: "members" });
+    this.open({ clan: tag, tab });
   }
 
   public returnToGameHistory(): void {
@@ -673,6 +814,12 @@ export class ClanModal extends BaseModal {
   }
 
   private renderMyClans() {
+    if (this.signedOut) {
+      return signedOutNotice(() => {
+        this.close();
+        window.showPage?.("page-account");
+      }, translateText("clan_modal.sign_in_for_clans"));
+    }
     const hasClans = this.myClans.length > 0;
     const hasRequests = this.myPendingRequests.length > 0;
 

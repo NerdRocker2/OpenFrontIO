@@ -2,6 +2,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PurchaseButton } from "../../src/client/components/PurchaseButton";
 import { alignPurchaseRows } from "../../src/client/components/PurchaseButton";
 
+vi.mock("../../src/client/InGameModal", () => ({
+  showInGameAlert: vi.fn().mockResolvedValue(true),
+  showInGameConfirm: vi.fn().mockResolvedValue(true),
+}));
+
+const { showInGameAlert } = await import("../../src/client/InGameModal");
+
 describe("PurchaseButton", () => {
   let button: PurchaseButton | undefined;
 
@@ -74,9 +81,31 @@ describe("PurchaseButton", () => {
     }
   });
 
+  it("strikes through the list price during a sale", async () => {
+    button = document.createElement("purchase-button") as PurchaseButton;
+    button.priceHard = 75;
+    button.listPriceHard = 100;
+    button.priceSoft = 500;
+    button.listPriceSoft = 500;
+    button.onPurchaseHard = vi.fn(async () => undefined);
+    button.onPurchaseSoft = vi.fn(async () => undefined);
+    document.body.appendChild(button);
+    await button.updateComplete;
+
+    const hard = button.querySelector(".purchase-sparkle-btn-hard")!;
+    // The struck price, after its screen-reader "was" label.
+    const struck = hard.querySelector("s[data-sale-tag]")!;
+    expect(struck.querySelector(".sr-only")?.textContent).toContain(
+      "store.sale_was",
+    );
+    expect(struck.lastChild?.textContent?.trim()).toBe("100");
+    // A list price not above the price is no sale.
+    const soft = button.querySelector(".purchase-sparkle-btn-soft")!;
+    expect(soft.querySelector("[data-sale-tag]")).toBeNull();
+  });
+
   it("clears busy state and reports a synchronous purchase throw", async () => {
-    const alertMock = vi.fn();
-    vi.stubGlobal("alert", alertMock);
+    vi.mocked(showInGameAlert).mockClear();
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     button = document.createElement("purchase-button") as PurchaseButton;
     button.dollarPrice = "$5";
@@ -89,7 +118,7 @@ describe("PurchaseButton", () => {
     button.querySelector<HTMLButtonElement>(".purchase-sparkle-btn")!.click();
 
     await vi.waitFor(() =>
-      expect(alertMock).toHaveBeenCalledWith("store.purchase_failed"),
+      expect(showInGameAlert).toHaveBeenCalledWith("store.purchase_failed"),
     );
     expect(
       button.querySelector(".purchase-btn-wrap")?.getAttribute("aria-busy"),
@@ -97,8 +126,7 @@ describe("PurchaseButton", () => {
   });
 
   it("clears busy state and handles a rejected purchase callback", async () => {
-    const alertMock = vi.fn();
-    vi.stubGlobal("alert", alertMock);
+    vi.mocked(showInGameAlert).mockClear();
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     button = document.createElement("purchase-button") as PurchaseButton;
     button.dollarPrice = "$5";
@@ -111,7 +139,7 @@ describe("PurchaseButton", () => {
     button.querySelector<HTMLButtonElement>(".purchase-sparkle-btn")!.click();
 
     await vi.waitFor(() =>
-      expect(alertMock).toHaveBeenCalledWith("store.purchase_failed"),
+      expect(showInGameAlert).toHaveBeenCalledWith("store.purchase_failed"),
     );
     expect(
       button.querySelector(".purchase-btn-wrap")?.getAttribute("aria-busy"),

@@ -1,5 +1,5 @@
 {
-  "categories": ["cosmic", "new"],
+  "categories": ["cosmic"],
   "custom_tribes": [
     {
       "coordinates": [237, 727],
@@ -190,6 +190,7 @@
       "name": "Deimos"
     }
   ],
+  "forced_modifiers": ["isWaterNukes:50", "startingGold5M:100"],
   "id": "Sol",
   "map": {
     "height": 2528,
@@ -206,7 +207,6 @@
     "num_land_tiles": 209669,
     "width": 2216
   },
-  "multiplayer_frequency": 20,
   "name": "Sol",
   "nations": [
     {

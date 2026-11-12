@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -39,15 +40,21 @@ type mapInfo struct {
 	// English display name written to en.json. Defaults to Name; set it when
 	// the display name differs from the canonical (wire-format) name.
 	DisplayName string `json:"display_name"`
-	// How many times the map appears in the multiplayer playlist.
-	// 0 (or omitted) keeps the map out of the regular rotation.
-	MultiplayerFrequency int `json:"multiplayer_frequency"`
 	// Position in the featured grid (1 = first). Featured maps without a
 	// rank sort after ranked ones, alphabetically.
 	FeaturedRank int `json:"featured_rank"`
+	// Kept out of map pickers, random picks and public lobbies (e.g. the
+	// tutorial map, which only the tutorial starts).
+	Hidden bool `json:"hidden"`
 	// Preferred team count in team/special games (see MapPlaylist).
 	// 0 (or omitted) means no preference.
 	SpecialTeamCount int `json:"special_team_count"`
+	// Modifiers that should never be rolled for this map in special games.
+	// E.g. island maps should disable isRandomSpawn.
+	DisabledModifiers []string `json:"disabled_modifiers"`
+	// Modifiers that are always forced on for this map in special games.
+	// E.g. Sol should always have startingGold5M.
+	ForcedModifiers []string `json:"forced_modifiers"`
 	// Theme name(s) for bot tribe names (references tribeNameThemes.json).
 	// Empty or omitted uses the "default" theme.
 	Themes []string `json:"themes"`
@@ -61,6 +68,17 @@ type mapInfo struct {
 	} `json:"nations"`
 	// Map layers rendered between terrain and territory.
 	Layers []mapLayer `json:"layers"`
+	// Map creator, shown in the map picker.
+	Author string `json:"author"`
+	// English description shown in the map picker, written to en.json.
+	Description string `json:"description"`
+	// Where the map lies on Earth, for the map picker's Atlas tab.
+	Location *mapLocation `json:"location"`
+}
+
+type mapLocation struct {
+	Lat *float64 `json:"lat"`
+	Lon *float64 `json:"lon"`
 }
 
 // mapLayer represents a single map layer definition from info.json.
@@ -166,9 +184,6 @@ func loadMapInfos() ([]mapInfo, error) {
 		if info.TranslationKey != "map."+m.Name {
 			return nil, fmt.Errorf("map %s: info.json \"translation_key\" (%q) must be %q", m.Name, info.TranslationKey, "map."+m.Name)
 		}
-		if info.MultiplayerFrequency < 0 {
-			return nil, fmt.Errorf("map %s: info.json \"multiplayer_frequency\" (%d) must be >= 0", m.Name, info.MultiplayerFrequency)
-		}
 		if info.FeaturedRank < 0 {
 			return nil, fmt.Errorf("map %s: info.json \"featured_rank\" (%d) must be >= 1", m.Name, info.FeaturedRank)
 		}
@@ -177,6 +192,36 @@ func loadMapInfos() ([]mapInfo, error) {
 		}
 		if info.SpecialTeamCount < 0 || info.SpecialTeamCount == 1 {
 			return nil, fmt.Errorf("map %s: info.json \"special_team_count\" (%d) must be >= 2", m.Name, info.SpecialTeamCount)
+		}
+		// Validate modifier keys (plain or with percentage, e.g. "goldMultiplier:75").
+		validModifiers := map[string]bool{
+			"isRandomSpawn": true, "isCompact": true, "isCrowded": true,
+			"isHardNations": true, "startingGold1M": true, "startingGold5M": true,
+			"startingGold25M": true, "goldMultiplier": true, "isAlliancesDisabled": true,
+			"isNukesDisabled": true, "isSAMsDisabled": true, "isPeaceTime": true,
+			"isWaterNukes": true, "isDoomsdayClock": true,
+		}
+		for _, mod := range info.ForcedModifiers {
+			base := mod
+			if idx := strings.Index(mod, ":"); idx >= 0 {
+				base = mod[:idx]
+				pct := mod[idx+1:]
+				var n int
+				if _, err := fmt.Sscanf(pct, "%d", &n); err != nil || n < 1 || n > 100 {
+					return nil, fmt.Errorf("map %s: info.json forced_modifiers %q has invalid percentage (must be 1-100)", m.Name, mod)
+				}
+			}
+			if !validModifiers[base] {
+				return nil, fmt.Errorf("map %s: info.json forced_modifiers contains invalid modifier %q", m.Name, base)
+			}
+		}
+		for _, mod := range info.DisabledModifiers {
+			if !validModifiers[mod] {
+				return nil, fmt.Errorf("map %s: info.json disabled_modifiers contains invalid modifier %q", m.Name, mod)
+			}
+		}
+		if loc := info.Location; loc != nil && (loc.Lat == nil || loc.Lon == nil || *loc.Lat < -90 || *loc.Lat > 90 || *loc.Lon < -180 || *loc.Lon > 180) {
+			return nil, fmt.Errorf("map %s: info.json \"location\" must have lat in [-90, 90] and lon in [-180, 180]", m.Name)
 		}
 		if len(info.Categories) == 0 {
 			return nil, fmt.Errorf("map %s: info.json \"categories\" must list at least one category", m.Name)
@@ -253,13 +298,15 @@ func loadMapInfos() ([]mapInfo, error) {
 }
 
 // generateMapsTS writes the GameMapType enum, the MapCategory union, the
-// MapInfo interface, and the maps list to src/core/game/Maps.gen.ts.
-func generateMapsTS(infos []mapInfo) error {
+// MapInfo interface, and the maps list to
+// packages/engine-api/src/game/Maps.gen.ts.
+// It returns the path written.
+func generateMapsTS(infos []mapInfo) (string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
-		return fmt.Errorf("failed to get working directory: %w", err)
+		return "", fmt.Errorf("failed to get working directory: %w", err)
 	}
-	outPath := filepath.Join(cwd, "..", "src", "core", "game", "Maps.gen.ts")
+	outPath := filepath.Join(cwd, "..", "packages", "engine-api", "src", "game", "Maps.gen.ts")
 
 	var b strings.Builder
 	b.WriteString("// Code generated by map-generator; DO NOT EDIT.\n")
@@ -292,6 +339,21 @@ func generateMapsTS(infos []mapInfo) error {
 	}
 	b.WriteString("];\n\n")
 
+	b.WriteString("export type SpecialModifierKey =\n")
+	modifierKeys := []string{
+		"isRandomSpawn", "isCompact", "isCrowded", "isHardNations",
+		"startingGold1M", "startingGold5M", "startingGold25M",
+		"goldMultiplier", "isAlliancesDisabled", "isNukesDisabled",
+		"isSAMsDisabled", "isPeaceTime", "isWaterNukes", "isDoomsdayClock",
+	}
+	for i, mk := range modifierKeys {
+		sep := "\n"
+		if i == len(modifierKeys)-1 {
+			sep = ";\n\n"
+		}
+		b.WriteString(fmt.Sprintf("  | %q%s", mk, sep))
+	}
+
 	b.WriteString("export interface MapInfo {\n")
 	b.WriteString("  /** GameMapType enum key — the UpperCamelCase folder name. */\n")
 	b.WriteString("  id: GameMapName;\n")
@@ -301,18 +363,30 @@ func generateMapsTS(infos []mapInfo) error {
 	b.WriteString("  translationKey: string;\n")
 	b.WriteString("  /** Map picker categories. */\n")
 	b.WriteString("  categories: MapCategory[];\n")
-	b.WriteString("  /** How many times the map appears in the multiplayer playlist. */\n")
-	b.WriteString("  multiplayerFrequency: number;\n")
 	b.WriteString("  /** Position in the featured grid (1 = first); unranked featured maps sort last. */\n")
 	b.WriteString("  featuredRank?: number;\n")
+	b.WriteString("  /** Kept out of map pickers, random picks and public lobbies. */\n")
+	b.WriteString("  hidden?: boolean;\n")
 	b.WriteString("  /** Preferred team count in team/special games (see MapPlaylist). */\n")
 	b.WriteString("  specialTeamCount?: number;\n")
+	b.WriteString("  /** Modifiers that should never be rolled for this map in special games. */\n")
+	b.WriteString("  disabledModifiers?: SpecialModifierKey[];\n")
+	b.WriteString("  /** Modifiers forced on for this map. Plain key or \"key:percentage\" (e.g. \"goldMultiplier:75\"). */\n")
+	b.WriteString("  forcedModifiers?: string[];\n")
 	b.WriteString("  /** Tribe name theme(s) (keys in tribeNameThemes.json). */\n")
 	b.WriteString("  themes?: string[];\n")
 	b.WriteString("  /** Custom tribe entry: a string (random spawn) or an object with name and coordinates. */\n")
 	b.WriteString("  customTribes?: CustomTribe[];\n")
 	b.WriteString("  /** Map layers rendered between terrain and territory. */\n")
 	b.WriteString("  layers?: MapLayer[];\n")
+	b.WriteString("  /** Default nation count defined in the map's manifest/info. */\n")
+	b.WriteString("  defaultNationCount: number;\n")
+	b.WriteString("  /** Map creator. */\n")
+	b.WriteString("  author?: string;\n")
+	b.WriteString("  /** Key of the map's description in resources/lang/en.json. */\n")
+	b.WriteString("  descriptionKey?: string;\n")
+	b.WriteString("  /** Where the map lies on Earth (the map picker's Atlas tab). */\n")
+	b.WriteString("  location?: { lat: number; lon: number };\n")
 	b.WriteString("}\n\n")
 	b.WriteString("export interface CustomTribe {\n")
 	b.WriteString("  name: string;\n")
@@ -343,12 +417,35 @@ func generateMapsTS(infos []mapInfo) error {
 			b.WriteString(fmt.Sprintf("%q", category))
 		}
 		b.WriteString("],\n")
-		b.WriteString(fmt.Sprintf("    multiplayerFrequency: %d,\n", info.MultiplayerFrequency))
+		b.WriteString(fmt.Sprintf("    defaultNationCount: %d,\n", len(info.Nations)))
 		if info.FeaturedRank > 0 {
 			b.WriteString(fmt.Sprintf("    featuredRank: %d,\n", info.FeaturedRank))
 		}
+		if info.Hidden {
+			b.WriteString("    hidden: true,\n")
+		}
 		if info.SpecialTeamCount > 0 {
 			b.WriteString(fmt.Sprintf("    specialTeamCount: %d,\n", info.SpecialTeamCount))
+		}
+		if len(info.DisabledModifiers) > 0 {
+			b.WriteString("    disabledModifiers: [")
+			for i, mod := range info.DisabledModifiers {
+				if i > 0 {
+					b.WriteString(", ")
+				}
+				b.WriteString(fmt.Sprintf("%q", mod))
+			}
+			b.WriteString("],\n")
+		}
+		if len(info.ForcedModifiers) > 0 {
+			b.WriteString("    forcedModifiers: [")
+			for i, mod := range info.ForcedModifiers {
+				if i > 0 {
+					b.WriteString(", ")
+				}
+				b.WriteString(fmt.Sprintf("%q", mod))
+			}
+			b.WriteString("],\n")
 		}
 		if len(info.Themes) > 0 {
 			b.WriteString("    themes: [")
@@ -389,41 +486,54 @@ func generateMapsTS(infos []mapInfo) error {
 			}
 			b.WriteString("],\n")
 		}
+		if info.Author != "" {
+			b.WriteString(fmt.Sprintf("    author: %q,\n", info.Author))
+		}
+		if info.Description != "" {
+			b.WriteString(fmt.Sprintf("    descriptionKey: %q,\n", "map_description."+strings.ToLower(info.ID)))
+		}
+		if info.Location != nil {
+			b.WriteString(fmt.Sprintf("    location: {lat: %s, lon: %s},\n",
+				strconv.FormatFloat(*info.Location.Lat, 'f', -1, 64),
+				strconv.FormatFloat(*info.Location.Lon, 'f', -1, 64)))
+		}
 		b.WriteString("  },\n")
 	}
 	b.WriteString("];\n")
 
 	if err := os.WriteFile(outPath, []byte(b.String()), 0644); err != nil {
-		return fmt.Errorf("failed to write %s: %w", outPath, err)
+		return "", fmt.Errorf("failed to write %s: %w", outPath, err)
 	}
-	return nil
+	return outPath, nil
 }
 
 // generateEnJSON rewrites the "map" section of resources/lang/en.json with
 // each map's display name, keyed by folder name. Existing keys in the
 // section that are not maps (e.g. "featured", "random") are preserved.
+// The "map_description" section is rewritten from the maps' descriptions.
 //
 // The whole file is round-tripped through encoding/json, which marshals
 // object keys in sorted order — a no-op for everything but the map section
 // because en.json is kept sorted (see tests/EnJsonSorted.test.ts).
-func generateEnJSON(infos []mapInfo) error {
+// It returns the path written.
+func generateEnJSON(infos []mapInfo) (string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
-		return fmt.Errorf("failed to get working directory: %w", err)
+		return "", fmt.Errorf("failed to get working directory: %w", err)
 	}
 	enPath := filepath.Join(cwd, "..", "resources", "lang", "en.json")
 	content, err := os.ReadFile(enPath)
 	if err != nil {
-		return fmt.Errorf("failed to read en.json: %w", err)
+		return "", fmt.Errorf("failed to read en.json: %w", err)
 	}
 
 	var root map[string]interface{}
 	if err := json.Unmarshal(content, &root); err != nil {
-		return fmt.Errorf("failed to parse en.json: %w", err)
+		return "", fmt.Errorf("failed to parse en.json: %w", err)
 	}
 	oldSection, ok := root["map"].(map[string]interface{})
 	if !ok {
-		return fmt.Errorf("en.json has no top-level \"map\" object")
+		return "", fmt.Errorf("en.json has no top-level \"map\" object")
 	}
 
 	mapFolders := make(map[string]bool, len(infos))
@@ -440,6 +550,14 @@ func generateEnJSON(infos []mapInfo) error {
 		section[strings.ToLower(info.ID)] = info.displayName()
 	}
 	root["map"] = section
+
+	descriptions := make(map[string]interface{})
+	for _, info := range infos {
+		if info.Description != "" {
+			descriptions[strings.ToLower(info.ID)] = info.Description
+		}
+	}
+	root["map_description"] = descriptions
 
 	// Update the "map_layers" section with layer display names.
 	// Keyed by layer id; the value is the layer id (used as default display name).
@@ -465,10 +583,10 @@ func generateEnJSON(infos []mapInfo) error {
 	enc.SetEscapeHTML(false)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(root); err != nil {
-		return fmt.Errorf("failed to serialize en.json: %w", err)
+		return "", fmt.Errorf("failed to serialize en.json: %w", err)
 	}
 	if err := os.WriteFile(enPath, b.Bytes(), 0644); err != nil {
-		return fmt.Errorf("failed to write en.json: %w", err)
+		return "", fmt.Errorf("failed to write en.json: %w", err)
 	}
-	return nil
+	return enPath, nil
 }

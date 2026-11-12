@@ -1,28 +1,30 @@
-import type { LitElement } from "lit";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getUserMe } from "../../src/client/Api";
-import { userAuth } from "../../src/client/Auth";
-import { fetchCosmetics } from "../../src/client/Cosmetics";
-import "../../src/client/InventoryModal";
-import type { InventoryModal } from "../../src/client/InventoryModal";
-import type { CosmeticCard } from "../../src/client/components/CosmeticCard";
-import type { EffectsGrid } from "../../src/client/components/EffectsGrid";
-import type { InventoryLoadoutBar } from "../../src/client/components/InventoryLoadoutBar";
-import type { UserMeResponse } from "../../src/core/ApiSchemas";
+import type { UserMeResponse } from "@openfront/shared/ApiSchemas";
 import {
   EFFECT_TYPES,
   NUKE_EXPLOSION_TYPES,
   type Cosmetics,
   type EffectType,
   type NukeExplosionType,
-} from "../../src/core/CosmeticSchemas";
+} from "@openfront/shared/CosmeticSchemas";
+import type { LitElement } from "lit";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getUserMe } from "../../src/client/Api";
+import { userAuth } from "../../src/client/Auth";
+import type { CosmeticCard } from "../../src/client/components/CosmeticCard";
+import "../../src/client/InventoryModal";
+import type { EffectsGrid } from "../../src/client/components/EffectsGrid";
+import type { InventoryLoadoutBar } from "../../src/client/components/InventoryLoadoutBar";
+import { fetchCosmetics } from "../../src/client/Cosmetics";
+import type { InventoryModal } from "../../src/client/InventoryModal";
 import {
   CROWN_KEY,
   EFFECTS_KEY,
   FLAG_KEY,
+  LOADOUTS_KEY,
+  MAX_LOADOUTS,
   PATTERN_KEY,
   UserSettings,
-} from "../../src/core/game/UserSettings";
+} from "../../src/client/UserSettings";
 
 vi.mock("../../src/client/Api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../src/client/Api")>()),
@@ -250,6 +252,41 @@ async function showTab(
   if (effects) await (effects as LitElement).updateComplete;
 }
 
+function loadoutMenu(modal: InventoryModal): LitElement {
+  return modal.querySelector("inventory-loadout-menu") as LitElement;
+}
+
+function loadoutSlots(modal: InventoryModal): string[] {
+  return [
+    ...loadoutMenu(modal).querySelectorAll<HTMLButtonElement>(
+      "[data-loadout-slot]",
+    ),
+  ].map((slot) => slot.dataset.loadoutSlot!);
+}
+
+async function addLoadoutSlot(modal: InventoryModal) {
+  loadoutMenu(modal)
+    .querySelector<HTMLButtonElement>("[data-loadout-add]")!
+    .click();
+  await modal.updateComplete;
+  await loadoutMenu(modal).updateComplete;
+}
+
+async function selectLoadoutSlot(modal: InventoryModal, name: string) {
+  loadoutMenu(modal)
+    .querySelector<HTMLButtonElement>(`[data-loadout-slot="${name}"]`)!
+    .click();
+  await modal.updateComplete;
+  await loadoutMenu(modal).updateComplete;
+}
+
+function activeSlot(modal: InventoryModal): string | null {
+  const active = loadoutMenu(modal).querySelector<HTMLButtonElement>(
+    '[data-loadout-slot][aria-pressed="true"]',
+  );
+  return active?.dataset.loadoutSlot ?? null;
+}
+
 describe("InventoryModal", () => {
   let modal: InventoryModal;
   let languageFixture: HTMLElement;
@@ -263,6 +300,7 @@ describe("InventoryModal", () => {
     settings.removeCached(FLAG_KEY);
     settings.removeCached(CROWN_KEY);
     settings.removeCached(EFFECTS_KEY);
+    settings.removeCached(LOADOUTS_KEY);
     languageFixture = document.createElement("lang-selector");
     const translations = {
       "inventory.equipped": "Equipped",
@@ -271,10 +309,23 @@ describe("InventoryModal", () => {
       "inventory.showing_effects": "Effects equipped: {count}",
       "inventory.selected_cosmetic": "Selected {name}",
       "inventory.selected_cosmetic_variant": "{name} ({variant})",
+      "inventory.sign_in_for_cosmetics":
+        "Sign in or create an account to access your skins, crowns, and effects.",
       "inventory.unequip": "Unequip",
+      "inventory.unequip_all": "Unequip all",
+      "inventory.unequipped_all": "Unequipped everything",
+      "inventory.loadout_applied": "Equipped loadout {name}",
+      "inventory.loadout_deleted": "Deleted loadout {name}",
+      "inventory.loadout_limit": "You can save up to {count} loadouts.",
+      "inventory.loadout_presets": "Loadouts",
+      "inventory.loadout_saved": "Saved loadout {name}",
+      "inventory.loadout_add": "New loadout",
+      "inventory.loadout_slot": "Loadout {name}",
+      "inventory.loadout_delete_target": "Delete {name}",
       "common.none": "No flag",
       "common.not_logged_in": "Not logged in",
       "main.store": "Store",
+      "main.sign_in": "Sign in",
       "store.patterns": "Skins",
       "store.flags": "Flags",
       "store.crowns": "Crowns",
@@ -305,6 +356,7 @@ describe("InventoryModal", () => {
       ownershipState: "loaded",
       isLoading: false,
       loadFailed: false,
+      isModalOpen: true,
     });
     modal.requestUpdate();
     await modal.updateComplete;
@@ -332,6 +384,35 @@ describe("InventoryModal", () => {
     ).toBeNull();
   });
 
+  it("builds no cosmetic cards while closed", async () => {
+    modal.open();
+    await modal.updateComplete;
+    expect(card(modal, "skin:owned_skin")).toBeTruthy();
+
+    modal.close();
+    await modal.updateComplete;
+    expect(modal.querySelector("cosmetic-card")).toBeNull();
+
+    modal.open();
+    await modal.updateComplete;
+    expect(card(modal, "skin:owned_skin")).toBeTruthy();
+  });
+
+  it("drops an open preview when the inventory closes", async () => {
+    modal.open();
+    await modal.updateComplete;
+    const skin = card(modal, "skin:owned_skin")!;
+    modal.dispatchEvent(
+      new CustomEvent("open-cosmetic-preview", { detail: skin.resolved }),
+    );
+    await modal.updateComplete;
+    expect(modal.querySelector("cosmetic-preview-modal")).toBeTruthy();
+
+    modal.close();
+    await modal.updateComplete;
+    expect(modal.querySelector("cosmetic-preview-modal")).toBeNull();
+  });
+
   it("keeps the auth-aware action in the modal header", async () => {
     let action = modal.querySelector<HTMLElement>(
       "[data-inventory-header-action]",
@@ -353,6 +434,61 @@ describe("InventoryModal", () => {
     await (action as LitElement).updateComplete;
     expect(action.closest('[slot="header"]')).toBeTruthy();
     expect(action.textContent?.trim()).toBe("Not logged in");
+  });
+
+  it("explains guest access across inventory categories and opens sign-in", async () => {
+    const showPage = vi.fn();
+    const previousShowPage = window.showPage;
+    window.showPage = showPage;
+    try {
+      Object.assign(modal as unknown as Record<string, unknown>, {
+        userMeResponse: false,
+        ownershipState: "guest",
+      });
+      modal.requestUpdate();
+
+      for (const tab of ["skins", "crowns", "effects", "flags"] as const) {
+        await showTab(modal, tab);
+        const notice = modal.querySelector<HTMLElement>(
+          "[data-inventory-sign-in]",
+        );
+        expect(notice?.textContent).toContain(
+          "Sign in or create an account to access your skins, crowns, and effects.",
+        );
+        const button = notice?.querySelector<HTMLElement>("o-button");
+        await (button as LitElement).updateComplete;
+        expect(button?.textContent?.trim()).toBe("Sign in");
+      }
+
+      modal
+        .querySelector<HTMLElement>("[data-inventory-sign-in] o-button")!
+        .click();
+      expect(showPage).toHaveBeenCalledWith("page-account");
+
+      Object.assign(modal as unknown as Record<string, unknown>, {
+        userMeResponse: ownedUser,
+        ownershipState: "loaded",
+      });
+      modal.requestUpdate();
+      await modal.updateComplete;
+      expect(modal.querySelector("[data-inventory-sign-in]")).toBeNull();
+    } finally {
+      window.showPage = previousShowPage;
+    }
+  });
+
+  it("deep-links to the store cosmetics tab from the header action", async () => {
+    const originalHash = window.location.hash;
+    try {
+      const action = modal.querySelector<HTMLElement>(
+        "[data-inventory-header-action]",
+      )!;
+      await (action as LitElement).updateComplete;
+      action.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      expect(window.location.hash).toBe("#modal=store&tab=cosmetics");
+    } finally {
+      window.location.hash = originalHash;
+    }
   });
 
   it("keeps loadout, card, and swatch synchronized", async () => {
@@ -389,7 +525,7 @@ describe("InventoryModal", () => {
   it("announces flag, crown and skin selections too", async () => {
     const onMessage = vi.fn();
     const lastMessage = () =>
-      (onMessage.mock.lastCall?.[0] as CustomEvent).detail.message;
+      (onMessage.mock.lastCall![0] as CustomEvent).detail.message;
     window.addEventListener("show-message", onMessage);
     try {
       await showTab(modal, "skins");
@@ -857,5 +993,118 @@ describe("InventoryModal", () => {
     await showTab(modal, "flags");
     expect(card(modal, "country:us")).toBeDefined();
     expect(modal.querySelector('[data-inventory-empty="flags"]')).toBeNull();
+  }, 30_000);
+
+  it("adds numbered loadout slots that mirror what's equipped", async () => {
+    await showTab(modal, "crowns");
+    expect(loadoutSlots(modal)).toEqual([]);
+    await activateCard(modal, "crown:owned_crown");
+
+    await addLoadoutSlot(modal);
+    expect(loadoutSlots(modal)).toEqual(["01"]);
+    expect(activeSlot(modal)).toBe("01");
+    const settings = new UserSettings();
+    expect(settings.getLoadout("01")?.crown).toBe("owned_crown");
+
+    // No Save step: equipping writes straight into the active slot.
+    await showTab(modal, "flags");
+    await activateCard(modal, "flag:owned_flag");
+    expect(settings.getLoadout("01")).toMatchObject({
+      crown: "owned_crown",
+      flag: "flag:owned_flag",
+    });
+  }, 30_000);
+
+  it("switches between slots, equipping each one's set", async () => {
+    await showTab(modal, "crowns");
+    await activateCard(modal, "crown:owned_crown");
+    await addLoadoutSlot(modal);
+
+    await addLoadoutSlot(modal);
+    expect(loadoutSlots(modal)).toEqual(["01", "02"]);
+    expect(activeSlot(modal)).toBe("02");
+    await showTab(modal, "skins");
+    await activateCard(modal, "skin:owned_skin");
+    await showTab(modal, "crowns");
+    modal.querySelector<HTMLButtonElement>("[data-inventory-unequip]")!.click();
+    await modal.updateComplete;
+
+    const settings = new UserSettings();
+    expect(settings.getLoadout("02")).toMatchObject({
+      pattern: "skin:owned_skin",
+      crown: null,
+    });
+
+    await selectLoadoutSlot(modal, "01");
+    expect(activeSlot(modal)).toBe("01");
+    expect(settings.getSelectedCrownName()).toBe("owned_crown");
+    expect(settings.getSelectedSkinName()).toBeNull();
+    // Selecting 01 must not have leaked the swap into 02.
+    expect(settings.getLoadout("02")?.pattern).toBe("skin:owned_skin");
+
+    await selectLoadoutSlot(modal, "02");
+    expect(settings.getSelectedSkinName()).toBe("owned_skin");
+    expect(settings.getSelectedCrownName()).toBeNull();
+    expect(settings.getLoadout("01")?.crown).toBe("owned_crown");
+  }, 30_000);
+
+  it("deletes only the active slot, through the button it carries", async () => {
+    await showTab(modal, "crowns");
+    await addLoadoutSlot(modal);
+    await addLoadoutSlot(modal);
+    const menu = loadoutMenu(modal);
+    // Inactive slots carry no delete button.
+    expect(menu.querySelectorAll("[data-loadout-delete]")).toHaveLength(1);
+    const remove = menu.querySelector<HTMLButtonElement>(
+      '[data-loadout-delete="02"]',
+    )!;
+    expect(remove.getAttribute("aria-label")).toBe("Delete 02");
+
+    remove.click();
+    await modal.updateComplete;
+    await menu.updateComplete;
+    expect(loadoutSlots(modal)).toEqual(["01"]);
+    expect(activeSlot(modal)).toBeNull();
+    expect(new UserSettings().getActiveLoadout()).toBeNull();
+    // A freed number is reused rather than skipped.
+    await addLoadoutSlot(modal);
+    expect(loadoutSlots(modal)).toEqual(["01", "02"]);
+  }, 30_000);
+
+  it("clears every category through Unequip all", async () => {
+    await showTab(modal, "skins");
+    const unequipAll = () =>
+      loadoutMenu(modal).querySelector<HTMLButtonElement>(
+        "[data-inventory-unequip-all]",
+      )!;
+    expect(unequipAll().disabled).toBe(true);
+    await activateCard(modal, "skin:owned_skin");
+    await showTab(modal, "crowns");
+    await activateCard(modal, "crown:owned_crown");
+    new UserSettings().setSelectedEffectName(
+      "transportShipTrail",
+      "owned_wake",
+    );
+    await loadoutMenu(modal).updateComplete;
+    expect(unequipAll().disabled).toBe(false);
+
+    unequipAll().click();
+    await modal.updateComplete;
+    await loadoutMenu(modal).updateComplete;
+    const settings = new UserSettings();
+    expect(settings.getSelectedSkinName()).toBeNull();
+    expect(settings.getSelectedCrownName()).toBeNull();
+    expect(settings.getSelectedEffects()).toEqual({});
+    expect(unequipAll().disabled).toBe(true);
+  }, 30_000);
+
+  it("stops offering new slots at the cap", async () => {
+    await showTab(modal, "skins");
+    for (let i = 0; i < MAX_LOADOUTS; i++) await addLoadoutSlot(modal);
+    expect(loadoutSlots(modal)).toHaveLength(MAX_LOADOUTS);
+    expect(
+      loadoutMenu(modal).querySelector<HTMLButtonElement>("[data-loadout-add]")!
+        .disabled,
+    ).toBe(true);
   }, 30_000);
 });

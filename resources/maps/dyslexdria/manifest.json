@@ -754,6 +754,10 @@
     },
     {
       "flag": "",
+      "name": "Waht"
+    },
+    {
+      "flag": "",
       "name": "Patrick Plays Badly"
     }
   ],
@@ -761,7 +765,7 @@
   "id": "Dyslexdria",
   "map": {
     "height": 1440,
-    "num_land_tiles": 2103254,
+    "num_land_tiles": 2103253,
     "width": 3308
   },
   "map16x": {
@@ -774,24 +778,19 @@
     "num_land_tiles": 508102,
     "width": 1654
   },
-  "multiplayer_frequency": 8,
   "name": "Dyslexdria",
   "nations": [
     {
       "flag": "",
-      "name": "ZOMIBES"
+      "name": "Xombies"
+    },
+    {
+      "flag": "",
+      "name": "Roque AI"
     },
     {
       "flag": "",
       "name": "The Plack Plaque"
-    },
-    {
-      "flag": "",
-      "name": "Globel Warnimg"
-    },
-    {
-      "flag": "",
-      "name": "Globel Coologne"
     },
     {
       "flag": "",
@@ -804,10 +803,6 @@
     {
       "flag": "cd",
       "name": "Depublic of Congo"
-    },
-    {
-      "flag": "cg",
-      "name": "Republic of Congo"
     },
     {
       "flag": "sn",
@@ -823,7 +818,7 @@
     },
     {
       "flag": "nl",
-      "name": "Neitherlands"
+      "name": "Upperlands"
     },
     {
       "flag": "jm",

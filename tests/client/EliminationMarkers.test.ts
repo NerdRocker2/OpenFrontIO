@@ -1,3 +1,4 @@
+import { EventBus } from "@openfront/shared/EventBus";
 import {
   eliminatedLabel,
   EliminationMarkers,
@@ -6,7 +7,6 @@ import {
   SKULL_FILTER,
 } from "../../src/client/EliminationMarkers";
 import { EliminationMarkerEvent } from "../../src/client/InputHandler";
-import { EventBus } from "../../src/core/EventBus";
 
 describe("findLeftmostOwnedTile", () => {
   const grid = (owned: Set<number>, width = 200) => ({

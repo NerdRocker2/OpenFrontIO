@@ -1,25 +1,17 @@
-import type { TemplateResult } from "lit";
-import { html } from "lit";
-import { customElement, state } from "lit/decorators.js";
-import Countries from "resources/countries.json" with { type: "json" };
-import { UserMeResponse } from "../core/ApiSchemas";
-import { assetUrl } from "../core/AssetUrls";
+import { UserMeResponse } from "@openfront/shared/ApiSchemas";
+import { assetUrl } from "@openfront/shared/AssetUrls";
 import {
   Cosmetics,
   Effect,
   Flag,
   isNukeExplosionEffect,
   Skin,
-} from "../core/CosmeticSchemas";
-import {
-  CROWN_KEY,
-  EFFECTS_KEY,
-  FLAG_KEY,
-  PATTERN_KEY,
-  USER_SETTINGS_CHANGED_EVENT,
-  UserSettings,
-} from "../core/game/UserSettings";
-import { PlayerPattern } from "../core/Schemas";
+} from "@openfront/shared/CosmeticSchemas";
+import { PlayerPattern } from "@openfront/shared/WireSchemas";
+import type { TemplateResult } from "lit";
+import { html, nothing } from "lit";
+import { customElement, state } from "lit/decorators.js";
+import Countries from "resources/countries.json" with { type: "json" };
 import { getUserMe } from "./Api";
 import { userAuth } from "./Auth";
 import "./components/baseComponents/Button";
@@ -29,13 +21,17 @@ import {
   cosmeticDisplayName,
   cosmeticSelectionLabel,
 } from "./components/CosmeticPresentation";
+import "./components/CosmeticPreviewModal";
 import "./components/EffectsGrid";
 import "./components/InventoryLoadoutBar";
 import type {
   InventoryCategory,
   InventoryLoadoutEntry,
 } from "./components/InventoryLoadoutBar";
+import "./components/InventoryLoadoutMenu";
+import { ProgressiveList } from "./components/ProgressiveList";
 import { modalHeader } from "./components/ui/ModalHeader";
+import { signedOutNotice } from "./components/ui/SignedOutNotice";
 import {
   fetchCosmetics,
   groupCosmeticVariants,
@@ -43,6 +39,15 @@ import {
   ResolvedCosmetic,
   resolvedToPlayerPattern,
 } from "./Cosmetics";
+import {
+  CROWN_KEY,
+  EFFECTS_KEY,
+  FLAG_KEY,
+  MAX_LOADOUTS,
+  PATTERN_KEY,
+  USER_SETTINGS_CHANGED_EVENT,
+  UserSettings,
+} from "./UserSettings";
 import { translateText } from "./Utils";
 
 type OwnershipState = "loading" | "guest" | "loaded" | "error";
@@ -68,6 +73,7 @@ export class InventoryModal extends BaseModal {
   @state() private isLoading = false;
   @state() private loadFailed = false;
   @state() private ownershipState: OwnershipState = "loading";
+  @state() private previewingCosmetic: ResolvedCosmetic | null = null;
 
   private cosmetics: Cosmetics | null = null;
   private userSettings: UserSettings = new UserSettings();
@@ -93,6 +99,7 @@ export class InventoryModal extends BaseModal {
   }));
   protected modalConfig() {
     return {
+      showScrollToTop: true,
       hideTabs: true,
       tabs: [
         { key: "skins", label: translateText("store.patterns") },
@@ -103,15 +110,23 @@ export class InventoryModal extends BaseModal {
     };
   }
 
+  private readonly pages = new ProgressiveList(this);
+
   private _onCosmeticSelected = () => this.updateFromSettings();
 
   private _onUserMe = (event: Event) => {
     void this.onUserMe((event as CustomEvent<UserMeResponse | false>).detail);
   };
 
+  private onOpenCosmeticPreview = (event: Event) => {
+    const customEvent = event as CustomEvent<ResolvedCosmetic>;
+    this.previewingCosmetic = customEvent.detail;
+  };
+
   connectedCallback() {
     super.connectedCallback();
     document.addEventListener("userMeResponse", this._onUserMe);
+    this.addEventListener("open-cosmetic-preview", this.onOpenCosmeticPreview);
     window.addEventListener(
       `${USER_SETTINGS_CHANGED_EVENT}:${PATTERN_KEY}`,
       this._onCosmeticSelected,
@@ -131,6 +146,10 @@ export class InventoryModal extends BaseModal {
   }
 
   disconnectedCallback() {
+    this.removeEventListener(
+      "open-cosmetic-preview",
+      this.onOpenCosmeticPreview,
+    );
     super.disconnectedCallback();
     document.removeEventListener("userMeResponse", this._onUserMe);
     window.removeEventListener(
@@ -374,6 +393,72 @@ export class InventoryModal extends BaseModal {
     ];
   }
 
+  /** Slot buttons read as a numbered row, so keep them in slot order. */
+  private loadoutNames(): string[] {
+    return this.userSettings
+      .getLoadouts()
+      .map((loadout) => loadout.name)
+      .sort();
+  }
+
+  private hasEquippedCosmetic(): boolean {
+    const current = this.userSettings.captureLoadout("");
+    return (
+      current.pattern !== null ||
+      current.flag !== null ||
+      current.crown !== null ||
+      Object.keys(current.effects).length > 0
+    );
+  }
+
+  private renderLoadoutMenu(): TemplateResult {
+    const names = this.loadoutNames();
+    return html`<inventory-loadout-menu
+      .names=${names}
+      .active=${this.userSettings.getActiveLoadout() ?? ""}
+      .canAdd=${names.length < MAX_LOADOUTS}
+      .canUnequip=${this.hasEquippedCosmetic()}
+      .onSelect=${(name: string) => this.applyLoadout(name)}
+      .onAdd=${() => this.addLoadout()}
+      .onDelete=${(name: string) => this.deleteLoadout(name)}
+      .onUnequipAll=${() => this.unequipAll()}
+    ></inventory-loadout-menu>`;
+  }
+
+  private applyLoadout(name: string) {
+    // Re-selecting the active slot would only re-equip what's already worn.
+    if (this.userSettings.getActiveLoadout() === name) return;
+    if (!this.userSettings.applyLoadout(name)) return;
+    this.showMessage(translateText("inventory.loadout_applied", { name }));
+    this.updateFromSettings();
+  }
+
+  private addLoadout() {
+    const added = this.userSettings.addLoadout();
+    if (added === null) {
+      this.showMessage(
+        translateText("inventory.loadout_limit", { count: MAX_LOADOUTS }),
+      );
+      return;
+    }
+    this.showMessage(
+      translateText("inventory.loadout_saved", { name: added.name }),
+    );
+    this.updateFromSettings();
+  }
+
+  private deleteLoadout(name: string) {
+    this.userSettings.deleteLoadout(name);
+    this.showMessage(translateText("inventory.loadout_deleted", { name }));
+    this.updateFromSettings();
+  }
+
+  private unequipAll() {
+    this.userSettings.unequipAll();
+    this.showMessage(translateText("inventory.unequipped_all"));
+    this.updateFromSettings();
+  }
+
   private renderEmptyState(category: "skins" | "crowns") {
     return html`<p
       data-inventory-empty=${category}
@@ -393,16 +478,23 @@ export class InventoryModal extends BaseModal {
         this.includedInSearch(r.cosmetic.name),
     );
 
+    const page = this.pages.page(
+      "inventory-skins",
+      this.search,
+      groupCosmeticVariants(items),
+    );
+    const equippedKey = this.equippedSkin()?.key;
     return html`
-      ${this.hasOwnedCatalogItem(["pattern", "skin"])
-        ? null
-        : this.renderEmptyState("skins")}
+      ${
+        this.hasOwnedCatalogItem(["pattern", "skin"])
+          ? null
+          : this.renderEmptyState("skins")
+      }
       <div
         data-inventory-grid="skins"
         class="grid grid-cols-2 gap-3 p-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"
       >
-        ${groupCosmeticVariants(items).map((group) => {
-          const equippedKey = this.equippedSkin()?.key;
+        ${page.items.map((group) => {
           const equippedVariant = group.find((r) => r.key === equippedKey);
           const active = equippedVariant ?? group[0];
           return html`
@@ -418,6 +510,7 @@ export class InventoryModal extends BaseModal {
             ></cosmetic-card>
           `;
         })}
+        ${page.more}
       </div>
     `;
   }
@@ -432,16 +525,19 @@ export class InventoryModal extends BaseModal {
         this.includedInSearch(r.cosmetic.name),
     );
 
+    const page = this.pages.page("inventory-crowns", this.search, items);
     const equippedKey = this.equippedCrown()?.key;
     return html`
-      ${this.hasOwnedCatalogItem(["crown"])
-        ? null
-        : this.renderEmptyState("crowns")}
+      ${
+        this.hasOwnedCatalogItem(["crown"])
+          ? null
+          : this.renderEmptyState("crowns")
+      }
       <div
         data-inventory-grid="crowns"
         class="grid grid-cols-2 gap-3 p-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"
       >
-        ${items.map((r) => {
+        ${page.items.map((r) => {
           return html`
             <cosmetic-card
               .resolved=${r}
@@ -450,6 +546,7 @@ export class InventoryModal extends BaseModal {
             ></cosmetic-card>
           `;
         })}
+        ${page.more}
       </div>
     `;
   }
@@ -470,12 +567,16 @@ export class InventoryModal extends BaseModal {
         this.includedInSearch(resolved.key.slice("country:".length)),
     );
 
+    const page = this.pages.page("inventory-flags", this.search, [
+      ...cosmeticFlags,
+      ...countryFlags,
+    ]);
     return html`
       <div
         data-inventory-grid="flags"
         class="grid grid-cols-2 gap-3 p-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"
       >
-        ${[...cosmeticFlags, ...countryFlags].map(
+        ${page.items.map(
           (resolved) => html`
             <cosmetic-card
               .resolved=${resolved}
@@ -484,6 +585,7 @@ export class InventoryModal extends BaseModal {
             ></cosmetic-card>
           `,
         )}
+        ${page.more}
       </div>
     `;
   }
@@ -530,16 +632,16 @@ export class InventoryModal extends BaseModal {
           ariaLabel: translateText("common.back"),
           rightContent: html`<o-button
             data-inventory-header-action
-            class="no-crazygames"
+            class="no-game-portal"
             variant=${isLoggedIn ? "primary" : "danger"}
             size="sm"
-            .translationKey=${isLoggedIn
-              ? "main.store"
-              : "common.not_logged_in"}
+            .translationKey=${
+              isLoggedIn ? "main.store" : "common.not_logged_in"
+            }
             @click=${() => {
               if (isLoggedIn) {
                 this.close();
-                window.showPage?.("page-item-store");
+                window.location.hash = "modal=store&tab=cosmetics";
               } else {
                 window.showPage?.("page-account");
               }
@@ -560,10 +662,23 @@ export class InventoryModal extends BaseModal {
           />
         </div>
       </div>
+      ${
+        this.previewingCosmetic
+          ? html`<cosmetic-preview-modal
+              .resolved=${this.previewingCosmetic}
+              @close-preview=${() => {
+                this.previewingCosmetic = null;
+              }}
+            ></cosmetic-preview-modal>`
+          : nothing
+      }
     `;
   }
 
   protected renderBody(tab: string) {
+    // BaseModal renders the body even while closed, and this one is always
+    // mounted: skip building a grid no one can see from the main menu.
+    if (!this.isModalOpen) return html``;
     if (this.isLoading || this.ownershipState === "loading") {
       return html`<div data-inventory-state="loading" aria-busy="true">
         <span class="sr-only">${translateText("inventory.loading")}</span>
@@ -628,6 +743,17 @@ export class InventoryModal extends BaseModal {
     }
     const category = tab as InventoryCategory;
     return html`
+      ${
+        this.ownershipState === "guest"
+          ? html`<div data-inventory-sign-in>
+              ${signedOutNotice(
+                () => window.showPage?.("page-account"),
+                translateText("inventory.sign_in_for_cosmetics"),
+              )}
+            </div>`
+          : nothing
+      }
+      ${this.renderLoadoutMenu()}
       <inventory-loadout-bar
         .entries=${this.loadoutEntries()}
         .activeCategory=${category}
@@ -660,6 +786,14 @@ export class InventoryModal extends BaseModal {
   }
 
   protected onClose(): void {
+    this.search = "";
+    this.previewingCosmetic = null;
+    this.pages.reset();
+  }
+
+  // A query typed for skins rarely matches anything in flags, so a stale
+  // search reads as an empty tab. Reset it whenever the category changes.
+  protected onTabEnter(_key: string): void {
     this.search = "";
   }
 
@@ -707,14 +841,17 @@ export class InventoryModal extends BaseModal {
   }
 
   private showSelectedPopup(resolved: ResolvedCosmetic) {
+    this.showMessage(
+      translateText("inventory.selected_cosmetic", {
+        name: cosmeticSelectionLabel(resolved),
+      }),
+    );
+  }
+
+  private showMessage(message: string) {
     window.dispatchEvent(
       new CustomEvent("show-message", {
-        detail: {
-          message: translateText("inventory.selected_cosmetic", {
-            name: cosmeticSelectionLabel(resolved),
-          }),
-          duration: 2000,
-        },
+        detail: { message, duration: 2000 },
       }),
     );
   }

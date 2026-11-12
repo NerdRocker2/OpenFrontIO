@@ -1,8 +1,5 @@
 {
-  "categories": [
-    "featured",
-    "arcade"
-  ],
+  "categories": ["featured", "arcade"],
   "id": "Dynamite",
   "map": {
     "height": 2160,
@@ -19,166 +16,105 @@
     "num_land_tiles": 962293,
     "width": 1920
   },
-  "multiplayer_frequency": 6,
   "name": "Dynamite",
   "nations": [
     {
-      "coordinates": [
-        370,
-        378
-      ],
+      "coordinates": [370, 378],
       "flag": "",
       "name": "Kaboom Town"
     },
     {
-      "coordinates": [
-        990,
-        281
-      ],
+      "coordinates": [990, 281],
       "flag": "",
       "name": "Crater Lake"
     },
     {
-      "coordinates": [
-        880,
-        769
-      ],
+      "coordinates": [880, 769],
       "flag": "",
       "name": "Gunpowder Falls"
     },
     {
-      "coordinates": [
-        884,
-        1329
-      ],
+      "coordinates": [884, 1329],
       "flag": "",
       "name": "TNT Terrace"
     },
     {
-      "coordinates": [
-        372,
-        1037
-      ],
+      "coordinates": [372, 1037],
       "flag": "",
       "name": "Ignition Point"
     },
     {
-      "coordinates": [
-        380,
-        1695
-      ],
+      "coordinates": [380, 1695],
       "flag": "",
       "name": "Fuse City"
     },
     {
-      "coordinates": [
-        2900,
-        237
-      ],
+      "coordinates": [2900, 237],
       "flag": "",
       "name": "Blastville"
     },
     {
-      "coordinates": [
-        3517,
-        376
-      ],
+      "coordinates": [3517, 376],
       "flag": "",
       "name": "Nitro Heights"
     },
     {
-      "coordinates": [
-        3011,
-        775
-      ],
+      "coordinates": [3011, 775],
       "flag": "",
       "name": "Detonator Bay"
     },
     {
-      "coordinates": [
-        3512,
-        1039
-      ],
+      "coordinates": [3512, 1039],
       "flag": "",
       "name": "Roadrunner Ridge"
     },
     {
-      "coordinates": [
-        3005,
-        1332
-      ],
+      "coordinates": [3005, 1332],
       "flag": "",
       "name": "Pyro Peak"
     },
     {
-      "coordinates": [
-        3505,
-        1701
-      ],
+      "coordinates": [3505, 1701],
       "flag": "",
       "name": "ACME Hills"
     },
     {
-      "coordinates": [
-        2833,
-        1873
-      ],
+      "coordinates": [2833, 1873],
       "flag": "",
       "name": "Coyote Flats"
     },
     {
-      "coordinates": [
-        1641,
-        511
-      ],
+      "coordinates": [1641, 511],
       "flag": "",
       "name": "Boom Town"
     },
     {
-      "coordinates": [
-        2261,
-        511
-      ],
+      "coordinates": [2261, 511],
       "flag": "",
       "name": "Powder Keg"
     },
     {
-      "coordinates": [
-        1579,
-        805
-      ],
+      "coordinates": [1579, 805],
       "flag": "",
       "name": "Spark Gap"
     },
     {
-      "coordinates": [
-        2310,
-        805
-      ],
+      "coordinates": [2310, 805],
       "flag": "",
       "name": "Concussion Cove"
     },
     {
-      "coordinates": [
-        1941,
-        1261
-      ],
+      "coordinates": [1941, 1261],
       "flag": "",
       "name": "Wile E. Nation"
     },
     {
-      "coordinates": [
-        1579,
-        1424
-      ],
+      "coordinates": [1579, 1424],
       "flag": "",
       "name": "Meep Meep Meadows"
     },
     {
-      "coordinates": [
-        2310,
-        1424
-      ],
+      "coordinates": [2310, 1424],
       "flag": "",
       "name": "Sulfur Springs"
     }

@@ -1,14 +1,20 @@
+// @vitest-environment jsdom
 import {
+  ACTIVE_LOADOUT_KEY,
   CROWN_KEY,
   EFFECTS_KEY,
+  FAVORITE_EMOJIS_KEY,
   FLAG_KEY,
+  LOADOUTS_KEY,
+  MAX_LOADOUTS,
   PATTERN_KEY,
   PLAYER_STATS_COLUMNS_KEY,
   TEAM_STATS_COLUMNS_KEY,
   USER_SETTINGS_CHANGED_EVENT,
   UserSettings,
   getDefaultKeybinds,
-} from "../src/core/game/UserSettings";
+  keysMayBeShared,
+} from "../src/client/UserSettings";
 
 // UserSettings keeps a static in-memory cache and the active player id; reset
 // both so each test reads fresh from the (cleared) localStorage as logged out.
@@ -21,6 +27,26 @@ function resetUserSettingsState() {
   statics.cache.clear();
   statics.playerId = null;
 }
+
+describe("UserSettings random name style", () => {
+  beforeEach(resetUserSettingsState);
+
+  it("defaults to Anon, including for an unknown stored style", () => {
+    expect(new UserSettings().randomNameStyle()).toBe("anon");
+    resetUserSettingsState();
+    localStorage.setItem("settings.randomNameStyle", "unknown");
+    expect(new UserSettings().randomNameStyle()).toBe("anon");
+  });
+
+  it("persists both choices across settings instances", () => {
+    const settings = new UserSettings();
+    for (const style of ["tribe", "anon"] as const) {
+      settings.setRandomNameStyle(style);
+      expect(new UserSettings().randomNameStyle()).toBe(style);
+      expect(localStorage.getItem("settings.randomNameStyle")).toBe(style);
+    }
+  });
+});
 
 describe("UserSettings effect selection", () => {
   beforeEach(resetUserSettingsState);
@@ -74,13 +100,286 @@ describe("UserSettings effect selection", () => {
   });
 });
 
+describe("UserSettings tutorial dismissal", () => {
+  beforeEach(resetUserSettingsState);
+
+  it("defaults to not dismissed and persists dismissal", () => {
+    const s = new UserSettings();
+    expect(s.tutorialDismissed()).toBe(false);
+
+    s.setTutorialDismissed(true);
+    expect(s.tutorialDismissed()).toBe(true);
+    expect(localStorage.getItem("settings.tutorialDismissed")).toBe("true");
+
+    s.setTutorialDismissed(false);
+    expect(s.tutorialDismissed()).toBe(false);
+  });
+});
+
+describe("UserSettings lobby start alerts", () => {
+  beforeEach(resetUserSettingsState);
+
+  it("defaults off and round-trips both choices", () => {
+    const settings = new UserSettings();
+    expect(settings.lobbyStartAlerts()).toBe(false);
+
+    settings.setLobbyStartAlerts(true);
+    expect(settings.lobbyStartAlerts()).toBe(true);
+    expect(localStorage.getItem("settings.lobbyStartAlerts")).toBe("true");
+
+    settings.setLobbyStartAlerts(false);
+    expect(settings.lobbyStartAlerts()).toBe(false);
+    expect(localStorage.getItem("settings.lobbyStartAlerts")).toBe("false");
+  });
+
+  it("falls back to off for malformed storage", () => {
+    localStorage.setItem("settings.lobbyStartAlerts", "enabled");
+    expect(new UserSettings().lobbyStartAlerts()).toBe(false);
+  });
+});
+
+describe("UserSettings cosmetic loadouts", () => {
+  beforeEach(resetUserSettingsState);
+
+  function equipSample(s: UserSettings) {
+    s.setSelectedPatternName("pattern:stripes:red");
+    s.setFlag("flag:owned_flag");
+    s.setSelectedCrownName("owned_crown");
+    s.setSelectedEffectName("transportShipTrail", "spectrum");
+  }
+
+  it("saves the equipped cosmetics under a name", () => {
+    const s = new UserSettings();
+    equipSample(s);
+    expect(s.saveLoadout("main")).toEqual({
+      name: "main",
+      pattern: "pattern:stripes:red",
+      flag: "flag:owned_flag",
+      crown: "owned_crown",
+      effects: { transportShipTrail: "spectrum" },
+    });
+    expect(s.getLoadouts().map((loadout) => loadout.name)).toEqual(["main"]);
+  });
+
+  it("trims the name and rejects a blank one", () => {
+    const s = new UserSettings();
+    expect(s.saveLoadout("  main  ")?.name).toBe("main");
+    expect(s.saveLoadout("   ")).toBeNull();
+    expect(s.getLoadouts()).toHaveLength(1);
+  });
+
+  it("saving an existing name replaces it in place", () => {
+    const s = new UserSettings();
+    equipSample(s);
+    s.saveLoadout("main");
+    s.saveLoadout("second");
+    s.setSelectedCrownName("other_crown");
+    s.saveLoadout("main");
+    expect(s.getLoadouts().map((loadout) => loadout.name)).toEqual([
+      "main",
+      "second",
+    ]);
+    expect(s.getLoadout("main")?.crown).toBe("other_crown");
+  });
+
+  it("adds numbered slots, filling the lowest free number", () => {
+    const s = new UserSettings();
+    equipSample(s);
+    expect(s.addLoadout()?.name).toBe("01");
+    expect(s.addLoadout()?.name).toBe("02");
+    expect(s.addLoadout()?.name).toBe("03");
+    s.deleteLoadout("02");
+    expect(s.addLoadout()?.name).toBe("02");
+    expect(
+      s
+        .getLoadouts()
+        .map((loadout) => loadout.name)
+        .sort(),
+    ).toEqual(["01", "02", "03"]);
+  });
+
+  it("a new slot holds what's equipped and becomes active", () => {
+    const s = new UserSettings();
+    equipSample(s);
+    const added = s.addLoadout()!;
+    expect(added.crown).toBe("owned_crown");
+    expect(s.getActiveLoadout()).toBe("01");
+  });
+
+  it("refuses to add more than MAX_LOADOUTS", () => {
+    const s = new UserSettings();
+    for (let i = 0; i < MAX_LOADOUTS; i++)
+      expect(s.addLoadout()).not.toBeNull();
+    expect(s.addLoadout()).toBeNull();
+    expect(s.getLoadouts()).toHaveLength(MAX_LOADOUTS);
+  });
+
+  it("mirrors later equip changes into the active slot", () => {
+    const s = new UserSettings();
+    s.addLoadout();
+    s.setSelectedCrownName("owned_crown");
+    expect(s.getLoadout("01")?.crown).toBe("owned_crown");
+    s.setFlag("flag:owned_flag");
+    s.setSelectedEffectName("transportShipTrail", "spectrum");
+    expect(s.getLoadout("01")).toMatchObject({
+      crown: "owned_crown",
+      flag: "flag:owned_flag",
+      effects: { transportShipTrail: "spectrum" },
+    });
+    s.clearFlag(true);
+    expect(s.getLoadout("01")?.flag).toBeNull();
+  });
+
+  it("leaves saved slots alone when none is active", () => {
+    const s = new UserSettings();
+    equipSample(s);
+    s.addLoadout();
+    s.setActiveLoadout(null);
+    s.setSelectedCrownName("other_crown");
+    expect(s.getLoadout("01")?.crown).toBe("owned_crown");
+  });
+
+  it("applying a slot equips it without mirroring back into it", () => {
+    const s = new UserSettings();
+    equipSample(s);
+    s.addLoadout(); // 01 holds the sample
+    // Step off 01 first: while it is active it mirrors the undressing below.
+    s.setActiveLoadout(null);
+    s.unequipAll();
+    s.addLoadout(); // 02 holds nothing
+
+    expect(s.applyLoadout("01")).toBe(true);
+    expect(s.getActiveLoadout()).toBe("01");
+    expect(localStorage.getItem(PATTERN_KEY)).toBe("pattern:stripes:red");
+    expect(s.getFlag()).toBe("flag:owned_flag");
+    expect(s.getSelectedCrownName()).toBe("owned_crown");
+    expect(s.getSelectedEffects()).toEqual({ transportShipTrail: "spectrum" });
+    // 02 was active while 01 was applied; it must not have absorbed the change.
+    expect(s.getLoadout("02")).toMatchObject({ crown: null, flag: null });
+
+    expect(s.applyLoadout("02")).toBe(true);
+    expect(localStorage.getItem(PATTERN_KEY)).toBeNull();
+    expect(s.getFlag()).toBeNull();
+    expect(s.getSelectedCrownName()).toBeNull();
+    expect(s.getSelectedEffects()).toEqual({});
+    expect(s.getLoadout("01")?.crown).toBe("owned_crown");
+  });
+
+  it("applying an unknown loadout changes nothing", () => {
+    const s = new UserSettings();
+    equipSample(s);
+    expect(s.applyLoadout("missing")).toBe(false);
+    expect(s.getSelectedCrownName()).toBe("owned_crown");
+    expect(s.getActiveLoadout()).toBeNull();
+  });
+
+  it("deletes a slot, clearing the active pointer with it", () => {
+    const s = new UserSettings();
+    equipSample(s);
+    s.addLoadout();
+    s.deleteLoadout("01");
+    expect(s.getLoadouts()).toEqual([]);
+    expect(localStorage.getItem(LOADOUTS_KEY)).toBeNull();
+    expect(s.getActiveLoadout()).toBeNull();
+    // Deleting a slot does not undress the player.
+    expect(s.getSelectedCrownName()).toBe("owned_crown");
+  });
+
+  it("ignores an active pointer to a loadout that no longer exists", () => {
+    const s = new UserSettings();
+    s.addLoadout();
+    localStorage.setItem(ACTIVE_LOADOUT_KEY, "07");
+    (
+      UserSettings as unknown as { cache: Map<string, string | null> }
+    ).cache.delete(ACTIVE_LOADOUT_KEY);
+    expect(s.getActiveLoadout()).toBeNull();
+    s.setSelectedCrownName("owned_crown");
+    expect(s.getLoadout("01")?.crown).toBeNull();
+  });
+
+  it("unequipAll clears every slot and empties the active loadout with it", () => {
+    const s = new UserSettings();
+    equipSample(s);
+    s.addLoadout();
+    s.unequipAll();
+    expect(localStorage.getItem(PATTERN_KEY)).toBeNull();
+    expect(s.getFlag()).toBeNull();
+    expect(s.getSelectedCrownName()).toBeNull();
+    expect(s.getSelectedEffects()).toEqual({});
+    expect(s.getLoadout("01")).toMatchObject({
+      pattern: null,
+      flag: null,
+      crown: null,
+      effects: {},
+    });
+  });
+
+  it("emits change events for each slot when applying a loadout", () => {
+    const s = new UserSettings();
+    equipSample(s);
+    s.saveLoadout("main");
+    const seen: string[] = [];
+    const keys = [PATTERN_KEY, FLAG_KEY, CROWN_KEY, EFFECTS_KEY];
+    const listeners = keys.map((key) => {
+      const listener = () => seen.push(key);
+      window.addEventListener(
+        `${USER_SETTINGS_CHANGED_EVENT}:${key}`,
+        listener,
+      );
+      return { key, listener };
+    });
+    s.applyLoadout("main");
+    for (const { key, listener } of listeners) {
+      window.removeEventListener(
+        `${USER_SETTINGS_CHANGED_EVENT}:${key}`,
+        listener,
+      );
+    }
+    expect(new Set(seen)).toEqual(new Set(keys));
+  });
+
+  it("drops malformed entries and corrupt storage", () => {
+    localStorage.setItem(LOADOUTS_KEY, "not json");
+    expect(new UserSettings().getLoadouts()).toEqual([]);
+    resetUserSettingsState();
+    localStorage.setItem(
+      LOADOUTS_KEY,
+      JSON.stringify([
+        { name: "ok", pattern: "pattern:stripes", effects: { a: "b", c: 3 } },
+        { pattern: "pattern:stripes" },
+        "nope",
+      ]),
+    );
+    expect(new UserSettings().getLoadouts()).toEqual([
+      {
+        name: "ok",
+        pattern: "pattern:stripes",
+        flag: null,
+        crown: null,
+        effects: { a: "b" },
+      },
+    ]);
+  });
+
+  it("scopes loadouts to the logged-in player", () => {
+    const s = new UserSettings();
+    s.setSelectedCrownName("owned_crown");
+    UserSettings.setPlayerId("player-1");
+    s.saveLoadout("main");
+    expect(localStorage.getItem(`${LOADOUTS_KEY}:player-1`)).not.toBeNull();
+    UserSettings.setPlayerId("player-2");
+    expect(s.getLoadouts()).toEqual([]);
+    UserSettings.setPlayerId("player-1");
+    expect(s.getLoadouts().map((loadout) => loadout.name)).toEqual(["main"]);
+  });
+});
+
 describe("UserSettings stats columns", () => {
   beforeEach(resetUserSettingsState);
 
   it("returns defaults when nothing is stored", () => {
-    // The player table opens with the clan tag shown; a team has no tag.
+    // The clan column is opt-in, so both tables open with the same stats.
     expect(new UserSettings().statsColumns("player")).toEqual([
-      "clan",
       "tiles",
       "gold",
       "maxtroops",
@@ -118,7 +417,6 @@ describe("UserSettings stats columns", () => {
   it("falls back to defaults on corrupt JSON", () => {
     localStorage.setItem(PLAYER_STATS_COLUMNS_KEY, "not json");
     expect(new UserSettings().statsColumns("player")).toEqual([
-      "clan",
       "tiles",
       "gold",
       "maxtroops",
@@ -128,7 +426,6 @@ describe("UserSettings stats columns", () => {
   it("falls back to defaults when no valid ids remain", () => {
     localStorage.setItem(PLAYER_STATS_COLUMNS_KEY, JSON.stringify(["bogus"]));
     expect(new UserSettings().statsColumns("player")).toEqual([
-      "clan",
       "tiles",
       "gold",
       "maxtroops",
@@ -314,12 +611,172 @@ describe("getDefaultKeybinds", () => {
     const keybinds = getDefaultKeybinds(false);
     expect(keybinds.boxSelectWarships).toBe("ShiftLeft");
     expect(keybinds.resetGfx).toBe("KeyR");
-    expect(keybinds.selectAllWarships).toBe("KeyF");
+    expect(keybinds.performanceOverlay).toBe("Shift+KeyD");
+    expect(keybinds.selectAllWarships).toBe("KeyX");
+    expect(keybinds.emojiMenu).toBe("KeyF");
+    expect(keybinds.quickChat).toBe("KeyR");
+    expect(keybinds.playerPanel).toBe("KeyI");
+    expect(keybinds.targetPlayer).toBe("KeyN");
     expect(keybinds.buildMenuModifier).toBe("ControlLeft");
+    expect(keybinds.moveUpArrow).toBe("ArrowUp");
+    expect(keybinds.moveLeftArrow).toBe("ArrowLeft");
+    expect(keybinds.moveDownArrow).toBe("ArrowDown");
+    expect(keybinds.moveRightArrow).toBe("ArrowRight");
+    expect(keybinds.zoomOutMinus).toBe("Minus");
+    expect(keybinds.zoomOutNumpad).toBe("NumpadSubtract");
+    expect(keybinds.zoomInEqual).toBe("Equal");
+    expect(keybinds.zoomInNumpad).toBe("NumpadAdd");
+  });
+
+  it("never gives two actions the same letter key, except shared pairs", () => {
+    const binds = Object.entries(getDefaultKeybinds(false)).filter(([, k]) =>
+      /^Key[A-Z]$/.test(k),
+    );
+    for (const [a, keyA] of binds) {
+      for (const [b, keyB] of binds) {
+        if (a !== b && keyA === keyB) {
+          expect(keysMayBeShared(a, b), `${a} and ${b}`).toBe(true);
+        }
+      }
+    }
+    const keybinds = getDefaultKeybinds(false);
+    expect(keybinds.buildScrollModifier).toBe("AltLeft");
+    expect(keybinds.emojiMenuModifier).toBe("AltLeft");
+    // Note: this is related to user_setting.graphics_refresh_modifier, not the actual alt key.
+    expect(keybinds.altKey).toBe("AltLeft");
+    const sharedModifierPair = ["buildScrollModifier", "altKey"] as const;
+    expect(keysMayBeShared(...sharedModifierPair, "AltRight")).toBe(true);
+    expect(keysMayBeShared(...sharedModifierPair, "ShiftRight")).toBe(false);
   });
 
   it("handles Mac-specific modifier keys correctly", () => {
     const macKeybinds = getDefaultKeybinds(true);
     expect(macKeybinds.buildMenuModifier).toBe("MetaLeft");
+  });
+});
+
+describe("UserSettings audio volumes", () => {
+  beforeEach(resetUserSettingsState);
+
+  // The rest of the audio settings surface is covered by the branch's own
+  // tests/UserSettings.audio.test.ts; only clamping on read is new here.
+  it("clamps an out-of-range legacy value on read", () => {
+    // setAudioVolume clamps, but the legacy keys it reads through to were
+    // never bounded, and the tab renders 0-100.
+    localStorage.setItem("settings.soundEffectsVolume", "1.5");
+    expect(new UserSettings().audioVolume("effects")).toBe(1);
+
+    localStorage.setItem("settings.backgroundMusicVolume", "-1");
+    expect(new UserSettings().audioVolume("music")).toBe(0);
+  });
+});
+
+describe("UserSettings replay viewer", () => {
+  beforeEach(resetUserSettingsState);
+
+  it("is on by default, and remembers being turned off", () => {
+    expect(new UserSettings().replayViewer()).toBe(true);
+    new UserSettings().setReplayViewer(false);
+    expect(new UserSettings().replayViewer()).toBe(false);
+    new UserSettings().setReplayViewer(true);
+    expect(new UserSettings().replayViewer()).toBe(true);
+  });
+});
+
+describe("UserSettings favorite emojis", () => {
+  beforeEach(resetUserSettingsState);
+
+  it("has no favorites by default", () => {
+    expect(new UserSettings().favoriteEmojis()).toEqual([]);
+  });
+
+  it("round-trips slots, keeping empty ones in place", () => {
+    new UserSettings().setFavoriteEmojis(["👍", null, "💀"]);
+    expect(new UserSettings().favoriteEmojis()).toEqual(["👍", null, "💀"]);
+  });
+
+  it("reads unknown emojis as empty slots and corrupt storage as none", () => {
+    localStorage.setItem(FAVORITE_EMOJIS_KEY, JSON.stringify(["🍕", "👍"]));
+    expect(new UserSettings().favoriteEmojis()).toEqual([null, "👍"]);
+
+    resetUserSettingsState();
+    localStorage.setItem(FAVORITE_EMOJIS_KEY, "not json");
+    expect(new UserSettings().favoriteEmojis()).toEqual([]);
+  });
+});
+
+describe("UserSettings keybinds with new defaults", () => {
+  beforeEach(resetUserSettingsState);
+
+  const store = (binds: Record<string, unknown>) =>
+    localStorage.setItem("settings.keybinds", JSON.stringify(binds));
+
+  it("unbinds a default that lands on a key the player already uses", () => {
+    store({ boatAttack: { value: "KeyX", key: "x" } });
+    const keybinds = new UserSettings().keybinds(false);
+
+    expect(keybinds.boatAttack).toBe("KeyX");
+    expect(keybinds.selectAllWarships).toBeUndefined();
+    // Saved as unbound, so the settings modal shows it that way too.
+    expect(new UserSettings().parsedUserKeybinds().selectAllWarships).toEqual({
+      value: "Null",
+      key: "",
+    });
+  });
+
+  it("keeps a player's own F for select-all-warships over the emoji menu", () => {
+    store({ selectAllWarships: { value: "KeyF", key: "f" } });
+    const keybinds = new UserSettings().keybinds(false);
+
+    expect(keybinds.selectAllWarships).toBe("KeyF");
+    expect(keybinds.emojiMenu).toBeUndefined();
+  });
+
+  it("leaves defaults alone when nothing clashes", () => {
+    store({ boatAttack: { value: "KeyH", key: "h" } });
+    const keybinds = new UserSettings().keybinds(false);
+
+    expect(keybinds.emojiMenu).toBe("KeyF");
+    expect(keybinds.selectAllWarships).toBe("KeyX");
+    expect(
+      new UserSettings().parsedUserKeybinds().selectAllWarships,
+    ).toBeUndefined();
+  });
+
+  it("unbinds the new arrow and zoom defaults when saved bindings already use their keys", () => {
+    store({
+      boatAttack: { value: "ArrowUp", key: "ArrowUp" },
+      attackRatioUp: { value: "Equal", key: "=" },
+    });
+    const settings = new UserSettings();
+    const keybinds = settings.keybinds(false);
+
+    expect(keybinds.boatAttack).toBe("ArrowUp");
+    expect(keybinds.moveUpArrow).toBeUndefined();
+    expect(keybinds.attackRatioUp).toBe("Equal");
+    expect(keybinds.zoomInEqual).toBeUndefined();
+    expect(settings.parsedUserKeybinds().moveUpArrow).toEqual({
+      value: "Null",
+      key: "",
+    });
+    expect(settings.parsedUserKeybinds().zoomInEqual).toEqual({
+      value: "Null",
+      key: "",
+    });
+  });
+
+  it("keeps quick chat on R when the player saved reset graphics there", () => {
+    store({ resetGfx: { value: "KeyR", key: "r" } });
+    const keybinds = new UserSettings().keybinds(false);
+
+    expect(keybinds.resetGfx).toBe("KeyR");
+    expect(keybinds.quickChat).toBe("KeyR");
+  });
+
+  it("lets modifier keys stay shared", () => {
+    store({ altKey: { value: "AltLeft", key: "Alt" } });
+    expect(new UserSettings().keybinds(false).emojiMenuModifier).toBe(
+      "AltLeft",
+    );
   });
 });

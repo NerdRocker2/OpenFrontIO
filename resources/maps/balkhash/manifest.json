@@ -37,7 +37,7 @@
       "name": "Turkestan Autonomy"
     }
   ],
-  "categories": ["new", "asia"],
+  "categories": ["asia"],
   "id": "Balkhash",
   "map": {
     "height": 1500,
@@ -54,7 +54,6 @@
     "num_land_tiles": 584289,
     "width": 1650
   },
-  "multiplayer_frequency": 4,
   "name": "Balkhash",
   "nations": [
     {

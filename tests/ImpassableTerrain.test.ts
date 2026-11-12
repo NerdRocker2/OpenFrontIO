@@ -1,27 +1,24 @@
-import { encodeTerrainTile } from "../src/client/render/gl/utils/ColorUtils";
-import { AttackExecution } from "../src/core/execution/AttackExecution";
-import { NationAllianceBehavior } from "../src/core/execution/nation/NationAllianceBehavior";
-import { NationEmojiBehavior } from "../src/core/execution/nation/NationEmojiBehavior";
-import { NukeExecution } from "../src/core/execution/NukeExecution";
-import { AiAttackBehavior } from "../src/core/execution/utils/AiAttackBehavior";
+import { TileRef } from "@openfront/engine-api/game/GameMap";
 import {
   Difficulty,
-  Game,
   GameMapSize,
   GameMapType,
   GameMode,
   GameType,
-  Player,
   PlayerInfo,
   PlayerType,
   TerrainType,
   UnitType,
-} from "../src/core/game/Game";
-import { createGame } from "../src/core/game/GameImpl";
-import { genTerrainFromBin } from "../src/core/game/TerrainMapLoader";
-import { UserSettings } from "../src/core/game/UserSettings";
-import { PseudoRandom } from "../src/core/PseudoRandom";
-import { GameConfig } from "../src/core/Schemas";
+} from "@openfront/engine-api/game/GameTypes";
+import { GameConfig } from "@openfront/engine-api/Schemas";
+import { genTerrainFromBin } from "@openfront/engine-lib/game/TerrainMapLoader";
+import { AttackExecution } from "@openfront/engine/execution/AttackExecution";
+import { NukeExecution } from "@openfront/engine/execution/NukeExecution";
+import { PlayerExecution } from "@openfront/engine/execution/PlayerExecution";
+import { Game, Player } from "@openfront/engine/game/Game";
+import { createGame } from "@openfront/engine/game/GameImpl";
+import { PathFinding } from "@openfront/engine/pathfinding/PathFinder";
+import { encodeTerrainTile } from "../src/client/render/gl/utils/ColorUtils";
 import { TestConfig } from "./util/TestConfig";
 import { executeTicks } from "./util/utils";
 
@@ -43,13 +40,19 @@ function buildTerrain(
   height: number,
   wallX: number,
   wallWidth: number,
+  wallY: [number, number] = [0, height],
 ): { data: Uint8Array; numLandTiles: number } {
   const data = new Uint8Array(width * height);
   let numLandTiles = 0;
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const idx = y * width + x;
-      if (x >= wallX && x < wallX + wallWidth) {
+      if (
+        x >= wallX &&
+        x < wallX + wallWidth &&
+        y >= wallY[0] &&
+        y < wallY[1]
+      ) {
         data[idx] = IMPASSABLE;
         // Impassable tiles are NOT counted as land tiles.
       } else {
@@ -61,11 +64,17 @@ function buildTerrain(
   return { data, numLandTiles };
 }
 
-async function setupImpassableGame(humans: PlayerInfo[] = []): Promise<Game> {
+async function setupImpassableGame(
+  humans: PlayerInfo[] = [],
+  wallY: [number, number] = [0, MAP_H],
+): Promise<Game> {
   vi.spyOn(console, "debug").mockImplementation(() => {});
 
-  const full = buildTerrain(MAP_W, MAP_H, WALL_X, WALL_WIDTH);
-  const mini = buildTerrain(MINI_W, MINI_H, Math.floor(WALL_X / 2), 1);
+  const full = buildTerrain(MAP_W, MAP_H, WALL_X, WALL_WIDTH, wallY);
+  const mini = buildTerrain(MINI_W, MINI_H, Math.floor(WALL_X / 2), 1, [
+    Math.floor(wallY[0] / 2),
+    Math.ceil(wallY[1] / 2),
+  ]);
 
   const gameMap = await genTerrainFromBin(
     { width: MAP_W, height: MAP_H, num_land_tiles: full.numLandTiles },
@@ -91,7 +100,7 @@ async function setupImpassableGame(humans: PlayerInfo[] = []): Promise<Game> {
     instantBuild: true,
     randomSpawn: false,
   };
-  const config = new TestConfig(gameConfig, new UserSettings(), false);
+  const config = new TestConfig(gameConfig, false);
 
   const game = createGame(humans, [], gameMap, miniGameMap, config);
   game.endSpawnPhase();
@@ -153,6 +162,76 @@ describe("Impassable Terrain", () => {
   test("conquer succeeds on normal land", () => {
     expect(() => player.conquer(game.ref(50, 50))).not.toThrow();
     expect(game.hasOwner(game.ref(50, 50))).toBe(true);
+  });
+
+  // ── Map edge / enclosure ─────────────────────────────────────────────
+
+  test("isOnEdgeOfMap is true next to impassable terrain, false elsewhere", () => {
+    expect(game.isOnEdgeOfMap(game.ref(WALL_X - 1, 50))).toBe(true);
+    expect(game.isOnEdgeOfMap(game.ref(WALL_X + WALL_WIDTH, 50))).toBe(true);
+    expect(game.isOnEdgeOfMap(game.ref(WALL_X - 2, 50))).toBe(false);
+    expect(game.isOnEdgeOfMap(game.ref(50, 50))).toBe(false);
+    expect(game.isOnEdgeOfMap(game.ref(0, 50))).toBe(true);
+    expect(game.isOnEdgeOfMap(game.ref(50, MAP_H - 1))).toBe(true);
+  });
+
+  test("cluster hugging the impassable wall is not annexed", async () => {
+    // Short wall segment so the enclosure flood fill cannot walk along
+    // unowned impassable tiles to the real map edge; every escape route
+    // from the pocket must be through enemy-owned land or the wall.
+    const g = await setupImpassableGame(
+      [
+        new PlayerInfo("p", PlayerType.Human, "c1", "p_id"),
+        new PlayerInfo("o", PlayerType.Human, "c2", "o_id"),
+      ],
+      [45, 58],
+    );
+    const p = g.player("p_id");
+    const o = g.player("o_id");
+    g.addExecution(new PlayerExecution(p));
+    g.addExecution(new PlayerExecution(o));
+
+    // Player's main (largest) cluster, far from the wall.
+    for (let x = 10; x < 20; x++) {
+      for (let y = 10; y < 20; y++) {
+        p.conquer(g.ref(x, y));
+      }
+    }
+    // Small pocket against the wall; the wall is its fourth side.
+    const pocket: TileRef[] = [];
+    for (let x = WALL_X - 3; x < WALL_X; x++) {
+      for (let y = 50; y < 53; y++) {
+        pocket.push(g.ref(x, y));
+        p.conquer(g.ref(x, y));
+      }
+    }
+    // Other player owns everything around the pocket and the wall.
+    for (let x = WALL_X - 10; x < WALL_X + 10; x++) {
+      for (let y = 40; y < 63; y++) {
+        const t = g.ref(x, y);
+        if (g.ownerID(t) === 0 && !g.isImpassable(t)) o.conquer(t);
+      }
+    }
+
+    // Mirror NoInverseAnnexation: let cluster calc run, then change tiles.
+    executeTicks(g, 20);
+    o.conquer(g.ref(WALL_X - 10, 39));
+    p.conquer(g.ref(20, 10));
+    executeTicks(g, 50);
+
+    for (const t of pocket) {
+      expect(g.ownerID(t)).toBe(p.smallID());
+    }
+  });
+
+  // ── Rail pathfinding ─────────────────────────────────────────────────
+
+  test("rail pathfinding does not route through impassable terrain", () => {
+    const path = PathFinding.Rail(game).findPath(
+      game.ref(WALL_X - 10, 50),
+      game.ref(WALL_X + 10, 50),
+    );
+    expect(path).toBeNull();
   });
 
   // ── Attacks ──────────────────────────────────────────────────────────
@@ -318,86 +397,25 @@ describe("Impassable Terrain", () => {
     expect(out[2]).toBe(138);
   });
 
-  // ── Nation AI: attack behavior near impassable terrain ───────────────
+  // ── Nation AI: nearby() next to impassable terrain ───────────────────
 
-  describe("Nation AI attack behavior near impassable terrain", () => {
-    let nation: Player;
-    let enemy: Player;
-
-    beforeEach(() => {
-      // Create a nation player that owns tiles adjacent to the impassable
-      // wall AND directly adjacent to the enemy (no TerraNullius gap).
-      nation = game.player("player_id");
-      enemy = game.player("other_id");
-
-      // Nation owns the two columns right next to the wall (full height to
-      // avoid any unowned passable tiles at the top/bottom borders).
+  describe("nearby() next to impassable terrain", () => {
+    test("does not report impassable tiles as TerraNullius", () => {
+      // The nation holds the two columns next to the wall, the enemy the five
+      // west of it (full height, so no unowned passable tile borders the nation).
+      const nation = game.player("player_id");
+      const enemy = game.player("other_id");
       for (let y = 0; y < MAP_H; y++) {
         nation.conquer(game.ref(WALL_X - 1, y));
         nation.conquer(game.ref(WALL_X - 2, y));
-      }
-      // Enemy owns the five columns to the left of the nation (full height).
-      for (let y = 0; y < MAP_H; y++) {
         for (let x = WALL_X - 7; x <= WALL_X - 3; x++) {
           enemy.conquer(game.ref(x, y));
         }
       }
-      // Give both players plenty of troops — nation is stronger so the
-      // "weakest" strategy will actually attack.
-      nation.addTroops(200000);
-      enemy.addTroops(50000);
-    });
 
-    test("hasNonNukedTerraNullius does not falsely detect impassable tiles as TerraNullius", () => {
-      // The nation borders impassable terrain (the wall at WALL_X).
-      // With the fix, nearby() should NOT include TerraNullius from
-      // impassable tiles, and the nation should be able to attack the enemy.
-      //
-      // Verify the core behavior: nearby() returns the enemy but NOT
-      // TerraNullius (impassable tiles are excluded).
       const nearby = nation.nearby();
-      const hasTerraNullius = nearby.some((n) => !n.isPlayer());
-      const hasEnemy = nearby.some((n) => n === enemy);
-      expect(hasTerraNullius).toBe(false);
-      expect(hasEnemy).toBe(true);
-
-      // Also verify that sendAttack on the enemy works (it creates an
-      // AttackExecution targeting the enemy, not TerraNullius).
-      const emojiBehavior = new NationEmojiBehavior(
-        new PseudoRandom(42),
-        game,
-        nation,
-      );
-      const allianceBehavior = new NationAllianceBehavior(
-        new PseudoRandom(42),
-        game,
-        nation,
-        emojiBehavior,
-      );
-      const attackBehavior = new AiAttackBehavior(
-        new PseudoRandom(42),
-        game,
-        nation,
-        0.0, // triggerRatio — always ready to attack
-        0.0, // reserveRatio — no reserve needed
-        0.0, // expandRatio
-        allianceBehavior,
-        emojiBehavior,
-      );
-
-      // Directly send an attack on the enemy — this should succeed.
-      const sent = attackBehavior.sendAttack(enemy, true);
-      expect(sent).toBe(true);
-
-      // Tick the game so the AttackExecution's init() runs and creates
-      // the actual Attack object on the player.
-      executeTicks(game, 1);
-
-      // The nation should have an outgoing attack targeting the enemy.
-      const attacksOnEnemy = nation
-        .outgoingAttacks()
-        .filter((a) => a.target() === enemy);
-      expect(attacksOnEnemy.length).toBeGreaterThan(0);
+      expect(nearby.some((n) => !n.isPlayer())).toBe(false);
+      expect(nearby).toContain(enemy);
     });
   });
 

@@ -2,6 +2,7 @@ import { html, LitElement } from "lit";
 import { customElement, property } from "lit/decorators.js";
 import type { ClanInfo } from "../../ClanApi";
 import { translateText } from "../../Utils";
+import "../CurrencyDisplay";
 import { translateClanRole } from "./ClanShared";
 
 @customElement("clan-card")
@@ -9,6 +10,9 @@ export class ClanCard extends LitElement {
   @property({ type: Object }) clan!: ClanInfo;
   @property() clanRole?: string;
   @property({ type: Boolean }) pending = false;
+  // Set on cards in the browser's boosted block; rides along on clan-select
+  // so a join from there can be attributed to it.
+  @property() source?: "boosted";
 
   createRenderRoot() {
     return this;
@@ -22,7 +26,7 @@ export class ClanCard extends LitElement {
   private onClick() {
     this.dispatchEvent(
       new CustomEvent("clan-select", {
-        detail: { tag: this.clan.tag },
+        detail: { tag: this.clan.tag, source: this.source },
         bubbles: true,
         composed: true,
       }),
@@ -68,9 +72,11 @@ export class ClanCard extends LitElement {
       >
         <div class="flex items-center gap-4">
           <div
-            class="w-12 h-12 rounded-xl bg-gradient-to-br ${clan.isOpen
-              ? "from-malibu-blue/20 to-aquarius/20"
-              : "from-amber-500/20 to-orange-500/20"} flex items-center justify-center border border-white/10 shrink-0"
+            class="w-12 h-12 rounded-xl bg-gradient-to-br ${
+              clan.isOpen
+                ? "from-malibu-blue/20 to-aquarius/20"
+                : "from-amber-500/20 to-orange-500/20"
+            } flex items-center justify-center border border-white/10 shrink-0"
           >
             <span class="text-white font-bold text-sm">${clan.tag}</span>
           </div>
@@ -78,14 +84,32 @@ export class ClanCard extends LitElement {
             <span class="text-white font-bold truncate block"
               >${clan.name}</span
             >
-            <div class="flex items-center gap-4 mt-1 text-xs text-white/40">
+            <div
+              class="flex items-center flex-wrap gap-x-4 gap-y-1 mt-1 text-xs text-white/40"
+            >
               <span
                 >${translateText("clan_modal.member_count", {
                   count: clan.memberCount ?? 0,
                 })}</span
               >
+              <!-- Balances ride along on the clan payload — no extra request.
+                   Renders nothing when the API reported neither. -->
+              <currency-display
+                compact
+                .hard=${clan.hardBalance ?? null}
+                .soft=${clan.softBalance ?? null}
+              ></currency-display>
             </div>
           </div>
+          ${
+            this.clan.boosted
+              ? html`<span
+                  data-boosted
+                  class="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full shrink-0 bg-malibu-blue/15 text-aquarius border border-malibu-blue/40 shadow-malibu-blue-pill"
+                  >${translateText("clan_modal.boosted")}</span
+                >`
+              : ""
+          }
           ${this.renderBadge()}
           <svg
             xmlns="http://www.w3.org/2000/svg"

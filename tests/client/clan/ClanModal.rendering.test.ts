@@ -168,6 +168,172 @@ describe("ClanModal — rendering", () => {
     });
   });
 
+  describe("browse sort dropdown", () => {
+    it("loads with the random sort, then refetches page 1 with the picked sort and a fresh bucket", async () => {
+      const { fetchClans } = await import("../../../src/client/ClanApi");
+      const fetchMock = fetchClans as ReturnType<typeof vi.fn>;
+      const page = {
+        results: [makeClan({ tag: "OTH", name: "Other Clan" })],
+        total: 1,
+        page: 1,
+        limit: 20,
+        bucket: 42,
+      };
+      fetchMock.mockResolvedValueOnce(page).mockResolvedValueOnce(page);
+      setState(modal, "activeTab" as keyof ClanModal, "browse" as never);
+      await waitForSubComponent(modal, "clan-browse-view");
+
+      expect(fetchMock).toHaveBeenLastCalledWith(
+        undefined,
+        1,
+        undefined,
+        "random",
+        undefined,
+        "all",
+      );
+
+      const select = modal.querySelector(
+        "clan-browse-view [data-browse-sort]",
+      ) as HTMLSelectElement;
+      expect(
+        select.parentElement!.querySelector("[data-chevron] svg"),
+      ).toBeTruthy();
+      const values = Array.from(select.options).map((o) => o.value);
+      expect(values).toEqual([
+        "random",
+        "memberCount",
+        "winScore",
+        "winScoreLow",
+        "createdAt",
+        "softBalance",
+        "name",
+      ]);
+
+      select.value = "winScore";
+      select.dispatchEvent(new Event("change"));
+      await vi.waitFor(() =>
+        expect(fetchMock).toHaveBeenLastCalledWith(
+          undefined,
+          1,
+          undefined,
+          "winScore",
+          undefined,
+          "all",
+        ),
+      );
+    });
+
+    it("filters to open or invite-only clans, back on page 1 with a fresh bucket", async () => {
+      const { fetchClans } = await import("../../../src/client/ClanApi");
+      const fetchMock = fetchClans as ReturnType<typeof vi.fn>;
+      const page = {
+        results: [makeClan({ tag: "OTH", name: "Other Clan" })],
+        total: 1,
+        page: 1,
+        limit: 20,
+        bucket: 42,
+      };
+      fetchMock
+        .mockResolvedValueOnce(page)
+        .mockResolvedValueOnce(page)
+        .mockResolvedValueOnce(page);
+      setState(modal, "activeTab" as keyof ClanModal, "browse" as never);
+      await waitForSubComponent(modal, "clan-browse-view");
+
+      const filter = modal.querySelector(
+        "clan-browse-view [data-browse-filter]",
+      ) as HTMLSelectElement;
+      expect(filter.getAttribute("aria-label")).toBe(
+        "clan_modal.filter_browse_label",
+      );
+      expect(
+        filter.parentElement!.querySelector("[data-chevron] svg"),
+      ).toBeTruthy();
+      expect(Array.from(filter.options).map((o) => o.value)).toEqual([
+        "all",
+        "open",
+        "inviteOnly",
+      ]);
+      expect(filter.value).toBe("all");
+
+      for (const value of ["inviteOnly", "open"] as const) {
+        filter.value = value;
+        filter.dispatchEvent(new Event("change"));
+        await vi.waitFor(() =>
+          expect(fetchMock).toHaveBeenLastCalledWith(
+            undefined,
+            1,
+            undefined,
+            "random",
+            undefined,
+            value,
+          ),
+        );
+      }
+    });
+
+    it("pages with the bucket of the last response", async () => {
+      const { fetchClans } = await import("../../../src/client/ClanApi");
+      const fetchMock = fetchClans as ReturnType<typeof vi.fn>;
+      const page = {
+        results: [makeClan({ tag: "OTH", name: "Other Clan" })],
+        total: 40,
+        page: 1,
+        limit: 20,
+        bucket: 42,
+      };
+      fetchMock.mockResolvedValueOnce(page).mockResolvedValueOnce(page);
+      setState(modal, "activeTab" as keyof ClanModal, "browse" as never);
+      await waitForSubComponent(modal, "clan-browse-view");
+      await vi.waitFor(() => expect(modal.textContent).toContain("1 / 2"));
+
+      const next = Array.from(
+        modal.querySelectorAll<HTMLButtonElement>("clan-browse-view button"),
+      ).find((b) => b.textContent?.trim() === ">")!;
+      next.click();
+      await vi.waitFor(() =>
+        expect(fetchMock).toHaveBeenLastCalledWith(
+          undefined,
+          2,
+          undefined,
+          "random",
+          42,
+          "all",
+        ),
+      );
+    });
+
+    it("shows A–Z, not Random, while searching", async () => {
+      const { fetchClans } = await import("../../../src/client/ClanApi");
+      const fetchMock = fetchClans as ReturnType<typeof vi.fn>;
+      const page = { results: [], total: 0, page: 1, limit: 20 };
+      fetchMock.mockResolvedValueOnce(page);
+      setState(modal, "activeTab" as keyof ClanModal, "browse" as never);
+      const view = await waitForSubComponent(modal, "clan-browse-view");
+
+      const input = modal.querySelector(
+        "clan-browse-view input",
+      ) as HTMLInputElement;
+      input.value = "wolf";
+      input.dispatchEvent(new Event("input"));
+      await (view as unknown as { updateComplete: Promise<boolean> })
+        .updateComplete;
+
+      const select = modal.querySelector(
+        "clan-browse-view [data-browse-sort]",
+      ) as HTMLSelectElement;
+      expect(Array.from(select.options).map((o) => o.value)).toEqual([
+        "memberCount",
+        "winScore",
+        "winScoreLow",
+        "createdAt",
+        "softBalance",
+        "name",
+      ]);
+      expect(select.value).toBe("name");
+    });
+  });
+
   // ── 2. My Clans tab passes role to renderClanCard ───────────────────────
 
   describe("My Clans tab passes role from myClanRoles map", () => {
@@ -270,6 +436,134 @@ describe("ClanModal — rendering", () => {
       await waitForSubComponent(modal, "clan-manage-view");
 
       expect(modal.textContent).not.toContain("undefined");
+    });
+  });
+
+  // ── 3b. Clan currency balances (infra#518) ──────────────────────────────
+
+  describe("clan balances", () => {
+    // The balances live in the detail header, which nests <currency-display> —
+    // its own update cycle, one level below what waitForSubComponent drains,
+    // so await it too or the assertions race an empty element.
+    const openDetail = async (clan: ReturnType<typeof makeClan>) => {
+      const { fetchClanDetail } = await import("../../../src/client/ClanApi");
+      (fetchClanDetail as ReturnType<typeof vi.fn>).mockResolvedValueOnce(clan);
+      setState(modal, "selectedClanTag" as keyof ClanModal, "TST" as never);
+      setState(modal, "view" as keyof ClanModal, "detail" as never);
+      await waitForSubComponent(modal, "clan-detail-view");
+      const display = modal.querySelector("currency-display");
+      if (display && "updateComplete" in display) {
+        await (display as HTMLElement & { updateComplete: Promise<boolean> })
+          .updateComplete;
+      }
+      return display;
+    };
+
+    it("shows both balances in the clan header, thousands-grouped", async () => {
+      const display = await openDetail(
+        makeClan({ softBalance: "1000", hardBalance: "25" }),
+      );
+
+      const text = display?.textContent ?? "";
+      expect(text).toContain((1000).toLocaleString());
+      expect(text).toContain("25");
+    });
+
+    it("shows a zero balance rather than hiding it", async () => {
+      const display = await openDetail(
+        makeClan({ softBalance: "0", hardBalance: "0" }),
+      );
+
+      expect(display?.querySelector("cap-icon")).toBeTruthy();
+      expect(display?.querySelector("plutonium-icon")).toBeTruthy();
+    });
+
+    it("omits the balance widgets entirely when the API reports none", async () => {
+      // Assert the element is present but empty, so this can't pass merely
+      // because the header hadn't rendered yet.
+      const display = await openDetail(makeClan());
+
+      expect(display).toBeTruthy();
+      expect(modal.querySelector("cap-icon")).toBeNull();
+      expect(modal.querySelector("plutonium-icon")).toBeNull();
+      expect(modal.textContent).not.toContain("undefined");
+    });
+
+    it("keeps the tag pill alongside the balances", async () => {
+      await openDetail(makeClan({ softBalance: "150", hardBalance: "25" }));
+
+      expect(modal.textContent).toContain("[TST]");
+    });
+
+    it("keeps the balances out of the detail stat tiles", async () => {
+      // The header already carries them on this screen; a tile would repeat
+      // it. translateText is mocked to echo the key, so a currency-labelled
+      // tile would surface its key here.
+      await openDetail(makeClan({ softBalance: "150", hardBalance: "25" }));
+
+      const detail = modal.querySelector("clan-detail-view");
+      expect(detail?.textContent).not.toContain("cosmetics.hard");
+      expect(detail?.textContent).not.toContain("cosmetics.soft");
+    });
+
+    // The list cards show balances too, so a clan's treasury is visible while
+    // browsing without opening it.
+    const showMyClan = async (clan: ReturnType<typeof makeClan>) => {
+      setState(modal, "myClans" as keyof ClanModal, [clan] as never);
+      (modal as unknown as { myClanRoles: Map<string, string> }).myClanRoles =
+        new Map();
+      setState(modal, "activeTab" as keyof ClanModal, "my-clans" as never);
+      await waitForSubComponent(modal, "clan-card");
+      const display = modal.querySelector("currency-display");
+      if (display && "updateComplete" in display) {
+        await (display as HTMLElement & { updateComplete: Promise<boolean> })
+          .updateComplete;
+      }
+      return display;
+    };
+
+    it("shows both balances on the clan card, thousands-grouped", async () => {
+      const display = await showMyClan(
+        makeClan({ softBalance: "1000", hardBalance: "25" }),
+      );
+
+      const text = display?.textContent ?? "";
+      expect(text).toContain((1000).toLocaleString());
+      expect(text).toContain("25");
+    });
+
+    it("shows a zero balance on the clan card rather than hiding it", async () => {
+      const display = await showMyClan(
+        makeClan({ softBalance: "0", hardBalance: "0" }),
+      );
+
+      expect(display?.querySelector("cap-icon")).toBeTruthy();
+      expect(display?.querySelector("plutonium-icon")).toBeTruthy();
+    });
+
+    it("omits the card balance widgets when the API reports none", async () => {
+      const display = await showMyClan(makeClan());
+
+      expect(display).toBeTruthy();
+      expect(modal.querySelector("cap-icon")).toBeNull();
+      expect(modal.querySelector("plutonium-icon")).toBeNull();
+      expect(modal.textContent).not.toContain("undefined");
+    });
+
+    it("uses the compact card variant, not the header size", async () => {
+      const card = await showMyClan(makeClan({ hardBalance: "25" }));
+      const cardSize = (
+        card!.querySelector("plutonium-icon") as HTMLElement & { size: number }
+      ).size;
+
+      const header = await openDetail(makeClan({ hardBalance: "25" }));
+      const headerSize = (
+        header!.querySelector("plutonium-icon") as HTMLElement & {
+          size: number;
+        }
+      ).size;
+
+      expect(cardSize).toBeLessThan(headerSize);
     });
   });
 

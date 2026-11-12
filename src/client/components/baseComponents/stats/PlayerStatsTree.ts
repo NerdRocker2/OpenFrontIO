@@ -1,23 +1,33 @@
-import { LitElement, PropertyValues, TemplateResult, html, nothing } from "lit";
-import { customElement, property, state } from "lit/decorators.js";
-import {
-  PlayerRecentStats,
-  PlayerStatsGameMode,
-  PlayerStatsGameModes,
-  PlayerStatsLeaf,
-  PlayerStatsTree,
-} from "../../../../core/ApiSchemas";
 import {
   Difficulty,
   GameMode,
   GameType,
   RankedType,
   isDifficulty,
-} from "../../../../core/game/Game";
-import { PlayerStats } from "../../../../core/StatsSchemas";
+} from "@openfront/engine-api/game/GameTypes";
+import {
+  ATTACK_INDEX_MAX_RECV,
+  PlayerStats,
+} from "@openfront/engine-api/StatsSchemas";
+import {
+  PlayerRecentStats,
+  PlayerStatsGameMode,
+  PlayerStatsGameModes,
+  PlayerStatsLeaf,
+  PlayerStatsTree,
+} from "@openfront/shared/ApiSchemas";
+import { LitElement, PropertyValues, TemplateResult, html, nothing } from "lit";
+import { customElement, property, state } from "lit/decorators.js";
 import { translateText } from "../../../Utils";
 import "./PlayerStatsSummary";
 import "./PlayerStatsTable";
+
+const EMPTY_INDEX_SET: ReadonlySet<number> = new Set();
+// ATTACK_INDEX_MAX_RECV is the largest single attack faced in one game, so
+// rolling several games together takes the larger of the two, not their sum.
+const MAX_ATTACK_INDICES: ReadonlySet<number> = new Set([
+  ATTACK_INDEX_MAX_RECV,
+]);
 
 const ALL_SELECTION = "all" as const;
 type AllSelection = typeof ALL_SELECTION;
@@ -125,9 +135,11 @@ export class PlayerStatsTreeView extends LitElement {
         aria-selected=${isActive}
         title=${title ?? nothing}
         @click=${onSelect}
-        class="grow basis-20 px-3 py-1.5 text-xs font-bold uppercase tracking-wider whitespace-nowrap rounded-lg transition-colors ${isActive
-          ? "bg-malibu-blue/20 text-aquarius border border-malibu-blue/30"
-          : "text-white/50 hover:text-white hover:bg-white/5 border border-transparent"}"
+        class="grow basis-20 px-3 py-1.5 text-xs font-bold uppercase tracking-wider whitespace-nowrap rounded-lg transition-colors ${
+          isActive
+            ? "bg-malibu-blue/20 text-aquarius border border-malibu-blue/30"
+            : "text-white/50 hover:text-white hover:bg-white/5 border border-transparent"
+        }"
       >
         ${label}
       </button>
@@ -140,6 +152,10 @@ export class PlayerStatsTreeView extends LitElement {
         return translateText("player_stats_tree.ranked_1v1");
       case RankedType.TwoVTwo:
         return translateText("player_stats_tree.ranked_2v2");
+      case RankedType.FreeForAll:
+        return translateText("player_stats_tree.ranked_ffa");
+      case RankedType.ClanWars:
+        return translateText("player_stats_tree.ranked_clanwars");
     }
   }
 
@@ -387,7 +403,11 @@ export class PlayerStatsTreeView extends LitElement {
     if (!next) return this.cloneStats(base);
 
     return {
-      attacks: this.mergeStatArrays(base.attacks, next.attacks),
+      attacks: this.mergeStatArrays(
+        base.attacks,
+        next.attacks,
+        MAX_ATTACK_INDICES,
+      ),
       betrayals: this.mergeStatValue(base.betrayals, next.betrayals),
       killedAt: this.mergeStatValue(base.killedAt, next.killedAt),
       conquests: this.mergeStatArrays(base.conquests, next.conquests),
@@ -406,15 +426,20 @@ export class PlayerStatsTreeView extends LitElement {
     return (base ?? 0n) + (next ?? 0n);
   }
 
+  /** Slots are summed across buckets, except those named in `maxIndices`,
+   * which already hold a per-game maximum and would be meaningless summed. */
   private mergeStatArrays(
     base: bigint[] | undefined,
     next: bigint[] | undefined,
+    maxIndices: ReadonlySet<number> = EMPTY_INDEX_SET,
   ): bigint[] | undefined {
     if (!base && !next) return undefined;
     const maxLen = Math.max(base?.length ?? 0, next?.length ?? 0);
     const merged: bigint[] = [];
     for (let i = 0; i < maxLen; i += 1) {
-      merged[i] = (base?.[i] ?? 0n) + (next?.[i] ?? 0n);
+      const b = base?.[i] ?? 0n;
+      const n = next?.[i] ?? 0n;
+      merged[i] = maxIndices.has(i) ? (b > n ? b : n) : b + n;
     }
     return merged;
   }
@@ -478,81 +503,89 @@ export class PlayerStatsTreeView extends LitElement {
               ),
             ),
           ])}
-          ${this.selectedType === "Ranked" && rankedTypes.length
-            ? this.renderFilterRow([
-                this.renderFilterTab(
-                  this.labelForType(ALL_SELECTION),
-                  this.selectedRankedType === ALL_SELECTION,
-                  () => this.setRankedType(ALL_SELECTION),
-                ),
-                ...rankedTypes.map((r) =>
+          ${
+            this.selectedType === "Ranked" && rankedTypes.length
+              ? this.renderFilterRow([
                   this.renderFilterTab(
-                    this.labelForRankedType(r) ?? "",
-                    this.selectedRankedType === r,
-                    () => this.setRankedType(r),
+                    this.labelForType(ALL_SELECTION),
+                    this.selectedRankedType === ALL_SELECTION,
+                    () => this.setRankedType(ALL_SELECTION),
                   ),
-                ),
-              ])
-            : nothing}
-          ${modes.length
-            ? this.renderFilterRow([
-                this.renderFilterTab(
-                  this.labelForType(ALL_SELECTION),
-                  this.selectedMode === ALL_SELECTION,
-                  () => this.setMode(ALL_SELECTION),
-                  translateText("player_stats_tree.mode"),
-                ),
-                ...modes.map((m) =>
+                  ...rankedTypes.map((r) =>
+                    this.renderFilterTab(
+                      this.labelForRankedType(r) ?? "",
+                      this.selectedRankedType === r,
+                      () => this.setRankedType(r),
+                    ),
+                  ),
+                ])
+              : nothing
+          }
+          ${
+            modes.length
+              ? this.renderFilterRow([
                   this.renderFilterTab(
-                    this.labelForMode(m),
-                    this.selectedMode === m,
-                    () => this.setMode(m),
+                    this.labelForType(ALL_SELECTION),
+                    this.selectedMode === ALL_SELECTION,
+                    () => this.setMode(ALL_SELECTION),
                     translateText("player_stats_tree.mode"),
                   ),
-                ),
-              ])
-            : nothing}
-          ${diffs.length
-            ? this.renderFilterRow([
-                this.renderFilterTab(
-                  this.labelForType(ALL_SELECTION),
-                  this.selectedDifficulty === ALL_SELECTION,
-                  () => this.setDifficulty(ALL_SELECTION),
-                  translateText("difficulty.difficulty"),
-                ),
-                ...diffs.map((d) =>
+                  ...modes.map((m) =>
+                    this.renderFilterTab(
+                      this.labelForMode(m),
+                      this.selectedMode === m,
+                      () => this.setMode(m),
+                      translateText("player_stats_tree.mode"),
+                    ),
+                  ),
+                ])
+              : nothing
+          }
+          ${
+            diffs.length
+              ? this.renderFilterRow([
                   this.renderFilterTab(
-                    translateText(`difficulty.${d.toLowerCase()}`),
-                    this.selectedDifficulty === d,
-                    () => this.setDifficulty(d),
+                    this.labelForType(ALL_SELECTION),
+                    this.selectedDifficulty === ALL_SELECTION,
+                    () => this.setDifficulty(ALL_SELECTION),
                     translateText("difficulty.difficulty"),
                   ),
-                ),
-              ])
-            : nothing}
+                  ...diffs.map((d) =>
+                    this.renderFilterTab(
+                      translateText(`difficulty.${d.toLowerCase()}`),
+                      this.selectedDifficulty === d,
+                      () => this.setDifficulty(d),
+                      translateText("difficulty.difficulty"),
+                    ),
+                  ),
+                ])
+              : nothing
+          }
         </div>
 
-        ${leaf
-          ? html`
-              <div class="border-t border-white/10">
-                <div class="py-3">
-                  <player-stats-summary .leaf=${leaf}></player-stats-summary>
-                </div>
+        ${
+          leaf
+            ? html`
+                <div class="border-t border-white/10">
+                  <div class="py-3">
+                    <player-stats-summary .leaf=${leaf}></player-stats-summary>
+                  </div>
 
-                <div class="border-t border-white/10 pt-6">
-                  <player-stats-table
-                    .stats=${leaf?.stats ?? null}
-                  ></player-stats-table>
+                  <div class="border-t border-white/10 pt-6">
+                    <player-stats-table
+                      .stats=${leaf?.stats ?? null}
+                    ></player-stats-table>
+                  </div>
                 </div>
-              </div>
-            `
-          : html`
-              <div
-                class="py-12 text-center text-white/30 italic border border-white/5 rounded-xl bg-white/5"
-              >
-                ${translateText("player_stats_tree.no_stats")}
-              </div>
-            `}
+              `
+            : html`
+                <div
+                  class="py-12 text-center text-white/30 italic border border-white/5 rounded-xl bg-white/5"
+                >
+                  ${translateText("player_stats_tree.no_stats")}
+                </div>
+              `
+        }
       </div>
     `;
   }

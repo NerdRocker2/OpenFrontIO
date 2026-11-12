@@ -1,6 +1,6 @@
+import type { LiveStream, StreamsFeed } from "@openfront/shared/ApiSchemas";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { streamsFeed } from "../../../src/client/StreamsFeed";
-import type { LiveStream, StreamsFeed } from "../../../src/core/ApiSchemas";
 
 // Mounting behaviour of the <featured-stream> panel. The point of these tests is the
 // request cost: liveness used to be detected in the browser by constructing a real
@@ -132,6 +132,20 @@ describe("featured-stream panel", () => {
     expect(card()).not.toBeNull();
   });
 
+  it("embeds nothing on a compact screen", async () => {
+    const matchMedia = vi.fn((query: string) => ({
+      matches: query.includes("max-height: 800px"),
+    }));
+    vi.stubGlobal("matchMedia", matchMedia);
+    try {
+      await mount(stream("openfrontmasters"));
+      expect(FakePlayer.constructed).toEqual([]);
+      expect(card()).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("shows the panel once the player reports it is playing", async () => {
     const el = await mount(stream("openfrontmasters"));
     expect(card()?.className).toContain("opacity-0"); // hidden while the player boots
@@ -212,6 +226,16 @@ describe("featured-stream panel", () => {
       btn!.click();
     };
 
+    // The panel is up and playing before /user/me has said anything, which is the real
+    // load order: the streams feed and the profile are independent requests.
+    const openUnresolved = async () => {
+      delete (window as unknown as { adsEnabled?: boolean }).adsEnabled;
+      const el = await mount(stream("openfrontmasters"));
+      FakePlayer.last!.fire(FakePlayer.READY);
+      await el.updateComplete;
+      return el;
+    };
+
     const open = async (adFree: boolean) => {
       (window as unknown as { adsEnabled?: boolean }).adsEnabled = !adFree;
       const el = await mount(stream("openfrontmasters"));
@@ -228,6 +252,22 @@ describe("featured-stream panel", () => {
       expect(
         el.querySelector('[aria-label="featured_stream.hide_today"]'),
       ).toBeNull(); // hide-for-today stays ad-free only
+    });
+
+    // Regression: the entitlement arrives from /user/me well after the panel can already
+    // be on screen, and nothing re-rendered the header when it landed, so an ad-free user
+    // whose profile resolved late never got the button for the rest of the visit.
+    it("adds hide-for-today when the entitlement resolves after the panel is up", async () => {
+      const el = await openUnresolved();
+      expect(
+        el.querySelector('[aria-label="featured_stream.hide_today"]'),
+      ).toBeNull();
+      (window as unknown as { adsEnabled?: boolean }).adsEnabled = false;
+      document.dispatchEvent(new CustomEvent("userMeResponse", { detail: {} }));
+      await el.updateComplete;
+      expect(
+        el.querySelector('[aria-label="featured_stream.hide_today"]'),
+      ).not.toBeNull();
     });
 
     it("offers all three controls to an ad-free user", async () => {

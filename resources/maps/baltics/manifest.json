@@ -131,11 +131,11 @@
       "name": "Hlybokaye"
     }
   ],
-  "categories": ["europe", "new"],
+  "categories": ["europe"],
   "id": "Baltics",
   "map": {
     "height": 1324,
-    "num_land_tiles": 1039983,
+    "num_land_tiles": 1039982,
     "width": 1364
   },
   "map16x": {
@@ -145,10 +145,9 @@
   },
   "map4x": {
     "height": 662,
-    "num_land_tiles": 256371,
+    "num_land_tiles": 256370,
     "width": 682
   },
-  "multiplayer_frequency": 5,
   "name": "Baltics",
   "nations": [
     {

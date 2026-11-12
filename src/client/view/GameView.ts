@@ -1,33 +1,40 @@
-import { Config } from "../../core/configuration/Config";
+import { GameMap, TileRef } from "@openfront/engine-api/game/GameMap";
 import {
   Cell,
+  formatPlayerDisplayName,
   GameUpdates,
   PlayerID,
   PlayerType,
+  Team,
   TerrainType,
   TerraNullius,
   Tick,
-  Unit,
   UnitInfo,
   UnitType,
-} from "../../core/game/Game";
-import { GameMap, TileRef } from "../../core/game/GameMap";
+} from "@openfront/engine-api/game/GameTypes";
 import {
   GameUpdateType,
   GameUpdateViewData,
   SpawnPhaseEndUpdate,
-} from "../../core/game/GameUpdates";
-import { ATTACK_DELTA_OUTGOING } from "../../core/game/GameUpdateUtils";
+  UnitUpdate,
+} from "@openfront/engine-api/game/GameUpdates";
 import {
-  MotionPlanRecord,
-  unpackMotionPlans,
-} from "../../core/game/MotionPlans";
-import { TerrainMapData } from "../../core/game/TerrainMapLoader";
-import { TerraNulliusImpl } from "../../core/game/TerraNulliusImpl";
-import { UnitGrid, UnitPredicate } from "../../core/game/UnitGrid";
-import { ClientID, GameID, Player, PlayerCosmetics } from "../../core/Schemas";
-import { formatPlayerDisplayName } from "../../core/Util";
-import { WorkerClient } from "../../core/worker/WorkerClient";
+  GameLike,
+  ReadonlyTileSet,
+  UnitPredicate,
+} from "@openfront/engine-api/game/ReadViews";
+import { ClientID, GameID } from "@openfront/engine-api/Schemas";
+import { Config } from "@openfront/engine-lib/configuration/Config";
+import { unpackMotionPlans } from "@openfront/engine-lib/game/MotionPlans";
+import {
+  PackedUnitUpdateDecoder,
+  UNIT_UPDATE_STRIDE,
+  unpackUnitUpdates,
+} from "@openfront/engine-lib/game/PackedUnitUpdates";
+import { TerrainMapData } from "@openfront/engine-lib/game/TerrainMapLoader";
+import { TerraNulliusImpl } from "@openfront/engine-lib/game/TerraNulliusImpl";
+import { UnitGrid } from "@openfront/engine-lib/game/UnitGrid";
+import { PlayerCosmetics, WirePlayer } from "@openfront/shared/WireSchemas";
 import { computeAllianceClusters } from "../render/frame/derive/AllianceClusters";
 import { extractAttackRings } from "../render/frame/derive/AttackRings";
 import { extractNukeTelegraphs } from "../render/frame/derive/NukeTelegraphs";
@@ -38,33 +45,29 @@ import type { SpiralParams } from "../render/frame/SpiralTrails";
 import { SpiralTrails } from "../render/frame/SpiralTrails";
 import { TrailManager } from "../render/frame/TrailManager";
 import type { FrameData, NameEntry } from "../render/types";
-import { STRUCTURE_TYPES } from "../render/types";
+import { STRUCTURE_TYPES, TRAIL_TYPES } from "../render/types";
+import { UserSettings } from "../UserSettings";
+import { resolveTeamClanTag } from "../Utils";
+import { WorkerClient } from "../WorkerClient";
+import type { CosmeticVisibility } from "./CosmeticVisibility";
+import {
+  applyPackedAttackTroops,
+  applyPackedPlayerStats,
+  embargoSmallIDs,
+} from "./EntityState";
+import {
+  MotionPlanResolver,
+  type GridMotionPlan,
+  type PlannedUnits,
+} from "./MotionPlanResolver";
 import { PlayerView } from "./PlayerView";
 import { UnitView } from "./UnitView";
 
-const TRAIL_TYPES: ReadonlySet<UnitType> = new Set<UnitType>([
-  UnitType.TransportShip,
-  UnitType.AtomBomb,
-  UnitType.HydrogenBomb,
-  UnitType.MIRV,
-  UnitType.MIRVWarhead,
-]);
+function readCosmeticVisibility(): CosmeticVisibility {
+  return new UserSettings().graphicsOverrides().cosmetics ?? {};
+}
 
-type TrainPlanState = {
-  planId: number;
-  startTick: number;
-  speed: number;
-  spacing: number;
-  carUnitIds: Uint32Array;
-  path: Uint32Array;
-  cursor: number;
-  usedTilesBuf: Uint32Array;
-  usedHead: number;
-  usedLen: number;
-  lastAdvancedTick: Tick;
-};
-
-export class GameView implements GameMap {
+export class GameView implements GameLike {
   private lastUpdate: GameUpdateViewData | null;
   private startTick: Tick | null = null;
   private smallIDToID = new Map<number, PlayerID>();
@@ -82,6 +85,7 @@ export class GameView implements GameMap {
   private _unitStates = new Map<number, import("../render/types").UnitState>();
   /** smallID → team, for the renderer's relation matrix (team games). */
   private _teams = new Map<number, string>();
+  private _teamClanTags: Map<Team, string | null> | null = null;
   private updatedTiles: TileRef[] = [];
   private updatedTerrainTiles: TileRef[] = [];
   private nukeImpactTiles: TileRef[] = [];
@@ -112,6 +116,7 @@ export class GameView implements GameMap {
   private _firstPopulate = true;
 
   private _myPlayer: PlayerView | null = null;
+  private _wasInSpawnPhase = true;
 
   // ── populateFrame dirty flags ──────────────────────────────────────────
   // The derived structures below only depend on rarely-changing player
@@ -124,22 +129,26 @@ export class GameView implements GameMap {
   /** Alliance clusters: allies changed, or a player was added. */
   private _clustersDirty = true;
 
-  private unitGrid: UnitGrid;
-  private unitMotionPlans = new Map<
-    number,
-    {
-      planId: number;
-      startTick: number;
-      ticksPerStep: number;
-      path: Uint32Array;
-    }
-  >();
-  private trainMotionPlans = new Map<number, TrainPlanState>();
-  private trainUnitToEngine = new Map<number, number>();
+  private unitGrid: UnitGrid<UnitView>;
+  private readonly motion = new MotionPlanResolver();
+  /** How the resolver moves this view's units. */
+  private readonly plannedUnits: PlannedUnits = {
+    tileOf: (id) => {
+      const unit = this._units.get(id);
+      return unit?.isActive() ? unit.tile() : undefined;
+    },
+    move: (id, tile) => {
+      const unit = this._units.get(id)!;
+      unit.applyDerivedPosition(tile as TileRef);
+      this.unitGrid.updateUnitCell(unit);
+    },
+    rest: (id) => this._units.get(id)!.applyDerivedRest(),
+  };
 
   private toDelete = new Set<number>();
 
   private _cosmetics: Map<string, PlayerCosmetics> = new Map();
+  private _cosmeticVisibility: CosmeticVisibility = readCosmeticVisibility();
 
   private _map: GameMap;
 
@@ -151,28 +160,21 @@ export class GameView implements GameMap {
     private _myUsername: string,
     private _myClanTag: string | null,
     private _gameID: GameID,
-    humans: Player[],
+    humans: WirePlayer[],
+    private _resumedFromSave = false,
   ) {
     this._map = this._mapData.gameMap;
     this.lastUpdate = null;
-    this.unitGrid = new UnitGrid(this._map);
+    this.unitGrid = new UnitGrid<UnitView>(this._map);
     this._cosmetics = new Map(
       humans.map((h) => [h.clientID, h.cosmetics ?? {}]),
     );
 
-    for (const nation of this._mapData.nations) {
-      // Nations don't have client ids, so we use their name as the key instead.
-      this._cosmetics.set(nation.name, {
-        flag: nation.flag ? `/flags/${nation.flag}.svg` : undefined,
-      } satisfies PlayerCosmetics);
-    }
-    for (const extra of this._mapData.additionalNations) {
-      // Only set if not already provided by a manifest nation with the same name.
-      if (this._cosmetics.has(extra.name)) continue;
-      this._cosmetics.set(extra.name, {
-        flag: extra.flag ? `/flags/${extra.flag}.svg` : undefined,
-      } satisfies PlayerCosmetics);
-    }
+    // Nation-type players carry their own flag on the wire (PlayerUpdate.nationFlag,
+    // sourced from the manifest via PlayerInfo) rather than being looked up here by
+    // name — some maps define multiple nations with the same display name (e.g.
+    // India's and Pakistan's "Punjab", split by the 1947 partition), and a name-keyed
+    // lookup can't tell those apart. See the Nation-branch in update() below.
 
     const mapW = this._map.width();
     const mapH = this._map.height();
@@ -188,6 +190,7 @@ export class GameView implements GameMap {
     this._frame = {
       tick: 0,
       inSpawnPhase: true,
+      namesSnap: false,
       tileState: this._map.tileStateBuffer(),
       trailState: this.trailManager.getTrailState(),
       spiralRibbons: this.spiralTrails.getRibbons(),
@@ -226,49 +229,17 @@ export class GameView implements GameMap {
     return this.lastUpdate?.updates ?? null;
   }
 
-  public motionPlans(): ReadonlyMap<
-    number,
-    {
-      planId: number;
-      startTick: number;
-      ticksPerStep: number;
-      path: Uint32Array;
-    }
-  > {
-    return this.unitMotionPlans;
+  public isPaused(): boolean {
+    const pauses = this.lastUpdate?.updates[GameUpdateType.GamePaused];
+    return pauses?.[pauses.length - 1]?.paused ?? false;
   }
 
-  private motionPlannedUnitIdsCache: number[] = [];
-  private motionPlannedUnitIdsDirty = true;
-
-  private markMotionPlannedUnitIdsDirty(): void {
-    this.motionPlannedUnitIdsDirty = true;
-  }
-
-  private rebuildMotionPlannedUnitIdsCacheIfDirty(): void {
-    if (!this.motionPlannedUnitIdsDirty) {
-      return;
-    }
-    this.motionPlannedUnitIdsDirty = false;
-
-    const out = this.motionPlannedUnitIdsCache;
-    out.length = 0;
-
-    for (const unitId of this.unitMotionPlans.keys()) {
-      out.push(unitId);
-    }
-    for (const [engineId, plan] of this.trainMotionPlans) {
-      out.push(engineId);
-      for (let i = 0; i < plan.carUnitIds.length; i++) {
-        const id = plan.carUnitIds[i] >>> 0;
-        if (id !== 0) out.push(id);
-      }
-    }
+  public motionPlans(): ReadonlyMap<number, GridMotionPlan> {
+    return this.motion.gridPlans();
   }
 
   public motionPlannedUnitIds(): number[] {
-    this.rebuildMotionPlannedUnitIdsCacheIfDirty();
-    return this.motionPlannedUnitIdsCache;
+    return this.motion.plannedUnitIds();
   }
 
   public isCatchingUp(): boolean {
@@ -305,8 +276,7 @@ export class GameView implements GameMap {
     this.nukeImpactTiles = packedNukes ? Array.from(packedNukes) : [];
 
     if (gu.packedMotionPlans) {
-      const records = unpackMotionPlans(gu.packedMotionPlans);
-      this.applyMotionPlanRecords(records);
+      this.motion.applyRecords(unpackMotionPlans(gu.packedMotionPlans));
     }
 
     if (gu.updates === null) {
@@ -318,6 +288,9 @@ export class GameView implements GameMap {
       | undefined;
     if (spawnPhaseEndUpdate) {
       this.startTick = spawnPhaseEndUpdate.startTick;
+    }
+    if (gu.updates[GameUpdateType.Win].length > 0) {
+      this._gameOver = true;
     }
 
     const myDisplayName = formatPlayerDisplayName(
@@ -383,12 +356,15 @@ export class GameView implements GameMap {
           this,
           pu,
           gu.playerNameViewData?.[pu.id],
-          // First check human by clientID, then check nation by name.
-          // Only match by name for actual Nations — not Bots (tribes) whose
-          // random names may coincidentally match a nation name.
+          // Humans get cosmetics by clientID. Nations carry their flag
+          // directly on the update (see PlayerUpdate.nationFlag) rather than
+          // being looked up by name — some maps define multiple nations with
+          // the same display name (e.g. India's and Pakistan's "Punjab").
           this._cosmetics.get(pu.clientID ?? "") ??
-            (pu.playerType === PlayerType.Nation
-              ? this._cosmetics.get(pu.name!)
+            (pu.playerType === PlayerType.Nation && pu.nationFlag
+              ? ({
+                  flag: `/flags/${pu.nationFlag}.svg`,
+                } satisfies PlayerCosmetics)
               : undefined) ??
             {},
         );
@@ -401,6 +377,7 @@ export class GameView implements GameMap {
         this._namesDirty = true;
         this._relationsDirty = true;
         this._clustersDirty = true;
+        this._teamClanTags = null;
       }
     });
 
@@ -411,52 +388,19 @@ export class GameView implements GameMap {
       if (pu.embargoes === undefined) return;
       const player = this._players.get(pu.id);
       if (player === undefined) return;
-      const smallIDs: number[] = [];
-      for (const otherPlayerID of pu.embargoes) {
-        const otherPV = this._players.get(otherPlayerID);
-        if (otherPV !== undefined) {
-          smallIDs.push(otherPV.smallID());
-        }
-      }
+      const smallIDs = embargoSmallIDs(pu.embargoes, (id) =>
+        this._players.get(id)?.smallID(),
+      );
       player.setEmbargoSmallIDs(smallIDs);
     });
 
-    // Packed per-player stats: [smallID, tilesOwned, gold, troops] quads for
-    // every player whose stats changed this tick (the per-tick churn that no
-    // longer travels in PlayerUpdate objects). Applied after pass 1 so
-    // first-emission players exist; their quad carries the same values as
-    // the full update, so double-applying is harmless.
-    const packedStats = gu.packedPlayerUpdates;
-    if (packedStats !== undefined) {
-      for (let i = 0; i + 3 < packedStats.length; i += 4) {
-        const state = this._playerStates.get(packedStats[i]);
-        if (state === undefined) continue;
-        state.tilesOwned = packedStats[i + 1];
-        state.gold = packedStats[i + 2];
-        state.troops = packedStats[i + 3];
-      }
-    }
-
-    // Packed attack troop counts: [ownerSmallID, direction, index, troops]
-    // quads. The attack arrays themselves are only resent when membership/
-    // order changes, which is also what keeps these indexes valid — a tick
-    // either resends an array (fresh troops included) or patches it, never
-    // both. See packAttackTroopDeltas.
-    const packedAttacks = gu.packedAttackUpdates;
-    if (packedAttacks !== undefined) {
-      for (let i = 0; i + 3 < packedAttacks.length; i += 4) {
-        const state = this._playerStates.get(packedAttacks[i]);
-        if (state === undefined) continue;
-        const attacks =
-          packedAttacks[i + 1] === ATTACK_DELTA_OUTGOING
-            ? state.outgoingAttacks
-            : state.incomingAttacks;
-        const attack = attacks[packedAttacks[i + 2]];
-        if (attack !== undefined) {
-          attack.troops = packedAttacks[i + 3];
-        }
-      }
-    }
+    // Packed per-player stats and attack troop counts, the per-tick churn
+    // that no longer travels in PlayerUpdate objects. Applied after pass 1
+    // so first-emission players exist; their stats carry the same values
+    // as the full update, so applying both is harmless.
+    const stateOf = (smallID: number) => this._playerStates.get(smallID);
+    applyPackedPlayerStats(gu.packedPlayerUpdates, stateOf);
+    applyPackedAttackTroops(gu.packedAttackUpdates, stateOf);
 
     if (this._myClientID) {
       this._myPlayer ??= this.playerByClientID(this._myClientID);
@@ -471,7 +415,14 @@ export class GameView implements GameMap {
         unit.lastPos = unit.lastPos.slice(-1);
       }
     }
-    gu.updates[GameUpdateType.Unit].forEach((update) => {
+    const unitUpdates = gu.packedUnitUpdates
+      ? unpackUnitUpdates(gu.packedUnitUpdates, gu.packedMissileTimers)
+      : (gu.updates[GameUpdateType.Unit] ?? []);
+    if (gu.packedUnitUpdates) {
+      gu.updates[GameUpdateType.Unit] = unitUpdates;
+    }
+
+    unitUpdates.forEach((update) => {
       let unit = this._units.get(update.id);
       const isStructure = STRUCTURE_TYPES.has(update.unitType);
       if (unit !== undefined) {
@@ -488,7 +439,7 @@ export class GameView implements GameMap {
         ) {
           this._structuresDirty = true;
         }
-        const hasMotionPlan = this.unitMotionPlans.has(update.id);
+        const hasMotionPlan = this.motion.hasGridPlan(update.id);
         const oldPos = unit.state.pos;
         const oldLastPos = unit.state.lastPos;
         unit.update(update);
@@ -512,15 +463,11 @@ export class GameView implements GameMap {
       if (!unit.isActive()) {
         // Wait until next tick to delete the unit.
         this.toDelete.add(unit.id());
-        if (this.unitMotionPlans.delete(unit.id())) {
-          this.markMotionPlannedUnitIdsDirty();
-        }
-        this.clearTrainPlanForUnit(unit.id());
+        this.motion.unitRemoved(unit.id());
       }
     });
 
-    this.advanceMotionPlannedUnits(gu.tick);
-    this.rebuildMotionPlannedUnitIdsCacheIfDirty();
+    this.motion.advance(gu.tick, this.plannedUnits);
 
     this.populateFrame(gu);
   }
@@ -585,8 +532,11 @@ export class GameView implements GameMap {
     const f = this._frame as {
       -readonly [K in keyof FrameData]: FrameData[K];
     };
+    const inSpawnPhase = this.startTick === null;
+    f.namesSnap = this._wasInSpawnPhase && !inSpawnPhase;
+    this._wasInSpawnPhase = inSpawnPhase;
     f.tick = gu.tick;
-    f.inSpawnPhase = this.startTick === null;
+    f.inSpawnPhase = inSpawnPhase;
     f.railroadDirty = this.railroadCache.railroadDirty;
     f.trailDirtyRowMin = this.trailManager.dirtyRowMin;
     f.trailDirtyRowMax = this.trailManager.dirtyRowMax;
@@ -598,7 +548,8 @@ export class GameView implements GameMap {
       tick: gu.tick,
       allianceDuration: this._config.allianceDuration(),
       isTransitiveTarget: (sid) =>
-        this._myPlayer?.hasTransitiveTarget(sid) ?? false,
+        (this._markedPlayers?.has(sid) ?? false) ||
+        (this._myPlayer?.hasTransitiveTarget(sid) ?? false),
       doomsdayClockWarnTicks:
         this._config.doomsdayClockConfig().warnSeconds * 10,
     });
@@ -630,7 +581,7 @@ export class GameView implements GameMap {
       // carried over on the frame from the last rebuild.
       f.relationMatrix,
       f.relationSize,
-      this.unitMotionPlans,
+      this.motion.gridPlans(),
       gu.tick,
     );
     f.attackRings = this._myPlayer
@@ -667,14 +618,39 @@ export class GameView implements GameMap {
     ev.conquestEvents.length = 0;
     ev.bonusEvents.length = 0;
 
-    for (const u of gu.updates[GameUpdateType.Unit] ?? []) {
-      if (u.isActive) continue;
-      ev.deadUnits.push({
-        unitType: u.unitType,
-        pos: u.pos,
-        reachedTarget: u.reachedTarget,
-        ownerSmallID: u.ownerID,
-      });
+    if (gu.packedUnitUpdates) {
+      // Re-unpacking is fine, it's just object creation for dead units, which is fast,
+      // or we just decode the fields we need directly without creating objects!
+      for (
+        let offset = 0;
+        offset < gu.packedUnitUpdates.length;
+        offset += UNIT_UPDATE_STRIDE
+      ) {
+        const decoder = new PackedUnitUpdateDecoder(
+          gu.packedUnitUpdates,
+          offset,
+        );
+        if (!decoder.isActive) {
+          ev.deadUnits.push({
+            unitType: decoder.unitType,
+            pos: decoder.pos,
+            reachedTarget: decoder.reachedTarget,
+            ownerSmallID: decoder.ownerID,
+          });
+        }
+      }
+    } else {
+      const unitUpdates =
+        (gu.updates[GameUpdateType.Unit] as UnitUpdate[]) ?? [];
+      for (const u of unitUpdates) {
+        if (u.isActive) continue;
+        ev.deadUnits.push({
+          unitType: u.unitType,
+          pos: u.pos,
+          reachedTarget: u.reachedTarget,
+          ownerSmallID: u.ownerID,
+        });
+      }
     }
     const myID = this._myPlayer?.id();
     for (const c of gu.updates[GameUpdateType.ConquestEvent] ?? []) {
@@ -717,235 +693,8 @@ export class GameView implements GameMap {
     this.spiralTrails.setParams(smallID, params);
   }
 
-  private advanceMotionPlannedUnits(currentTick: Tick): void {
-    for (const [unitId, plan] of this.unitMotionPlans) {
-      const unit = this._units.get(unitId);
-      if (!unit || !unit.isActive()) {
-        if (this.unitMotionPlans.delete(unitId)) {
-          this.markMotionPlannedUnitIdsDirty();
-        }
-        continue;
-      }
-
-      const oldTile = unit.tile();
-      const dt = currentTick - plan.startTick;
-      const stepIndex =
-        dt <= 0 ? 0 : Math.floor(dt / Math.max(1, plan.ticksPerStep));
-      const lastIndex = plan.path.length - 1;
-      const idx = Math.max(0, Math.min(lastIndex, stepIndex));
-      const newTile = plan.path[idx] as TileRef;
-
-      if (newTile !== oldTile) {
-        unit.applyDerivedPosition(newTile);
-        this.unitGrid.updateUnitCell(unit);
-        continue;
-      }
-
-      unit.applyDerivedRest();
-
-      // Once a plan is past its final step, `newTile` remains clamped to the last path tile.
-      // Drop finished plans to avoid repeatedly marking static units as updated each tick.
-      if (dt > 0 && stepIndex >= lastIndex) {
-        if (this.unitMotionPlans.delete(unitId)) {
-          this.markMotionPlannedUnitIdsDirty();
-        }
-      }
-    }
-
-    this.advanceTrainMotionPlannedUnits(currentTick);
-  }
-
-  private clearTrainPlanForUnit(unitId: number): void {
-    const engineId =
-      this.trainUnitToEngine.get(unitId) ??
-      (this.trainMotionPlans.has(unitId) ? unitId : null);
-    if (engineId === null) {
-      return;
-    }
-    const plan = this.trainMotionPlans.get(engineId);
-    if (!plan) {
-      this.trainUnitToEngine.delete(unitId);
-      return;
-    }
-    if (this.trainMotionPlans.delete(engineId)) {
-      this.markMotionPlannedUnitIdsDirty();
-    }
-    this.trainUnitToEngine.delete(engineId);
-    for (let i = 0; i < plan.carUnitIds.length; i++) {
-      const id = plan.carUnitIds[i] >>> 0;
-      if (id !== 0) this.trainUnitToEngine.delete(id);
-    }
-  }
-
-  private advanceTrainMotionPlannedUnits(currentTick: Tick): void {
-    const staleEngineIds: number[] = [];
-    for (const [engineId, plan] of this.trainMotionPlans) {
-      const engine = this._units.get(engineId);
-      if (!engine || !engine.isActive()) {
-        staleEngineIds.push(engineId);
-        continue;
-      }
-
-      const steps = currentTick - plan.lastAdvancedTick;
-      if (steps <= 0) {
-        continue;
-      }
-
-      const path = plan.path;
-      const lastIndex = path.length - 1;
-      const cap = plan.usedTilesBuf.length;
-
-      const pushUsed = (tile: TileRef) => {
-        if (cap === 0) return;
-        if (plan.usedLen < cap) {
-          const idx = (plan.usedHead + plan.usedLen) % cap;
-          plan.usedTilesBuf[idx] = tile >>> 0;
-          plan.usedLen++;
-        } else {
-          plan.usedTilesBuf[plan.usedHead] = tile >>> 0;
-          plan.usedHead = (plan.usedHead + 1) % cap;
-          plan.usedLen = cap;
-        }
-      };
-
-      const usedGet = (index: number): TileRef | null => {
-        if (index < 0 || index >= plan.usedLen || cap === 0) return null;
-        const idx = (plan.usedHead + index) % cap;
-        return plan.usedTilesBuf[idx] as TileRef;
-      };
-
-      let didMove = false;
-      for (let step = 0; step < steps; step++) {
-        const cursor = plan.cursor;
-        if (cursor >= lastIndex) {
-          break;
-        }
-        for (let i = 0; i < plan.speed && cursor + i < path.length; i++) {
-          pushUsed(path[cursor + i] as TileRef);
-        }
-
-        plan.cursor = Math.min(lastIndex, cursor + plan.speed);
-
-        for (let i = plan.carUnitIds.length - 1; i >= 0; --i) {
-          const carId = plan.carUnitIds[i] >>> 0;
-          if (carId === 0) continue;
-          const car = this._units.get(carId);
-          if (!car || !car.isActive()) {
-            continue;
-          }
-          const carTileIndex = (i + 1) * plan.spacing + 2;
-          const tile = usedGet(carTileIndex);
-          if (tile !== null) {
-            const oldTile = car.tile();
-            if (tile !== oldTile) {
-              car.applyDerivedPosition(tile);
-              this.unitGrid.updateUnitCell(car);
-              didMove = true;
-            }
-          }
-        }
-
-        const newEngineTile = path[plan.cursor] as TileRef;
-        const oldEngineTile = engine.tile();
-        if (newEngineTile !== oldEngineTile) {
-          engine.applyDerivedPosition(newEngineTile);
-          this.unitGrid.updateUnitCell(engine);
-          didMove = true;
-        }
-      }
-
-      plan.lastAdvancedTick = currentTick;
-
-      // Preserve the final-step redraw (plan remains for the tick where motion ends),
-      // then clear once the train has settled and no longer moves.
-      // Note: trains are currently deleted at the end of TrainExecution, and the ensuing
-      // `Unit` update (isActive=false) also clears any associated motion plan records.
-      // This expiry is defensive to avoid keeping stale plans around if that behavior changes.
-      if (!didMove && plan.cursor >= lastIndex) {
-        staleEngineIds.push(engineId);
-      }
-    }
-
-    for (const engineId of staleEngineIds) {
-      this.clearTrainPlanForUnit(engineId);
-    }
-  }
-
-  private applyMotionPlanRecords(records: readonly MotionPlanRecord[]): void {
-    for (const record of records) {
-      switch (record.kind) {
-        case "grid": {
-          if (record.ticksPerStep < 1 || record.path.length < 1) {
-            break;
-          }
-          const existing = this.unitMotionPlans.get(record.unitId);
-          if (existing && record.planId <= existing.planId) {
-            break;
-          }
-
-          const path =
-            record.path instanceof Uint32Array
-              ? record.path
-              : Uint32Array.from(record.path);
-
-          this.unitMotionPlans.set(record.unitId, {
-            planId: record.planId,
-            startTick: record.startTick,
-            ticksPerStep: record.ticksPerStep,
-            path,
-          });
-          this.markMotionPlannedUnitIdsDirty();
-          break;
-        }
-        case "train": {
-          if (record.speed < 1 || record.path.length < 1) {
-            break;
-          }
-          const existing = this.trainMotionPlans.get(record.engineUnitId);
-          if (existing && record.planId <= existing.planId) {
-            break;
-          }
-          if (existing) {
-            this.clearTrainPlanForUnit(record.engineUnitId);
-          }
-
-          const carUnitIds =
-            record.carUnitIds instanceof Uint32Array
-              ? record.carUnitIds
-              : Uint32Array.from(record.carUnitIds);
-          const path =
-            record.path instanceof Uint32Array
-              ? record.path
-              : Uint32Array.from(record.path);
-
-          const usedCap = carUnitIds.length * record.spacing + 3;
-          const usedTilesBuf = new Uint32Array(Math.max(0, usedCap));
-
-          this.trainMotionPlans.set(record.engineUnitId, {
-            planId: record.planId,
-            startTick: record.startTick,
-            speed: record.speed,
-            spacing: record.spacing,
-            carUnitIds,
-            path,
-            cursor: 0,
-            usedTilesBuf,
-            usedHead: 0,
-            usedLen: 0,
-            lastAdvancedTick: record.startTick,
-          });
-          this.markMotionPlannedUnitIdsDirty();
-
-          this.trainUnitToEngine.set(record.engineUnitId, record.engineUnitId);
-          for (let i = 0; i < carUnitIds.length; i++) {
-            const carId = carUnitIds[i] >>> 0;
-            if (carId !== 0)
-              this.trainUnitToEngine.set(carId, record.engineUnitId);
-          }
-          break;
-        }
-      }
-    }
+  clearNukeTrailSpiral(smallID: number): void {
+    this.spiralTrails.clearParams(smallID);
   }
 
   recentlyUpdatedTiles(): TileRef[] {
@@ -1004,7 +753,7 @@ export class GameView implements GameMap {
       tile,
       searchRange,
       types,
-      predicate as (unit: Unit | UnitView) => boolean,
+      predicate,
       playerId,
       includeUnderConstruction,
     );
@@ -1030,6 +779,39 @@ export class GameView implements GameMap {
     return Array.from(this._players.values());
   }
 
+  teamClanTag(team: Team | null): string | null {
+    if (!team) return null;
+    if (this._teamClanTags === null) {
+      if (this._players.size === 0) return null;
+      this._teamClanTags = this.initTeamClanTags();
+    }
+    return this._teamClanTags.get(team) ?? null;
+  }
+
+  invalidateTeamClanTags(): void {
+    this._teamClanTags = null;
+  }
+
+  private initTeamClanTags(): Map<Team, string | null> {
+    const teams = new Map<Team, PlayerView[]>();
+    for (const player of this._players.values()) {
+      const t = player.team();
+      if (t) {
+        let list = teams.get(t);
+        if (!list) {
+          list = [];
+          teams.set(t, list);
+        }
+        list.push(player);
+      }
+    }
+    const result = new Map<Team, string | null>();
+    for (const [t, players] of teams.entries()) {
+      result.set(t, resolveTeamClanTag(players));
+    }
+    return result;
+  }
+
   /**
    * Recompute every player's theme-derived colors. Call when the active theme
    * changes mid-game (e.g. toggling colorblind mode) so existing territories
@@ -1038,6 +820,21 @@ export class GameView implements GameMap {
   refreshPlayerColors(): void {
     for (const p of this._players.values()) {
       p.refreshColors();
+    }
+  }
+
+  cosmeticVisibility(): CosmeticVisibility {
+    return this._cosmeticVisibility;
+  }
+
+  /**
+   * Re-read the cosmetics visibility settings and re-resolve every player's
+   * drawn cosmetics and colors; the renderer must be refreshed afterwards.
+   */
+  refreshPlayerCosmetics(): void {
+    this._cosmeticVisibility = readCosmeticVisibility();
+    for (const p of this._players.values()) {
+      p.refreshCosmetics();
     }
   }
 
@@ -1077,6 +874,13 @@ export class GameView implements GameMap {
     if (this.lastUpdate === null) return 0;
     return this.lastUpdate.tick;
   }
+  // Set once the sim has decided the game (WinUpdate). Play may go on for
+  // those who stay, but the server archives the record at that point.
+  private _gameOver = false;
+  gameOver(): boolean {
+    return this._gameOver;
+  }
+
   inSpawnPhase(): boolean {
     return this.startTick === null;
   }
@@ -1191,9 +995,16 @@ export class GameView implements GameMap {
   numLandTiles(): number {
     return this._map.numLandTiles();
   }
+  waterVersion(): number {
+    return this._map.waterVersion();
+  }
   /** Map layers defined in the map's info.json, if any. */
-  layers(): import("../../core/game/TerrainMapLoader").MapLayer[] {
+  layers(): import("@openfront/engine-api/game/MapFiles").MapLayer[] {
     return this._mapData.layers ?? [];
+  }
+  /** Nations the map's manifest defines, whether or not they spawned. */
+  mapNationCount(): number {
+    return this._mapData.nations.length;
   }
   isValidCoord(x: number, y: number): boolean {
     return this._map.isValidCoord(x, y);
@@ -1261,6 +1072,9 @@ export class GameView implements GameMap {
   neighbors4(ref: TileRef, out: TileRef[]): number {
     return this._map.neighbors4(ref, out);
   }
+  neighbors8(ref: TileRef, out: TileRef[]): number {
+    return this._map.neighbors8(ref, out);
+  }
   forEachNeighborWithDiag(
     ref: TileRef,
     callback: (neighbor: TileRef) => void,
@@ -1295,10 +1109,17 @@ export class GameView implements GameMap {
   ): Set<TileRef> {
     return this._map.circleSearch(tile, radius, filter);
   }
+  bfsSearch(
+    tile: TileRef,
+    filter: (gm: GameMap, tile: TileRef) => boolean,
+    onVisit?: (tile: TileRef) => boolean | void,
+  ): boolean {
+    return this._map.bfsSearch(tile, filter, onVisit);
+  }
   bfs(
     tile: TileRef,
     filter: (gm: GameMap, tile: TileRef) => boolean,
-  ): Set<TileRef> {
+  ): ReadonlyTileSet {
     return this._map.bfs(tile, filter);
   }
   tileState(tile: TileRef): number {
@@ -1317,7 +1138,42 @@ export class GameView implements GameMap {
     return this._gameID;
   }
 
+  // Started from a saved game rather than from the beginning. Such a game is
+  // never archived, so it earns no XP or achievements.
+  resumedFromSave(): boolean {
+    return this._resumedFromSave;
+  }
+
+  private _markedPlayers: ReadonlySet<number> | null = null;
+
   focusedPlayer(): PlayerView | null {
     return this.myPlayer();
+  }
+
+  /**
+   * Extra smallIDs drawn with the target crosshair by the name pass, on top
+   * of the player's real transitive targets (e.g. the tutorial pointing at
+   * capturable tribes). Null when nothing is requested.
+   */
+  setMarkedPlayers(ids: ReadonlySet<number> | null): void {
+    this._markedPlayers = ids;
+  }
+
+  markedPlayers(): ReadonlySet<number> | null {
+    return this._markedPlayers;
+  }
+
+  private _ownSpawnRing = false;
+
+  /**
+   * Keep the local player's spawn-phase ring drawn after the phase ends
+   * (the tutorial uses it to show a new player where their territory is).
+   */
+  setOwnSpawnRing(show: boolean): void {
+    this._ownSpawnRing = show;
+  }
+
+  ownSpawnRing(): boolean {
+    return this._ownSpawnRing;
   }
 }

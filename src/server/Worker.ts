@@ -1,3 +1,36 @@
+import {
+  GameMapSize,
+  GameMapType,
+  GameMode,
+} from "@openfront/engine-api/game/GameTypes";
+import {
+  ID,
+  isValidGameID,
+  MAX_USERNAME_LENGTH,
+} from "@openfront/engine-api/Schemas";
+import { adjustForTeams } from "@openfront/engine-lib/game/TeamAssignment";
+import { CloseCode, CloseReason } from "@openfront/shared/CloseCodes";
+import { GameEnv } from "@openfront/shared/configuration/Env";
+import { generateID, replacer } from "@openfront/shared/SharedUtil";
+import {
+  ClientMessage,
+  ClientPlatformSchema,
+  HOSTED_LOBBY_AUTO_START_MS,
+  LevelBadge,
+  MAX_HOSTED_LOBBIES,
+  hostedLobbyMaxPlayers,
+  MIN_HOSTED_LOBBY_AUTO_START_MS,
+  MIN_HOSTED_LOBBY_PLAYERS,
+  ServerErrorMessage,
+} from "@openfront/shared/WireSchemas";
+import {
+  CreateGameInputSchema,
+  isPrivateGameInput,
+} from "@openfront/shared/WorkerSchemas";
+import {
+  decodeClientMessage,
+  encodeServerMessage,
+} from "@openfront/shared/ZbinWire";
 import compression from "compression";
 import express, { NextFunction, Request, Response } from "express";
 import rateLimit from "express-rate-limit";
@@ -7,41 +40,263 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { WebSocket, WebSocketServer } from "ws";
 import { z } from "zod";
-import { GameEnv } from "../core/configuration/Config";
-import { GameType } from "../core/game/Game";
-import {
-  ClientMessageSchema,
-  ID,
-  MAX_HOSTED_LOBBIES,
-  ServerErrorMessage,
-} from "../core/Schemas";
-import { generateID, replacer } from "../core/Util";
-import { CreateGameInputSchema } from "../core/WorkerSchemas";
 import { registerAdminBotRoutes } from "./AdminBotRoutes";
 import { censorPlayer } from "./Censor";
 import { Client } from "./Client";
+import { gameApiCors } from "./GameApiCors";
 import { GameManager } from "./GameManager";
 import { registerGamePreviewRoute } from "./GamePreviewRoute";
-import type { GameServer } from "./GameServer";
-import { isSteamAuthenticated, planJoinVerify, verifyJoin } from "./JoinVerify";
-import { getUserMe, verifyClientToken } from "./jwt";
+import { GamePhase, type GameServer } from "./GameServer";
+import {
+  isSteamAuthenticated,
+  type JoinVerifyResponse,
+  planJoinVerify,
+  verifyJoin,
+} from "./JoinVerify";
+import { getUserMe, userMeFailureClose, verifyClientToken } from "./jwt";
+import { levelBadgeForPlayer } from "./LevelBadge";
+import { payForLobbyQueue, queueListedLobby } from "./LobbyQueuePayment";
 import { logger } from "./Logger";
-import { enforceVerifiedBadge } from "./Privilege";
+import { readMapLandTiles } from "./MapLandTiles";
+import { registerPlayerProfileRoute } from "./PlayerProfileRoute";
+import { resolveVerifiedJoin } from "./Privilege";
 
+import { loadGatekeeper } from "./Gatekeeper";
 import { MapPlaylist } from "./MapPlaylist";
 import { setNoStoreHeaders } from "./NoStoreHeaders";
-import { startPolling } from "./PollingLoop";
 import { PrivilegeRefresher } from "./PrivilegeRefresher";
+import { startRankedCheckinLoops } from "./RankedCheckin";
+import { rejoinOrClose } from "./Rejoin";
 import { ServerEnv } from "./ServerEnv";
+import { SingleplayerPresence } from "./SingleplayerPresence";
 import { applyStaticAssetCacheControl } from "./StaticAssetCache";
-import { createMatchTelemetryEmitter } from "./telemetry/BufferedMatchTelemetryEmitter";
-import { MAX_WEBSOCKET_PAYLOAD_BYTES } from "./telemetry/MatchTelemetryConfig";
 import { WorkerLobbyService } from "./WorkerLobbyService";
 import { initWorkerMetrics } from "./WorkerMetrics";
+import { stripWorkerPrefix } from "./WorkerPathPrefix";
 
 const workerId = ServerEnv.workerId() ?? 0;
 const log = logger.child({ comp: `w_${workerId}` });
+
+// The WebSocket server's max payload.
+const MAX_WEBSOCKET_PAYLOAD_BYTES = 1024 * 1024;
 const playlist = new MapPlaylist();
+
+export function clampApprovedUsername(username: string): string {
+  return username.length > MAX_USERNAME_LENGTH
+    ? username.slice(0, MAX_USERNAME_LENGTH).trim()
+    : username;
+}
+
+export function isSocketClosed(
+  ws: WebSocket | { readyState: number },
+): boolean {
+  return (
+    ws.readyState === WebSocket.CLOSING || ws.readyState === WebSocket.CLOSED
+  );
+}
+
+export type JoinOutcome =
+  | { action: "admit"; username: string; clanTag: string | null }
+  | { action: "reject"; reason: string; errorCodes?: string[] };
+
+export function resolveJoinVerdict(
+  verdict: JoinVerifyResponse,
+  fallback: { username: string; clanTag: string | null },
+): JoinOutcome {
+  if (verdict.status === "approved") {
+    return {
+      action: "admit",
+      username: clampApprovedUsername(verdict.username),
+      clanTag: verdict.clanTag,
+    };
+  }
+  if (verdict.status === "rejected") {
+    return {
+      action: "reject",
+      reason: verdict.reason,
+      ...(verdict.errorCodes !== undefined && {
+        errorCodes: verdict.errorCodes,
+      }),
+    };
+  }
+  return {
+    action: "admit",
+    username: verdict.identity
+      ? clampApprovedUsername(verdict.identity.username)
+      : fallback.username,
+    clanTag: verdict.identity ? verdict.identity.clanTag : fallback.clanTag,
+  };
+}
+
+export interface AdmissionTarget {
+  markAdmitted(persistentID: string, attemptID?: string): void;
+  unmarkAdmitted(persistentID: string, attemptID?: string): void;
+  wasAdmitted(persistentID: string): boolean;
+  hasEverBeenSeated?(persistentID: string): boolean;
+}
+
+export function createAdmissionGuard(
+  game: AdmissionTarget | null | undefined,
+  persistentId: string,
+  isReadmit: boolean,
+  attemptId: string = generateID(),
+) {
+  let admittedThisAttempt = false;
+
+  return {
+    markAdmittedIfNeeded(): void {
+      if (admittedThisAttempt) return;
+      const shouldAdmit = !isReadmit
+        ? !game?.wasAdmitted(persistentId)
+        : !game?.hasEverBeenSeated?.(persistentId);
+      if (shouldAdmit) {
+        game?.markAdmitted(persistentId, attemptId);
+        admittedThisAttempt = true;
+      }
+    },
+    rollback(): void {
+      if (admittedThisAttempt) {
+        admittedThisAttempt = false;
+        game?.unmarkAdmitted(persistentId, attemptId);
+      }
+    },
+    wasAdmittedThisAttempt: () => admittedThisAttempt,
+  };
+}
+
+// Toggle whether a private lobby is visible in the public lobby browser.
+// Creator-only; listing requires an active subscription (checked fresh
+// against the API) and is limited to one listed lobby per creator.
+export function registerListingRoute(opts: {
+  app: express.Express;
+  gm: GameManager;
+  lobbyService: WorkerLobbyService;
+  log: typeof log;
+}) {
+  const { app, gm, lobbyService, log } = opts;
+
+  app.post(
+    "/api/game/:id/listing",
+    async (req: Request<{ id: string }>, res: Response) => {
+      const authHeader = req.headers.authorization;
+      if (!authHeader?.startsWith("Bearer ")) {
+        return res.status(400).json({ error: "Authorization header required" });
+      }
+      const token = authHeader.substring("Bearer ".length);
+      const auth = await verifyClientToken(token);
+      if (auth.type !== "success") {
+        return res.status(401).json({ error: "Invalid token" });
+      }
+
+      const parsed = z
+        .object({
+          listed: z.boolean(),
+          autoStartMs: z
+            .number()
+            .int()
+            .min(MIN_HOSTED_LOBBY_AUTO_START_MS)
+            .max(HOSTED_LOBBY_AUTO_START_MS)
+            .optional(),
+          maxPlayers: z.number().int().min(MIN_HOSTED_LOBBY_PLAYERS).optional(),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: z.prettifyError(parsed.error) });
+      }
+      const { listed, autoStartMs, maxPlayers } = parsed.data;
+
+      const game = gm.game(req.params.id);
+      if (game === null) {
+        return res.status(404).json({ error: "Game not found" });
+      }
+      if (!game.isCreator(auth.persistentId)) {
+        return res
+          .status(403)
+          .json({ error: "Only the lobby creator can change its listing" });
+      }
+      if (game.isPublic() || game.hasStarted()) {
+        return res.status(409).json({ error: "Game cannot be listed" });
+      }
+      // Listing is one-way for the host: players recruited from the lobby
+      // browser must not lose the lobby they joined. Only the master delists
+      // (duplicate creator / cap overflow).
+      if (!listed && game.isListed()) {
+        return res.status(409).json({ error: "listing_permanent" });
+      }
+
+      if (listed) {
+        // The cap's ceiling follows the map, like public lobby sizes do.
+        // Without the map's size there is no ceiling to check against, so
+        // refuse rather than guess.
+        const preMapSize = await readListingMapSize(game, log);
+        if (preMapSize === null) {
+          return res.status(503).json({ error: "listing_failed" });
+        }
+        const preError = getListingEligibilityError(
+          game,
+          maxPlayers,
+          preMapSize,
+        );
+        if (preError !== null) {
+          return res.status(409).json({ error: preError });
+        }
+
+        // Dev has no subscription backend; skip the check so the feature is
+        // testable locally (same precedent as Turnstile).
+        if (ServerEnv.env() !== GameEnv.Dev) {
+          const userMe = await getUserMe(token);
+          if (userMe.type === "error") {
+            log.warn(
+              `listing rejected, user me fetch failed: ${userMe.message}`,
+              {
+                gameID: req.params.id,
+              },
+            );
+            return res.status(403).json({ error: "subscription_required" });
+          }
+          if (!userMe.response.player.canCreatePublicLobbies) {
+            return res.status(403).json({ error: "subscription_required" });
+          }
+        }
+
+        // Re-verify after the async entitlement check to close the race window
+        // where the host could alter lobby settings (e.g. enable host cheats,
+        // or switch to a smaller map). Nothing awaits between this check and
+        // setListed.
+        const mapSize = await readListingMapSize(game, log);
+        if (mapSize === null) {
+          return res.status(503).json({ error: "listing_failed" });
+        }
+        const raceError = getListingEligibilityError(game, maxPlayers, mapSize);
+        if (raceError !== null) {
+          return res.status(409).json({ error: raceError });
+        }
+
+        const creatorID = game.hashedCreatorID();
+        if (
+          creatorID !== undefined &&
+          lobbyService.creatorHasListedLobby(creatorID, game.id)
+        ) {
+          return res.status(409).json({ error: "listing_limit_reached" });
+        }
+
+        // Cluster-wide cap to prevent listing spam. Approximate here (the
+        // broadcast lags by ~1s); the master's cap is the backstop.
+        if (lobbyService.hostedLobbyCount() >= MAX_HOSTED_LOBBIES) {
+          return res.status(409).json({ error: "listing_full" });
+        }
+      }
+
+      game.setListed(listed, { autoStartMs, maxPlayers });
+      log.info(`lobby listing ${listed ? "enabled" : "disabled"}`, {
+        gameID: game.id,
+        autoStartMs,
+        maxPlayers,
+      });
+      res.json({ listed });
+    },
+  );
+}
 
 // Worker setup
 export async function startWorker() {
@@ -58,30 +313,31 @@ export async function startWorker() {
     maxPayload: MAX_WEBSOCKET_PAYLOAD_BYTES,
   });
 
-  const buildHash = ServerEnv.gitCommit();
-  const telemetry = createMatchTelemetryEmitter(process.env, log, {
-    buildHash,
-    instanceId: ServerEnv.instanceId(),
-    // Reuse the normalized worker id (defaults to 0 when WORKER_ID is unset) so
-    // telemetry identity matches routing and logging instead of reporting
-    // undefined.
-    workerId,
-  });
-  const gm = new GameManager(log, telemetry, buildHash);
-  server.on("close", () => telemetry.stop());
+  const gatekeeper = await loadGatekeeper(log);
+  const gm = new GameManager(log, gatekeeper);
 
   // Initialize lobby service (handles WebSocket upgrade routing)
   const lobbyService = new WorkerLobbyService(server, wss, gm, log);
+  const singleplayerPresence = new SingleplayerPresence();
 
   setTimeout(
     () => {
-      startMatchmakingPolling(gm);
+      // The ranked loop follows the deployment-active flag the master pushes
+      // to this worker (OPE-469): a draining, standby or fenced server keeps
+      // the games it has but stops offering new matches.
+      startRankedCheckinLoops({
+        gm,
+        playlist,
+        workerId,
+        log,
+        isActive: () => lobbyService.isDeploymentActive(),
+      });
     },
     1000 + Math.random() * 2000,
   );
 
   if (ServerEnv.otelEnabled()) {
-    initWorkerMetrics(gm);
+    initWorkerMetrics(gm, lobbyService, singleplayerPresence);
   }
 
   const privilegeRefresher = new PrivilegeRefresher(
@@ -90,32 +346,17 @@ export async function startWorker() {
     ServerEnv.jwtIssuer() + "/reserved_clan_tags",
     log,
   );
-  privilegeRefresher.start();
+  void privilegeRefresher.start();
 
-  // Middleware to handle /wX path prefix
-  app.use((req, res, next) => {
-    // Extract the original path without the worker prefix
-    const originalPath = req.url;
-    const match = originalPath.match(/^\/w(\d+)(.*)$/);
+  // Ahead of everything that can reject a request — the worker-prefix check
+  // below and the rate limiter further down — so that a 404 or a 429 still
+  // carries the CORS headers. Without them the desktop client sees an opaque
+  // CORS failure instead of the real status, which hides the actual fault.
+  // Matches both URL shapes because it runs before the prefix is stripped,
+  // including a prefix naming a different worker.
+  app.use(["/api", /^\/w\d+\/api/], gameApiCors);
 
-    if (match) {
-      const pathWorkerId = parseInt(match[1]);
-      const actualPath = match[2] || "/";
-
-      // Verify this request is for the correct worker
-      if (pathWorkerId !== workerId) {
-        return res.status(404).json({
-          error: "Worker mismatch",
-          message: `This is worker ${workerId}, but you requested worker ${pathWorkerId}`,
-        });
-      }
-
-      // Update the URL to remove the worker prefix
-      req.url = actualPath;
-    }
-
-    next();
-  });
+  app.use(stripWorkerPrefix(workerId));
 
   app.set("trust proxy", 3);
   app.use(compression());
@@ -178,11 +419,14 @@ export async function startWorker() {
       return res.status(400).json({ error: z.prettifyError(parsed.error) });
     }
     const gc = parsed.data;
-    // Public games are scheduled by the master over IPC, never created here.
-    if (gc?.gameType === GameType.Public) {
+    // Only private games are created here. Public games are scheduled by the
+    // master over IPC, and singleplayer games run in the browser, never on a
+    // game server. An empty body ({}) parses to undefined and gets
+    // createGame's private default.
+    if (!isPrivateGameInput(gc)) {
       return res
         .status(400)
-        .json({ error: "Cannot create public games via this endpoint" });
+        .json({ error: "Only private games can be created via this endpoint" });
     }
 
     // Reuse-lobby flow: ?previous=<gameID> marks this creation as the successor
@@ -258,10 +502,12 @@ export async function startWorker() {
     });
   });
 
-  // Toggle whether a private lobby is visible in the public lobby browser.
-  // Creator-only; listing requires an active subscription (checked fresh
-  // against the API) and is limited to one listed lobby per creator.
-  app.post("/api/game/:id/listing", async (req, res) => {
+  registerListingRoute({ app, gm, lobbyService, log });
+
+  // The host of a listed lobby pays (plutonium, charged by the API with the
+  // host's token) to put it in the public Special queue, right behind the
+  // lobby that's counting down.
+  app.post("/api/game/:id/queue", async (req, res) => {
     const authHeader = req.headers.authorization;
     if (!authHeader?.startsWith("Bearer ")) {
       return res.status(400).json({ error: "Authorization header required" });
@@ -272,78 +518,52 @@ export async function startWorker() {
       return res.status(401).json({ error: "Invalid token" });
     }
 
-    const parsed = z.object({ listed: z.boolean() }).safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({ error: z.prettifyError(parsed.error) });
-    }
-    const { listed } = parsed.data;
-
     const game = gm.game(req.params.id);
     if (game === null) {
       return res.status(404).json({ error: "Game not found" });
     }
-    if (!game.isCreator(auth.persistentId)) {
-      return res
-        .status(403)
-        .json({ error: "Only the lobby creator can change its listing" });
+    const outcome = await queueListedLobby(
+      {
+        isCreator: (id) => game.isCreator(id),
+        isPublic: () => game.isPublic(),
+        isListed: () => game.isListed(),
+        isQueued: () => game.isQueued(),
+        inLobby: () => game.phase() === GamePhase.Lobby && !game.hasStarted(),
+        startsAt: () => game.gameInfo().startsAt,
+        autoStartAt: () => game.autoStartAt(),
+        queueForPublic: () => game.queueForPublic(),
+      },
+      auth.persistentId,
+      // Dev has no payment backend; skip the charge so the feature is
+      // testable locally (same precedent as the listing subscription check).
+      ServerEnv.env() === GameEnv.Dev
+        ? async () => ({ type: "success" })
+        : () => payForLobbyQueue(token, game.id),
+    );
+    if (outcome.status === 502) {
+      log.warn("lobby queue payment failed", { gameID: game.id });
+    } else if (outcome.status === 200) {
+      log.info("lobby queued for public play", { gameID: game.id });
     }
-    if (game.isPublic() || game.hasStarted()) {
-      return res.status(409).json({ error: "Game cannot be listed" });
+    res.status(outcome.status).json(outcome.body);
+  });
+
+  // Singleplayer games run in the browser; the client beats here once a
+  // minute so the worker can export how many are in progress (see
+  // SingleplayerPresence). The id is client-minted and routes here by hash,
+  // exactly like the game socket would.
+  app.post("/api/singleplayer/:id/heartbeat", (req, res) => {
+    const gameID = req.params.id;
+    if (!isValidGameID(gameID)) {
+      res.status(400).json({ error: "Invalid game ID" });
+      return;
     }
-
-    if (listed) {
-      // A whitelisted lobby would be advertised to everyone yet reject every
-      // joiner; the whitelist itself is stripped from the broadcast, so
-      // browsers could not even tell why.
-      if (game.hasJoinWhitelist()) {
-        return res.status(409).json({ error: "listing_whitelist_enabled" });
-      }
-
-      // Host cheats give the host an asymmetric advantage over players
-      // recruited from the lobby browser. Enabling them while listed is
-      // likewise rejected (GameServer's update_game_config handling).
-      if (game.hasHostCheats()) {
-        return res.status(409).json({ error: "listing_host_cheats_enabled" });
-      }
-
-      // Dev has no subscription backend; skip the check so the feature is
-      // testable locally (same precedent as Turnstile).
-      if (ServerEnv.env() !== GameEnv.Dev) {
-        const userMe = await getUserMe(token);
-        if (userMe.type === "error") {
-          log.warn(
-            `listing rejected, user me fetch failed: ${userMe.message}`,
-            {
-              gameID: req.params.id,
-            },
-          );
-          return res.status(403).json({ error: "subscription_required" });
-        }
-        if (!userMe.response.player.canCreatePublicLobbies) {
-          return res.status(403).json({ error: "subscription_required" });
-        }
-      }
-
-      const creatorID = game.hashedCreatorID();
-      if (
-        creatorID !== undefined &&
-        lobbyService.creatorHasListedLobby(creatorID, game.id)
-      ) {
-        return res.status(409).json({ error: "listing_limit_reached" });
-      }
-
-      // Cluster-wide cap to prevent listing spam. Approximate here (the
-      // broadcast lags by ~1s); the master's cap is the backstop.
-      if (lobbyService.hostedLobbyCount() >= MAX_HOSTED_LOBBIES) {
-        return res.status(409).json({ error: "listing_full" });
-      }
-    }
-
-    game.setListed(listed);
-    log.info(`lobby listing ${listed ? "enabled" : "disabled"}`, {
-      gameID: game.id,
-    });
-    res.json({ listed });
+    const platform = ClientPlatformSchema.safeParse(req.body?.platform);
+    singleplayerPresence.heartbeat(
+      gameID,
+      platform.success ? platform.data : "unknown",
+    );
+    res.status(204).end();
   });
 
   app.get("/api/game/:id/exists", async (req, res) => {
@@ -370,31 +590,36 @@ export async function startWorker() {
     baseDir: __dirname,
   });
 
+  registerPlayerProfileRoute({ app, log, baseDir: __dirname });
+
   registerAdminBotRoutes({ app, gm, workerId, log });
 
   // WebSocket handling
   wss.on("connection", (ws: WebSocket, req) => {
-    ws.on("message", async (message: string) => {
+    ws.on("message", async (message: Buffer) => {
       const ip = getClientIp(req);
 
       try {
-        // Parse and handle client messages
-        const parsed = ClientMessageSchema.safeParse(
-          JSON.parse(message.toString()),
-        );
-        if (!parsed.success) {
-          const error = z.prettifyError(parsed.error);
-          log.warn("Error parsing client message", error);
+        // Every frame is zbin (see ZbinWire.ts). Nothing before join carries a
+        // dictionary-mapped id, so this decodes without a context.
+        let clientMsg: ClientMessage;
+        try {
+          clientMsg = decodeClientMessage(message, undefined);
+        } catch (e) {
+          const error = String(e);
+          log.warn("Error decoding client message", error);
           ws.send(
-            JSON.stringify({
-              type: "error",
-              error: error.toString(),
-            } satisfies ServerErrorMessage),
+            encodeServerMessage(
+              {
+                type: "error",
+                error,
+              } satisfies ServerErrorMessage,
+              undefined,
+            ),
           );
-          ws.close(1002, "ClientJoinMessageSchema");
+          ws.close(CloseCode.BadRequest, CloseReason.InvalidMessage);
           return;
         }
-        const clientMsg = parsed.data;
 
         if (clientMsg.type === "ping") {
           // Ignore ping
@@ -406,12 +631,53 @@ export async function startWorker() {
           return;
         }
 
-        // Verify this worker should handle this game
+        // Verify this worker should handle this game. Close loudly: the bare
+        // return this replaces left the socket open with no reply, so a
+        // misrouted client (stale bundle computing a worker index from an old
+        // numWorkers) hung forever instead of being told to reload.
         const expectedWorkerId = ServerEnv.workerIndex(clientMsg.gameID);
         if (expectedWorkerId !== workerId) {
           log.warn(
             `Worker mismatch: Game ${clientMsg.gameID} should be on worker ${expectedWorkerId}, but this is worker ${workerId}`,
           );
+          ws.close(CloseCode.WrongWorker, CloseReason.WrongWorker);
+          return;
+        }
+
+        // The sim is deterministic only when every client in a game runs
+        // identical code, so a client built from a different commit (e.g. a
+        // tab left open across a deploy) would desync the game. Reject it
+        // with a typed error the client answers by refreshing. A missing
+        // commit means a pre-feature bundle, which is stale by definition.
+        // The "desktop" placeholder is exempt: an Electron shell predating
+        // OPE-358 injects it no matter how fresh its self-updating bundle is
+        // (GameVersion.ts documents the shape as live), so treating it as a
+        // mismatch would lock those players out permanently — and the
+        // desktop error path is a terminal alert with no retry. The grace
+        // dies with the last pre-OPE-358 shell.
+        if (
+          clientMsg.gitCommit !== ServerEnv.gitCommit() &&
+          clientMsg.gitCommit !== "desktop"
+        ) {
+          log.info("rejecting version-mismatched client", {
+            gameID: clientMsg.gameID,
+            clientCommit: clientMsg.gitCommit,
+          });
+          ws.send(
+            encodeServerMessage(
+              {
+                type: "error",
+                error: "version_mismatch",
+                gitCommit: ServerEnv.gitCommit(),
+              } satisfies ServerErrorMessage,
+              undefined,
+            ),
+          );
+          // Normal closure: the typed error above is the whole message. The
+          // client latches Normal silently, so nothing stacks on the alert; a
+          // 4xxx rejection would pop a generic "connection refused" dialog on
+          // top of it, and a retryable code makes it reconnect and loop.
+          ws.close(CloseCode.Normal, "Version mismatch");
           return;
         }
 
@@ -421,13 +687,16 @@ export async function startWorker() {
           log.warn(`Invalid token: ${result.message}`, {
             gameID: clientMsg.gameID,
           });
-          ws.close(1002, `Unauthorized: invalid token`);
+          ws.close(CloseCode.InternalError, CloseReason.InvalidToken);
+          return;
+        }
+        if (isSocketClosed(ws)) {
           return;
         }
         const { persistentId, claims } = result;
 
         if (claims?.role === "banned") {
-          ws.close(1002, "Account Banned");
+          ws.close(CloseCode.Banned, CloseReason.Banned);
           return;
         }
 
@@ -436,18 +705,15 @@ export async function startWorker() {
             gameID: clientMsg.gameID,
             persistentID: persistentId,
           });
-          const wasFound = gm.rejoinClient(
+          rejoinOrClose(
+            gm,
+            log,
+            workerId,
             ws,
             persistentId,
             clientMsg.gameID,
             clientMsg.lastTurn,
           );
-          if (!wasFound) {
-            log.warn(
-              `game ${clientMsg.gameID} not found on worker ${workerId}`,
-            );
-            ws.close(1002, "Game not found");
-          }
           return;
         }
 
@@ -474,10 +740,15 @@ export async function startWorker() {
         // API. Runs before the rejoin attempt so a pre-start identity
         // change on refresh is screened before it is applied.
         let verifySkipped = false;
+        const game = gm.game(clientMsg.gameID);
+        const isReadmit = game?.wasAdmitted(persistentId) ?? false;
+        const admissionGuard = createAdmissionGuard(
+          game,
+          persistentId,
+          isReadmit,
+        );
         if (ServerEnv.env() !== GameEnv.Dev) {
-          const game = gm.game(clientMsg.gameID);
           const stored = game?.storedIdentity(persistentId) ?? null;
-          const isReadmit = game?.wasAdmitted(persistentId) ?? false;
           const steamAuthed = isSteamAuthenticated(claims);
           // SECURITY: the reject/skip/verify split (first joins must
           // present a token, only re-admits may omit it) lives in
@@ -506,7 +777,7 @@ export async function startWorker() {
               persistentID: persistentId,
               gameID: clientMsg.gameID,
             });
-            ws.close(1002, "Unauthorized: Turnstile token rejected");
+            ws.close(CloseCode.Unauthorized, CloseReason.TurnstileFailed);
             return;
           }
           if (plan.action === "verify") {
@@ -515,29 +786,44 @@ export async function startWorker() {
               plan.token,
               clientMsg.username,
               clientMsg.clanTag ?? null,
+              persistentId,
             );
-            switch (verdict.status) {
-              case "approved":
-                username = verdict.username;
-                clanTag = verdict.clanTag;
-                break;
-              case "rejected":
-                // Only reachable on first joins: re-admits omit the token,
-                // which the API always approves.
-                log.warn("Unauthorized: Turnstile token rejected", {
-                  persistentID: persistentId,
-                  gameID: clientMsg.gameID,
-                  reason: verdict.reason,
-                });
-                ws.close(1002, "Unauthorized: Turnstile token rejected");
-                return;
-              case "error":
-                // Fail open: the locally screened name stands.
-                log.error("join_verify error", {
-                  persistentID: persistentId,
-                  gameID: clientMsg.gameID,
-                  reason: verdict.reason,
-                });
+            if (verdict.status === "approved" || verdict.status === "error") {
+              admissionGuard.markAdmittedIfNeeded();
+            }
+            if (isSocketClosed(ws)) {
+              return;
+            }
+            const resolved = resolveJoinVerdict(verdict, {
+              username,
+              clanTag,
+            });
+            if (resolved.action === "reject") {
+              log.warn("Unauthorized: Turnstile token rejected", {
+                persistentID: persistentId,
+                gameID: clientMsg.gameID,
+                reason: resolved.reason,
+                ...(resolved.errorCodes !== undefined && {
+                  errorCodes: resolved.errorCodes,
+                }),
+              });
+              ws.close(CloseCode.Unauthorized, CloseReason.TurnstileFailed);
+              return;
+            }
+            username = resolved.username;
+            clanTag = resolved.clanTag;
+
+            if (verdict.status === "error") {
+              const fields = {
+                persistentID: persistentId,
+                gameID: clientMsg.gameID,
+                reason: verdict.reason,
+              };
+              if (verdict.degraded) {
+                log.warn("join_verify degraded", fields);
+              } else {
+                log.error("join_verify error", fields);
+              }
             }
           } else {
             verifySkipped = true;
@@ -567,15 +853,22 @@ export async function startWorker() {
         let publicId: string | undefined;
         let friends: string[] = [];
         let ownedClanTags: string[] = [];
+        let trusted = false;
+        let levelBadge: LevelBadge | undefined;
         let accountUsername:
-          | { username?: string | null; usernameStatus?: string }
+          | {
+              username?: string | null;
+              usernameBase?: string | null;
+              usernameStatus?: string;
+            }
           | undefined;
 
         const allowedFlares = ServerEnv.allowedFlares();
         if (claims === null) {
           if (allowedFlares !== undefined) {
             log.warn("Unauthorized: Anonymous user attempted to join game");
-            ws.close(1002, "Unauthorized");
+            admissionGuard.rollback();
+            ws.close(CloseCode.Unauthorized, CloseReason.LoginRequired);
             return;
           }
         } else {
@@ -586,7 +879,12 @@ export async function startWorker() {
               persistentID: persistentId,
               gameID: clientMsg.gameID,
             });
-            ws.close(1002, "Unauthorized: user me fetch failed");
+            const { code, reason } = userMeFailureClose(result);
+            admissionGuard.rollback();
+            ws.close(code, reason);
+            return;
+          }
+          if (isSocketClosed(ws)) {
             return;
           }
           flares = result.response.player.flares;
@@ -594,6 +892,10 @@ export async function startWorker() {
           friends = result.response.player.friends;
           ownedClanTags = result.response.player.clans?.map((c) => c.tag) ?? [];
           accountUsername = result.response.player;
+          trusted = result.response.player.trustTier === "trusted";
+          // Display-only: the roster badge comes from this lookup alone, never
+          // from the join message. None when the player hides their level.
+          levelBadge = levelBadgeForPlayer(result.response.player);
 
           if (allowedFlares !== undefined) {
             const allowed =
@@ -603,7 +905,8 @@ export async function startWorker() {
               log.warn(
                 "Forbidden: player without an allowed flare attempted to join game",
               );
-              ws.close(1002, "Forbidden");
+              admissionGuard.rollback();
+              ws.close(CloseCode.Forbidden, CloseReason.Forbidden);
               return;
             }
           }
@@ -633,23 +936,33 @@ export async function startWorker() {
             persistentID: persistentId,
             gameID: clientMsg.gameID,
           });
-          ws.close(1002, cosmeticResult.reason);
+          admissionGuard.rollback();
+          ws.close(CloseCode.Forbidden, CloseReason.CosmeticsForbidden);
           return;
         }
 
-        // An undefined account means an anonymous persistent-ID join (no
-        // /users/@me fetch) — enforceVerifiedBadge treats that as Dev-only.
+        // Verified intent, not a claim to verify: the check stays only when
+        // the account renders bare and the screened join name is that bare
+        // name. The name itself is never replaced, so everything shown in the
+        // lobby has been through censorPlayer and join_verify. An undefined
+        // account is an anonymous persistent-ID join, which
+        // resolveVerifiedJoin treats as Dev-only.
+        const verifiedOutcome = resolveVerifiedJoin(
+          cosmeticResult.cosmetics,
+          username,
+          accountUsername ?? null,
+        );
         if (
-          enforceVerifiedBadge(
-            cosmeticResult.cosmetics,
-            username,
-            accountUsername ?? null,
-          )
+          verifiedOutcome === "custom" &&
+          clientMsg.cosmetics?.verified === true
         ) {
-          log.info("Stripped unvouched verified-badge claim", {
-            persistentID: persistentId,
-            gameID: clientMsg.gameID,
-          });
+          log.info(
+            "Verified intent not honoured: join name is not the account bare name",
+            {
+              persistentID: persistentId,
+              gameID: clientMsg.gameID,
+            },
+          );
         }
 
         // Create client and add to game
@@ -666,36 +979,71 @@ export async function startWorker() {
           cosmeticResult.cosmetics,
           publicId,
           friends,
+          clientMsg.spectator === true,
+          trusted,
+          clientMsg.platform,
+          clientMsg.device,
+          levelBadge,
         );
 
         const joinResult = gm.joinClient(client, clientMsg.gameID);
+        if (joinResult !== "joined" && joinResult !== "redirected") {
+          admissionGuard.rollback();
+        }
 
         if (joinResult === "not_found") {
           log.info(`game ${clientMsg.gameID} not found on worker ${workerId}`);
-          ws.close(1002, "Game not found");
+          ws.close(CloseCode.GameNotFound, CloseReason.GameNotFound);
         } else if (joinResult === "kicked") {
           log.warn(`kicked client tried to join game ${clientMsg.gameID}`, {
             gameID: clientMsg.gameID,
             workerId,
           });
-          ws.close(1002, "Cannot join game");
+          ws.close(CloseCode.GameClosed, CloseReason.CannotJoin);
         } else if (joinResult === "not_allowlisted") {
           log.info(`client not whitelisted for game ${clientMsg.gameID}`, {
             gameID: clientMsg.gameID,
             workerId,
           });
-          ws.close(1002, "You are not whitelisted");
+          ws.close(CloseCode.Forbidden, CloseReason.NotAllowlisted);
+        } else if (joinResult === "not_trusted") {
+          log.info(`untrusted client tried to join game ${clientMsg.gameID}`, {
+            gameID: clientMsg.gameID,
+            workerId,
+          });
+          ws.close(CloseCode.Forbidden, CloseReason.NotTrusted);
+        } else if (joinResult === "redirected") {
+          // Normal, not a rejection code: the game already sent this client
+          // where to go, and Normal is the client's silent branch, so no
+          // dialog appears while it navigates.
+          log.info("client redirected to a pool sibling", {
+            gameID: clientMsg.gameID,
+            workerId,
+          });
+          ws.close(CloseCode.Normal, CloseReason.PoolRedirect);
+        } else if (joinResult === "ended") {
+          log.info(`client tried to join ended game ${clientMsg.gameID}`, {
+            gameID: clientMsg.gameID,
+            workerId,
+          });
+          ws.close(CloseCode.GameNotFound, CloseReason.GameEnded);
         } else if (joinResult === "rejected") {
           log.info(`client rejected from game ${clientMsg.gameID}`, {
             gameID: clientMsg.gameID,
             workerId,
           });
-          ws.close(1002, "Lobby full");
+          ws.close(CloseCode.LobbyFull, CloseReason.LobbyFull);
+        } else if (joinResult === "started") {
+          log.info(`client joined game ${clientMsg.gameID} after it started`, {
+            gameID: clientMsg.gameID,
+            workerId,
+          });
+          ws.close(CloseCode.GameStarted, CloseReason.GameStarted);
         }
 
         // Handle other message types
       } catch (error) {
-        ws.close(1011, "Internal server error");
+        ws.close(CloseCode.InternalError, CloseReason.InternalError);
         log.warn(
           `error handling websocket message for ${ipAnonymize(ip)}: ${error}`.substring(
             0,
@@ -707,7 +1055,7 @@ export async function startWorker() {
 
     ws.on("error", (error: Error) => {
       if ((error as any).code === "WS_ERR_UNEXPECTED_RSV_1") {
-        ws.close(1002, "WS_ERR_UNEXPECTED_RSV_1");
+        ws.close(CloseCode.ProtocolError, CloseReason.ProtocolError);
       }
     });
     ws.on("close", () => {
@@ -741,107 +1089,76 @@ export async function startWorker() {
   });
 }
 
-async function startMatchmakingPolling(gm: GameManager) {
-  // One checkin serves exactly one queue, so a host serving both modes
-  // runs one long-poll loop per mode.
-  startMatchmakingLoop(gm, "1v1");
-  startMatchmakingLoop(gm, "2v2");
-}
-
-const MatchmakingAssignmentSchema = z.object({
-  // Flat list of matched players' publicIds.
-  players: z.array(z.string()),
-  // The matcher's team split ([[a],[b]] for 1v1). Optional for tolerance,
-  // but the current API always sends it.
-  teams: z.array(z.array(z.string())).optional(),
-});
-
-function startMatchmakingLoop(gm: GameManager, mode: "1v1" | "2v2") {
-  startPolling(
-    async () => {
-      try {
-        const url = `${ServerEnv.jwtIssuer() + "/matchmaking/checkin"}`;
-        const gameId = ServerEnv.generateGameIdForWorker(workerId);
-        if (gameId === null) {
-          log.warn(`Failed to generate game ID for worker ${workerId}`);
-          return;
-        }
-
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 20000);
-        const response = await fetch(url, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-api-key": ServerEnv.apiKey(),
-          },
-          body: JSON.stringify({
-            id: workerId,
-            gameId: gameId,
-            ccu: gm.activeClients(),
-            instanceId: process.env.INSTANCE_ID,
-            mode,
-          }),
-          signal: controller.signal,
-        });
-
-        clearTimeout(timeoutId);
-
-        if (!response.ok) {
-          log.warn(
-            `Failed to poll ${mode} lobby: ${response.status} ${response.statusText}`,
-          );
-          return;
-        }
-
-        const data = await response.json();
-        log.info(`Lobby ${mode} poll successful:`, data);
-
-        if (data.assignment) {
-          const parsed = MatchmakingAssignmentSchema.safeParse(data.assignment);
-          if (!parsed.success) {
-            // Don't strand the matched players: create the game without
-            // the allowlist/team pins rather than dropping the match.
-            log.warn(
-              `Unexpected ${mode} assignment shape: ${z.prettifyError(parsed.error)}`,
-            );
-          }
-          const baseConfig =
-            mode === "2v2" ? playlist.get2v2Config() : playlist.get1v1Config();
-          const game = gm.createGame(
-            gameId,
-            parsed.success
-              ? { ...baseConfig, allowedPublicIds: parsed.data.players }
-              : baseConfig,
-            undefined,
-            // Deadline for the slowest player: after match-assignment the
-            // client still has to poll game existence, pass Turnstile, and
-            // clear join auth; anyone not connected when start() fires is
-            // left out of the roster and the ranked game starts short-handed.
-            // A full lobby is NOT delayed by this — hasReachedMaxPlayerCount
-            // flips the phase to Active as soon as everyone has joined.
-            Date.now() + 15000,
-            undefined,
-            parsed.success ? parsed.data.teams : undefined,
-          );
-          if (game === null) {
-            log.warn(`Failed to create matchmaking game ${gameId}`);
-          }
-        }
-      } catch (error) {
-        if (error instanceof Error && error.name === "AbortError") {
-          // Abort is expected if no game is scheduled on this worker.
-          return;
-        }
-        log.error(`Error polling ${mode} lobby:`, error);
-      }
-    },
-    5000 + Math.random() * 1000,
-  );
-}
-
 function getClientIp(req: http.IncomingMessage): string {
   const cfIp = req.headers["cf-connecting-ip"];
   if (typeof cfIp === "string" && cfIp) return cfIp;
   return req.socket.remoteAddress ?? "unknown";
+}
+
+// A lobby's map and its land tiles, read together so a later check can tell
+// whether the map changed since.
+export interface ListingMapSize {
+  map: GameMapType;
+  landTiles: number;
+}
+
+// Null (logged) if the map's manifest can't be read.
+async function readListingMapSize(
+  game: GameServer,
+  log: typeof logger,
+): Promise<ListingMapSize | null> {
+  const map = game.gameConfig.gameMap;
+  try {
+    return { map, landTiles: await readMapLandTiles(map) };
+  } catch (error) {
+    log.error(`listing rejected, map size unavailable: ${error}`, {
+      gameID: game.id,
+      map,
+    });
+    return null;
+  }
+}
+
+// Checks mutable lobby settings that make a lobby ineligible for public listing.
+// Evaluated before and after the async subscription check to prevent TOCTOU races.
+// With mapSize, the cap must also fit the map (hostedLobbyMaxPlayers).
+export function getListingEligibilityError(
+  game: GameServer,
+  maxPlayers?: number,
+  mapSize?: ListingMapSize,
+): string | null {
+  if (game.isPublic() || game.hasStarted()) {
+    return "Game cannot be listed";
+  }
+  if (game.hasJoinWhitelist()) {
+    return "listing_whitelist_enabled";
+  }
+  if (game.hasHostCheats()) {
+    return "listing_host_cheats_enabled";
+  }
+  const cap =
+    maxPlayers ?? (game.isListed() ? undefined : game.gameConfig.maxPlayers);
+  if (cap !== undefined) {
+    const effectiveCap =
+      game.gameConfig.gameMode === GameMode.Team
+        ? adjustForTeams(cap, game.gameConfig.playerTeams)
+        : cap;
+    if (effectiveCap <= game.numPlayers()) {
+      return "listing_max_players_too_low";
+    }
+    if (mapSize !== undefined) {
+      // The map changed while its size was being read.
+      if (mapSize.map !== game.gameConfig.gameMap) {
+        return "listing_failed";
+      }
+      const ceiling = hostedLobbyMaxPlayers(
+        mapSize.landTiles,
+        game.gameConfig.gameMapSize === GameMapSize.Compact,
+      );
+      if (effectiveCap > ceiling) {
+        return "listing_max_players_too_high";
+      }
+    }
+  }
+  return null;
 }

@@ -1,6 +1,6 @@
+import { EventBus } from "@openfront/shared/EventBus";
 import { html, LitElement } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import { EventBus } from "../../../core/EventBus";
 import { Controller } from "../../Controller";
 import { ReplaySpeedChangeEvent } from "../../InputHandler";
 import {
@@ -19,8 +19,8 @@ export class ShowReplayPanelEvent {
 
 @customElement("replay-panel")
 export class ReplayPanel extends LitElement implements Controller {
-  public game: GameView | undefined;
-  public eventBus: EventBus | undefined;
+  public game: GameView;
+  public eventBus: EventBus;
 
   @property({ type: Boolean })
   visible: boolean = false;
@@ -70,13 +70,15 @@ export class ReplayPanel extends LitElement implements Controller {
 
     return html`
       <div
-        class="p-2 bg-gray-800/92 backdrop-blur-sm shadow-xs min-[1200px]:rounded-lg rounded-l-lg"
+        class="p-2 bg-gray-800/92 backdrop-blur-sm shadow-xs rounded-l-lg"
         @contextmenu=${(e: Event) => e.preventDefault()}
       >
         <label class="block mb-2 text-white" translate="no">
-          ${this.game?.config()?.isReplay()
-            ? translateText("replay_panel.replay_speed")
-            : translateText("replay_panel.game_speed")}
+          ${
+            this.game?.config()?.isReplay()
+              ? translateText("replay_panel.replay_speed")
+              : translateText("replay_panel.game_speed")
+          }
         </label>
         <div class="grid grid-cols-4 gap-2">
           ${this.renderSpeedButton(ReplaySpeedMultiplier.slowest, "×0.1")}

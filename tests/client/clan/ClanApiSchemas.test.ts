@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
 import {
   ClanBanSchema,
+  ClanDonationSchema,
+  ClanDonationsResponseSchema,
   ClanGameFilterSchema,
   ClanGamePlayerSchema,
   ClanGameResultSchema,
@@ -9,7 +10,9 @@ import {
   ClanInfoSchema,
   ClanJoinRequestSchema,
   ClanMemberSchema,
-} from "../../../src/core/ClanApiSchemas";
+  ClanMembersResponseSchema,
+} from "@openfront/shared/ClanApiSchemas";
+import { describe, expect, it } from "vitest";
 
 describe("ClanInfoSchema", () => {
   const base = {
@@ -104,6 +107,64 @@ describe("ClanMemberSchema", () => {
       publicId: "abc123",
     });
     expect(result.success).toBe(false);
+  });
+
+  it("leaves level fields unset for a member without them", () => {
+    const result = ClanMemberSchema.parse({
+      role: "member",
+      joinedAt: "2024-03-01T09:30:00.000Z",
+      publicId: "abc123",
+    });
+    expect(result.level).toBeUndefined();
+    expect(result.prestige).toBeUndefined();
+    expect(result.legend).toBeUndefined();
+  });
+
+  it("keeps a member's level fields", () => {
+    const result = ClanMemberSchema.parse({
+      role: "member",
+      joinedAt: "2024-03-01T09:30:00.000Z",
+      publicId: "abc123",
+      level: 100,
+      prestige: 10,
+      legend: true,
+    });
+    expect(result).toMatchObject({ level: 100, prestige: 10, legend: true });
+  });
+
+  it("drops a malformed legend flag instead of rejecting the member", () => {
+    const result = ClanMemberSchema.parse({
+      role: "member",
+      joinedAt: "2024-03-01T09:30:00.000Z",
+      publicId: "abc123",
+      level: 5,
+      prestige: 0,
+      legend: "yes",
+    });
+    expect(result).toMatchObject({ publicId: "abc123", level: 5 });
+    expect(result.legend).toBeUndefined();
+  });
+
+  it("still parses a member list with one malformed row", () => {
+    const row = (publicId: string, prestige: unknown) => ({
+      role: "member",
+      joinedAt: "2024-03-01T09:30:00.000Z",
+      publicId,
+      level: 40,
+      prestige,
+      legend: false,
+    });
+    const result = ClanMembersResponseSchema.parse({
+      results: [row("good", 2), row("bad", null), row("high", 400)],
+      total: 3,
+      page: 1,
+      limit: 10,
+    });
+    expect(result.results.map((m) => m.prestige)).toEqual([
+      2,
+      undefined,
+      undefined,
+    ]);
   });
 
   it("rejects null publicId", () => {
@@ -466,5 +527,66 @@ describe("ClanGamesResponseSchema", () => {
       nextCursor: null,
     });
     expect(result.success).toBe(false);
+  });
+});
+
+describe("ClanDonationSchema", () => {
+  const base = {
+    id: "1834",
+    currencyType: "soft",
+    amount: "500",
+    reason: "clan_donation",
+    note: null,
+    createdBy: "Xk3pQ9",
+    createdByUsername: "evan.0042",
+    createdAt: "2026-08-26T02:10:31.512Z",
+  };
+
+  it("accepts a donation row as documented", () => {
+    expect(ClanDonationSchema.safeParse(base).success).toBe(true);
+  });
+
+  it("accepts a deleted donor (null createdBy and username)", () => {
+    const result = ClanDonationSchema.safeParse({
+      ...base,
+      createdBy: null,
+      createdByUsername: null,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("tolerates absent note and createdByUsername", () => {
+    const rest: Partial<typeof base> = { ...base };
+    delete rest.note;
+    delete rest.createdByUsername;
+    expect(ClanDonationSchema.safeParse(rest).success).toBe(true);
+  });
+
+  it("rejects a numeric amount — bigints travel as strings", () => {
+    expect(ClanDonationSchema.safeParse({ ...base, amount: 500 }).success).toBe(
+      false,
+    );
+  });
+
+  it("rejects an unknown currencyType", () => {
+    expect(
+      ClanDonationSchema.safeParse({ ...base, currencyType: "gold" }).success,
+    ).toBe(false);
+  });
+
+  it("rejects a non-ISO createdAt", () => {
+    expect(
+      ClanDonationSchema.safeParse({ ...base, createdAt: "yesterday" }).success,
+    ).toBe(false);
+  });
+
+  it("parses the paginated envelope", () => {
+    const result = ClanDonationsResponseSchema.safeParse({
+      results: [base],
+      total: 27,
+      page: 1,
+      limit: 10,
+    });
+    expect(result.success).toBe(true);
   });
 });

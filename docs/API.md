@@ -1,17 +1,16 @@
 # API Usage
 
-> **Warning:** Rate limits are very strict. Join the [Discord](https://discord.gg/K9zernJB5z) to request higher rate limits.
-
 ## Games
 
 ### List Game Metadata
 
-Get game IDs and basic metadata for games that started within a specified time range. Results are sorted by start time and paginated.
+Get game IDs and basic metadata for games that started within a specified time range. Results are sorted by start time (then game ID) and paginated.
 
 **Constraints:**
 
 - Maximum time range: 2 days
 - Maximum limit per request: 1000 games
+- `offset + limit` cannot exceed 10000. Page further with `after`, or narrow the time range.
 
 **Endpoint:**
 
@@ -25,10 +24,11 @@ GET https://api.openfront.io/public/games
 - `end` (required): ISO 8601 timestamp
 - `type` (optional): Game type, must be one of `[Private, Public, Singleplayer]`
 - `mode` (optional): Game mode, must be one of `[Free For All, Team]`
-- `rankedType` (optional): Ranked type, must be one of `[unranked, 1v1, 2v2]`
+- `rankedType` (optional): Ranked type, must be one of `[unranked, 1v1, 2v2, ffa, clanwars]`
 - `playerTeams` (optional): Player team configuration (e.g. `Duos`)
 - `limit` (optional): Number of results (max 1000, default 50)
 - `offset` (optional): Pagination offset
+- `after` (optional): `<start>,<game>` of the last row of the previous page (e.g. `2025-10-25T00:00:10.526Z,ABSgwin6`). Returns the rows that follow it. Cannot be combined with `offset`.
 
 **Example Request:**
 
@@ -41,6 +41,7 @@ curl "https://api.openfront.io/public/games?start=2025-10-25T00:00:00Z&end=2025-
 ```json
 [
   {
+    "id": "48211093",
     "game": "ABSgwin6",
     "start": "2025-10-25T00:00:10.526Z",
     "end": "2025-10-25T00:19:45.187Z",
@@ -56,7 +57,13 @@ curl "https://api.openfront.io/public/games?start=2025-10-25T00:00:00Z&end=2025-
 ]
 ```
 
-The response includes a `Content-Range` header indicating pagination (e.g., `games 5-15/399`).
+The response includes a `Content-Range` header indicating pagination (e.g., `games 5-15/399`). The total is only counted on the first page and the last; other pages report it as `*` (e.g., `games 50-100/*`). Pages fetched with `after` have no `Content-Range` header.
+
+**Archive order:** to process every game exactly once as it is stored, page with `afterId` instead of a time range. Pass `afterId=0` to start from the oldest game, then the `id` of the last row you received. Results are sorted by `id`, and `type`, `mode`, `rankedType`, `playerTeams` and `limit` still apply. `afterId` cannot be combined with `start`, `end`, `offset` or `after`, and the response has no `Content-Range` header. A game that finishes archiving late can get an `id` below one you have already passed, so re-read a small margin below your cursor and skip games you have already seen.
+
+```bash
+curl "https://api.openfront.io/public/games?afterId=48211093&limit=1000"
+```
 
 ---
 
@@ -84,7 +91,7 @@ curl "https://api.openfront.io/public/game/ABSgwin6"
 curl "https://api.openfront.io/public/game/ABSgwin6?turns=false"
 ```
 
-**Note:** Public player IDs are stripped from game records for privacy.
+**Note:** Each player in `info.players` carries their `publicID`, which works with the player endpoints below. It is `null` for some older games. A player who has since deleted their account has `publicID` and `username` set to `"REDACTED"`.
 
 ## Players
 
@@ -98,21 +105,64 @@ Retrieve information and stats for a specific player.
 GET https://api.openfront.io/public/player/:playerId
 ```
 
+`:playerId` can be the player's public ID or their account username:
+
+- `name.1234` or `name#1234` (URL-encode the `#` as `%23`): the username with its four-digit suffix, as shown in the game.
+- `name`: a bare username without a suffix. This only matches players who hold that name exclusively (premium usernames).
+
+Usernames match case-insensitively. The response's `publicId` is always the player's public ID, so look a player up by name once and use that ID with the other player endpoints, which only accept public IDs. Usernames are optional and can change (once every 30 days), so store the public ID, not the name. 404 means no player matches.
+
 **Example:**
 
 ```bash
 curl "https://api.openfront.io/public/player/HabCsQYR"
+curl "https://api.openfront.io/public/player/alice.1234"
 ```
 
 ### Get Player Sessions
 
-Retrieve a list of games & client ids (session ids) for a specific player.
+Retrieve a list of games & client ids (session ids) for a specific player,
+returned newest game first in pages of 100 with keyset (cursor) pagination
+like [Get Player Games](#get-player-games).
 
 **Endpoint:**
 
 ```
 GET https://api.openfront.io/public/player/:playerId/sessions
 ```
+
+**Query Parameters:**
+
+- `filter` (optional): Mode bucket, one of `[ffa, team, hvn, ranked]`. Omit for all modes.
+- `type` (optional): Game type, one of `[public, private, singleplayer]`. Omit for all types. `filter` and `type` are orthogonal and may be combined.
+- `start` / `end` (optional): ISO 8601 datetimes bounding the game start time (inclusive). Each may be given alone; `start` must be before `end`.
+- `cursor` (optional): Opaque continuation token. Pass the `nextCursor` value from the previous response verbatim to fetch the next page — do not construct or parse it. A cursor is bound to the filters it was issued under; changing any other parameter requires starting over without a cursor.
+
+**Response:**
+
+```json
+{
+  "results": [
+    {
+      "gameId": "abc123",
+      "gameStart": "2026-05-17T21:04:00.000Z",
+      "gameEnd": "2026-05-17T21:24:34.000Z",
+      "gameType": "Public",
+      "gameMode": "Team",
+      "gameRankedType": "unranked",
+      "clientId": "client-session-id",
+      "username": "alice",
+      "clanTag": "ABC",
+      "hasWon": true
+    }
+  ],
+  "nextCursor": "opaque-token"
+}
+```
+
+- `nextCursor` is `null` when there are no more sessions.
+- A known player with no sessions returns an empty `results` array; 404 means
+  the player id is unknown.
 
 **Example:**
 
@@ -172,6 +222,166 @@ GET https://api.openfront.io/public/player/:playerId/games
 curl "https://api.openfront.io/public/player/HabCsQYR/games?filter=team&type=public"
 ```
 
+### Recently Deleted Players
+
+List the public ids of players deleted in the last 7 days, newest first. Poll
+this daily and delete those players from any data you have collected.
+
+Pass `since` (the `deletedAt` of your last sync, or the time you last polled)
+to fetch only newer deletions. Deletions are never returned more than 7 days
+after the fact: a `since` more than 7 days in the past is rejected with a 400.
+If you miss the window, reconcile instead by dropping any player whose
+`/public/player/:playerId` now returns 404.
+
+**Endpoint:**
+
+```
+GET https://api.openfront.io/public/players/recently-deleted
+```
+
+**Query Parameters:**
+
+- `since` (optional): ISO 8601 timestamp; only return players deleted after
+  this time. Must be within the last 7 days.
+
+**Example:**
+
+```bash
+curl "https://api.openfront.io/public/players/recently-deleted?since=2026-09-14T00:00:00Z"
+```
+
+**Response:**
+
+```json
+[
+  {
+    "publicId": "HabCsQYR",
+    "deletedAt": "2026-09-14T08:12:33.000Z"
+  }
+]
+```
+
+### Verify Account Ownership (Identity Tokens)
+
+Third-party sites can let a player prove which OpenFront account they own. The
+player picks your site under **Account settings → Link to a third-party site**,
+generates a token, and pastes it into your site. You check the token, link the
+returned `publicId` to your user once, and discard the token.
+
+Tokens are only accepted by the site they were generated for (the JWT `aud`
+claim is your domain), expire after 10 minutes, and carry no identity other
+than the player's public ID. They cannot be used to log in to OpenFront.
+
+Supported sites: `ofstats.io`, `trackerfront.io`. To add your site, ask the
+OpenFront team. Sites are managed from the admin panel, so no deploy is
+needed; a new site appears in the game within a few minutes.
+
+You can check a token in either of two ways.
+
+**Option 1: call the validate endpoint.**
+
+```
+POST https://api.openfront.io/public/identity_token/validate
+```
+
+**Body:**
+
+- `token`: The token the player pasted
+- `audience`: Your site, e.g. `ofstats.io`
+
+**Example:**
+
+```bash
+curl -X POST "https://api.openfront.io/public/identity_token/validate" \
+  -H "Content-Type: application/json" \
+  -d '{"token": "eyJ...", "audience": "ofstats.io"}'
+```
+
+**Response:**
+
+```json
+{
+  "publicId": "T8pcWNuC",
+  "expiresAt": "2026-09-25T03:36:56.000Z"
+}
+```
+
+A token that is invalid, expired, or was generated for a different site returns 400.
+
+**Option 2: verify the JWT yourself.** Tokens are EdDSA-signed JWTs. Verify the
+signature against `https://api.openfront.io/.well-known/jwks.json` and check
+that:
+
+- `iss` is `https://api.openfront.io`
+- `aud` is your own domain
+- `typ` is `"identity"`
+- `exp` has not passed
+
+The player's public ID is the `sub` claim.
+
+**Example payload:**
+
+```json
+{
+  "typ": "identity",
+  "sub": "T8pcWNuC",
+  "iat": 1790306816,
+  "exp": 1790307416,
+  "iss": "https://api.openfront.io",
+  "aud": "ofstats.io"
+}
+```
+
+## Leaderboards
+
+### Ranked Leaderboard
+
+The top players on each ranked ladder (`1v1`, `2v2` and `ffa`), 50 per page. Each ladder is ranked on its own. Refreshed about every 15 minutes.
+
+**Endpoint:**
+
+```
+GET https://api.openfront.io/public/leaderboard/ranked
+```
+
+**Query Parameters:**
+
+- `page` (optional): `1` or `2` (default: 1)
+
+**Response:**
+
+```json
+{
+  "1v1": [
+    {
+      "rank": 1,
+      "elo": 1834,
+      "peakElo": 1902,
+      "wins": 120,
+      "losses": 41,
+      "total": 161,
+      "public_id": "HabCsQYR",
+      "accountUsername": "alice.1234",
+      "username": "alice.1234",
+      "level": 42,
+      "prestige": 0,
+      "legend": false
+    }
+  ],
+  "2v2": [],
+  "ffa": []
+}
+```
+
+- `accountUsername` is `null` when the player has not set a username; `username` falls back to the public ID.
+- `level`, `prestige` and `legend` are missing for players who hid their level or have no progress yet.
+
+**Example:**
+
+```bash
+curl "https://api.openfront.io/public/leaderboard/ranked?page=2"
+```
+
 ## Clans
 
 ### Clan Leaderboard
@@ -218,7 +428,7 @@ END FUNCTION
 
 ### Clan stats
 
-Displays comprehensive clan performance statistics for a specified clan over a chosen time range. If no time range is provided, it shows lifetime stats (starting from early November 2025).
+Displays comprehensive clan performance statistics for a specified clan over a chosen time range of at most 1 day. Ranked and Humans vs Nations games are not counted.
 
 Key metrics include:
 
@@ -232,24 +442,23 @@ Key metrics include:
 **Endpoint**
 
 ```
-GET https://openfront.io/public/clan/:clanTag
+GET https://api.openfront.io/public/clan/:clanTag
 ```
 
 **Query Parameters:**
 
-- `start` (optional): ISO 8601 timestamp
-- `end` (optional): ISO 8601 timestamp
+- `start` (required): ISO 8601 timestamp
+- `end` (required): ISO 8601 timestamp, at most 1 day after `start`
 
 **Example**
 
 ```bash
-curl https://api.openfront.io/public/clan/UN?start=2025-11-15T00:00:00Z &
-end=2025-11-18T23:59:59Z
+curl "https://api.openfront.io/public/clan/UN?start=2025-11-15T00:00:00Z&end=2025-11-15T23:59:59Z"
 ```
 
 ### Clan Sessions
 
-A clan session is created any time a player with that clan tag is in a public team game. If no start or end query parameter is provided, lifetime sessions (starting early November 2025) are shown.
+A clan session is created any time a player with that clan tag is in a public team game. Ranked and Humans vs Nations games are not listed.
 
 **Endpoint**
 
@@ -259,10 +468,10 @@ GET https://api.openfront.io/public/clan/:clanTag/sessions
 
 **Query Parameters:**
 
-- `start` (optional): ISO 8601 timestamp
-- `end` (optional): ISO 8601 timestamp
-- `page` (optional): Page number, 1-200 (default: 1)
-- `limit` (optional): Results per page, 1-50 (default: 20)
+- `start` (required): ISO 8601 timestamp
+- `end` (required): ISO 8601 timestamp, at most 1 day after `start`
+- `page` (optional): Page number (default: 1)
+- `limit` (optional): Results per page, 1-50 (default: 10)
 
 **Response:**
 
@@ -271,7 +480,7 @@ GET https://api.openfront.io/public/clan/:clanTag/sessions
   "results": [ ... ],
   "total": 150,
   "page": 1,
-  "limit": 20
+  "limit": 10
 }
 ```
 
@@ -280,5 +489,46 @@ Results are ordered by game start time, newest first.
 **Example**
 
 ```bash
-curl "https://api.openfront.io/public/clan/UN/sessions?start=2025-11-15T00:00:00Z&end=2025-11-18T23:59:59Z&limit=10&page=1"
+curl "https://api.openfront.io/public/clan/UN/sessions?start=2025-11-15T00:00:00Z&end=2025-11-15T23:59:59Z&limit=10&page=1"
+```
+
+### Clan Map History
+
+Every change of hands on the clan territory map, oldest first, a page at a time. Use it to build timelapses. The map started empty, so replaying the events from the start rebuilds the map as it stood at any point.
+
+**Endpoint**
+
+```
+GET https://api.openfront.io/public/clanmap/history
+```
+
+**Query Parameters:**
+
+- `after` (optional): Return the events after this sequence number (default: 0, the start of history). Pass the previous page's `next`.
+- `limit` (optional): Events per page, 1-10000 (default: 5000)
+
+**Response:**
+
+```json
+{
+  "events": [
+    ["48214", 1203, 455, "17", "0", 1793793600000],
+    ["48215", 1203, 455, "0", "17", 1793794200000]
+  ],
+  "clans": {
+    "17": { "tag": "ABC", "name": "Alpha Bravo", "color": 10741301 }
+  },
+  "next": "48215"
+}
+```
+
+- Each event is `[seq, x, y, clanId, previousClanId, createdAt]`. `x` and `y` are pixels on the 4108 × 1948 map, and `createdAt` is a Unix timestamp in milliseconds. `"0"` means neutral in either clan column: a `previousClanId` of `"0"` is a capture of empty land, and a `clanId` of `"0"` is a clan giving the pixel up. `previousClanId` lets you scrub backwards without replaying from the start.
+- `clans` names every clan in the page. Tags, names and colors (`0xRRGGBB` as a number, or `null` when the clan has none) are current, not as they were at the time of the event. A clan that has since been deleted is missing.
+- `next` is `null` on a short page, which means you have reached the end of history for now. To pick up new events, poll again later with the last event's `seq` as `after`. Sequence numbers have gaps, so take `after` from the response rather than counting.
+- The events in a full page never change, so a full page is cached for a day. Its `clans` block can be up to a day out of date as a result. Fetch the history from `after=0` with the default `limit` so your requests hit the cache.
+
+**Example**
+
+```bash
+curl "https://api.openfront.io/public/clanmap/history?after=48215&limit=5000"
 ```

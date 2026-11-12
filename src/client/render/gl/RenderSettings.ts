@@ -19,7 +19,11 @@ export interface ThemeSettings {
   teamColors: Record<string, string>;
   humanColors: string[];
   nationColors: string[];
-  botColors: string[];
+  /**
+   * The pre-v34 tribe (bot) color pool, used instead of the flat Bot team
+   * color when the classicBotColors graphics override is on.
+   */
+  classicBotColors: string[];
   /** Used when the primary palettes are exhausted. */
   fallbackColors: string[];
   /** Border = territory color darkened by this absolute amount. */
@@ -294,6 +298,7 @@ export interface RenderSettings {
     hoverGlowWidth: number;
     /** Peak opacity of the hover glow (0 disables it). */
     hoverGlowAlpha: number;
+    flagAlpha: number;
   };
   fx: {
     shockwaveRingWidth: number;
@@ -308,6 +313,12 @@ export interface RenderSettings {
     conquestLifetimeMs: number;
     conquestFadeIn: number;
     conquestFadeOut: number;
+    /** Visual (not gameplay) explosion radii in world tiles, per bomb type. */
+    nukeRadiusAtom: number;
+    nukeRadiusHydro: number;
+    nukeRadiusMirv: number;
+    /** Multiplier on the nuke debris sprite count (1 = default scatter). */
+    debrisDensity: number;
   };
   nukeTrajectory: {
     lineWidth: number; // px — main line stroke width
@@ -357,6 +368,14 @@ export interface RenderSettings {
     duration: number; // ms — total animation lifetime
     converge: number; // 0–1 — fraction of radius consumed during animation
   };
+  rangeCircle: {
+    allianceColorR: number; // nuke breaks an alliance, no traitor mark
+    allianceColorG: number;
+    allianceColorB: number;
+    traitorColorR: number; // nuke marks you a traitor
+    traitorColorG: number;
+    traitorColorB: number;
+  };
   samRadius: {
     strokeWidth: number; // ring half-width in world units
     dashLen: number; // dash length in world units
@@ -404,6 +423,8 @@ export interface RenderSettings {
   altView: {
     gridFontSize: number;
     recolorStructures: boolean;
+    /** Opacity of the translucent affiliation-colored territory fill. */
+    fillAlpha: number;
   };
   tileDrip: {
     /**

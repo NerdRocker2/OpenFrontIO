@@ -1,6 +1,7 @@
 {
   "categories": ["europe"],
   "display_name": "Archipelago Sea",
+  "forced_modifiers": ["isWaterNukes:50"],
   "id": "ArchipelagoSea",
   "map": {
     "height": 1508,
@@ -17,7 +18,6 @@
     "num_land_tiles": 52779,
     "width": 1550
   },
-  "multiplayer_frequency": 1,
   "name": "ArchipelagoSea",
   "nations": [
     {

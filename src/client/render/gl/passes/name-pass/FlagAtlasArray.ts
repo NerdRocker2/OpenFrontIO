@@ -19,8 +19,18 @@
 export const FLAG_CELL_W = 128;
 export const FLAG_CELL_H = 85;
 
-/** Initial unique-flag capacity. Real working set is ~50–200. */
-export const MAX_FLAG_LAYERS = 512;
+/**
+ * Initial unique-flag capacity. Real working set is ~50–200, and the array
+ * doubles itself on demand, so allocating for the worst case up front only
+ * buys a bigger peak: 512 layers is a single 28 MB texStorage3D, made at the
+ * highest-water mark of renderer init (every map-sized texture is already
+ * resident by the time NamePass is constructed). On a memory-tight mobile GPU
+ * that allocation is what tips the context over, and the crash then surfaces
+ * on the next GL call — TextProgram's linkProgram — as a bogus "Program link
+ * error" with an empty info log. Start at 128 (7 MB) — the low end of
+ * the working set, so most games never grow — and let the rest come on demand.
+ */
+const MAX_FLAG_LAYERS = 128;
 
 interface PendingEntry {
   layer: number;
@@ -33,6 +43,7 @@ export class FlagAtlasArray {
   private layerCount: number;
   private readonly hwMaxLayers: number;
   private nextLayer = 0;
+  private disposed = false;
 
   private entries = new Map<string, PendingEntry>();
   private onLayerReady: (url: string, layer: number) => void;
@@ -156,6 +167,7 @@ export class FlagAtlasArray {
     const img = new Image();
     img.crossOrigin = "anonymous";
     img.onload = () => {
+      if (this.disposed) return;
       // Draw into a fixed-size cell to normalize the image to layer dimensions.
       // Center via aspect-fit so mismatched images don't stretch.
       this.ctx.clearRect(0, 0, this.cellW, this.cellH);
@@ -201,6 +213,7 @@ export class FlagAtlasArray {
   }
 
   dispose(): void {
+    this.disposed = true;
     this.gl.deleteTexture(this.tex);
     this.entries.clear();
   }

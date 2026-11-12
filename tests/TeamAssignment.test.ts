@@ -1,5 +1,18 @@
-import { ColoredTeams, PlayerInfo, PlayerType } from "../src/core/game/Game";
-import { assignTeams } from "../src/core/game/TeamAssignment";
+import {
+  ColoredTeams,
+  Duos,
+  HumansVsNations,
+  PlayerInfo,
+  PlayerType,
+  Quads,
+  Trios,
+} from "@openfront/engine-api/game/GameTypes";
+import {
+  adjustForTeams,
+  assignTeams,
+  humanTeams,
+  resolveTeamsList,
+} from "@openfront/engine-lib/game/TeamAssignment";
 
 const teams = [ColoredTeams.Red, ColoredTeams.Blue];
 
@@ -295,6 +308,80 @@ describe("assignTeams", () => {
     expect(result.get(players[3])).not.toEqual(result.get(players[0]));
   });
 
+  // Public Duos/Trios/Quads pack the fullest open team first. Placing one
+  // friend at a time let the first friend take the last seat beside a
+  // stranger, so the second friend found that team full and was split off.
+  const duoTeams = [ColoredTeams.Red, ColoredTeams.Blue, ColoredTeams.Yellow];
+
+  it("should keep duo friends together when a stranger joined first", () => {
+    const players = [
+      createPlayerWithFriends("s1", []),
+      createPlayerWithFriends("a", ["b"]),
+      createPlayerWithFriends("b", ["a"]),
+      createPlayerWithFriends("s2", []),
+      createPlayerWithFriends("s3", []),
+      createPlayerWithFriends("s4", []),
+    ];
+
+    const result = assignTeams(players, duoTeams, true);
+
+    expect(result.get(players[1])).toEqual(result.get(players[2]));
+    expect(result.get(players[0])).not.toEqual(result.get(players[1]));
+  });
+
+  it("should keep duo friends together when they joined far apart", () => {
+    const players = [
+      createPlayerWithFriends("a", ["b"]),
+      createPlayerWithFriends("s1", []),
+      createPlayerWithFriends("s2", []),
+      createPlayerWithFriends("b", ["a"]),
+      createPlayerWithFriends("s3", []),
+      createPlayerWithFriends("s4", []),
+    ];
+
+    const result = assignTeams(players, duoTeams, true);
+
+    expect(result.get(players[0])).toEqual(result.get(players[3]));
+  });
+
+  it("should seat a friend group on a team with room for all of them", () => {
+    // A lone clan member already holds Red, so the trio of friends must
+    // start on an empty team rather than the fullest one.
+    const players = [
+      createPlayerWithFriends("c1", [], "CLANA"),
+      createPlayerWithFriends("a", ["b", "c"]),
+      createPlayerWithFriends("b", []),
+      createPlayerWithFriends("c", []),
+      createPlayerWithFriends("s1", []),
+      createPlayerWithFriends("s2", []),
+    ];
+
+    const result = assignTeams(players, teams, true, 3);
+
+    expect(result.get(players[1])).toEqual(result.get(players[2]));
+    expect(result.get(players[1])).toEqual(result.get(players[3]));
+    expect(result.get(players[0])).not.toEqual(result.get(players[1]));
+  });
+
+  it("should seat a clan member's friend before an unrelated friend group", () => {
+    // Clan member c already holds Red. If the a/b pair were seated first it
+    // would take Red (the fuller team) and leave no seat for c's friend f,
+    // though everyone fits: Red c, f, s1 / Blue a, b, s2.
+    const players = [
+      createPlayerWithFriends("c", [], "CLANA"),
+      createPlayerWithFriends("f", ["c"]),
+      createPlayerWithFriends("a", ["b"]),
+      createPlayerWithFriends("b", ["a"]),
+      createPlayerWithFriends("s1", []),
+      createPlayerWithFriends("s2", []),
+    ];
+
+    const result = assignTeams(players, teams, true, 3);
+
+    expect(result.get(players[1])).toEqual(result.get(players[0]));
+    expect(result.get(players[3])).toEqual(result.get(players[2]));
+  });
+
   // Matchmade games: the server pins each player to a team slot via
   // PlayerInfo.teamIndex and the matcher's split must be honored verbatim.
   const createPinnedPlayer = (
@@ -456,5 +543,119 @@ describe("assignTeams", () => {
     for (const n of nations) {
       expect(result.get(n)).toEqual(ColoredTeams.Blue);
     }
+  });
+});
+
+describe("resolveTeamsList", () => {
+  it("derives the team count from attendance for named modes", () => {
+    expect(resolveTeamsList(Duos, 10)).toHaveLength(5);
+    expect(resolveTeamsList(Trios, 9)).toHaveLength(3);
+    expect(resolveTeamsList(Quads, 12)).toHaveLength(3);
+  });
+
+  // Public lobbies start on their countdown regardless of attendance, so
+  // named modes must never resolve below 2 teams: with 0-2 players a Duos
+  // game used to throw "Too few teams" and no client could construct the
+  // game at all.
+  for (const { config, size } of [
+    { config: Duos, size: 2 },
+    { config: Trios, size: 3 },
+    { config: Quads, size: 4 },
+  ]) {
+    it(`clamps ${config} to 2 teams when attendance can't fill two`, () => {
+      for (const totalPlayers of [0, 1, size]) {
+        expect(resolveTeamsList(config, totalPlayers)).toEqual([
+          ColoredTeams.Red,
+          ColoredTeams.Blue,
+        ]);
+      }
+    });
+  }
+
+  it("always resolves HumansVsNations to its two fixed teams", () => {
+    expect(resolveTeamsList(HumansVsNations, 0)).toEqual([
+      ColoredTeams.Humans,
+      ColoredTeams.Nations,
+    ]);
+  });
+
+  it("keeps numeric configs verbatim, independent of attendance", () => {
+    expect(resolveTeamsList(7, 3)).toHaveLength(7);
+  });
+
+  it("still rejects a numeric config below 2 (misconfiguration)", () => {
+    // A Team game with playerTeams unset resolves to 0 via
+    // Config.playerTeams(); that must stay a loud error.
+    expect(() => resolveTeamsList(0, 50)).toThrow("Too few teams: 0");
+    expect(() => resolveTeamsList(1, 50)).toThrow("Too few teams: 1");
+  });
+});
+
+describe("humanTeams", () => {
+  const human = (i: number, clan: string | null = null) =>
+    new PlayerInfo(`p${i}`, PlayerType.Human, `c${i}`, `id${i}`, false, clan);
+
+  it("matches assignTeams over humans and nations together", () => {
+    const humans = [
+      human(0, "AAA"),
+      human(1),
+      human(2, "AAA"),
+      human(3),
+      human(4),
+    ];
+    const nations = [0, 1, 2].map(
+      (i) => new PlayerInfo(`n${i}`, PlayerType.Nation, null, `n${i}`),
+    );
+    const teams = resolveTeamsList(3, humans.length + nations.length);
+    const all = assignTeams([...humans, ...nations], teams, false);
+    expect(humanTeams(humans, 3, nations.length)).toEqual(
+      humans.map((h) => all.get(h)),
+    );
+  });
+
+  it("leaves kicked clan overflow players without a team", () => {
+    const humans = [0, 1, 2, 3].map((i) => human(i, "AAA"));
+    // 4 players, 2 teams of 2: half the clan doesn't fit.
+    expect(humanTeams(humans, 2, 0)).toEqual([
+      ColoredTeams.Red,
+      ColoredTeams.Red,
+      undefined,
+      undefined,
+    ]);
+  });
+
+  it("puts every human on Humans in Humans vs Nations", () => {
+    expect(humanTeams([human(0), human(1, "AAA")], HumansVsNations, 9)).toEqual(
+      [ColoredTeams.Humans, ColoredTeams.Humans],
+    );
+  });
+
+  it("throws, as the game does, for a team config below 2 teams", () => {
+    expect(() => humanTeams([human(0)], 0, 0)).toThrow("Too few teams: 0");
+  });
+});
+
+describe("adjustForTeams", () => {
+  it("does not change configured cap for numeric team counts", () => {
+    expect(adjustForTeams(5, 3)).toBe(5);
+    expect(adjustForTeams(10, 4)).toBe(10);
+  });
+
+  it("does not change cap for undefined or HumansVsNations or count <= 0", () => {
+    expect(adjustForTeams(5, undefined)).toBe(5);
+    expect(adjustForTeams(5, HumansVsNations)).toBe(5);
+    expect(adjustForTeams(0, Trios)).toBe(0);
+    expect(adjustForTeams(-1, Trios)).toBe(-1);
+  });
+
+  it("adjusts to multiples of team size and enforces at least one full team", () => {
+    expect(adjustForTeams(2, Trios)).toBe(3);
+    expect(adjustForTeams(3, Trios)).toBe(3);
+    expect(adjustForTeams(4, Trios)).toBe(3);
+    expect(adjustForTeams(5, Trios)).toBe(3);
+    expect(adjustForTeams(6, Trios)).toBe(6);
+    expect(adjustForTeams(1, Duos)).toBe(2);
+    expect(adjustForTeams(5, Duos)).toBe(4);
+    expect(adjustForTeams(2, Quads)).toBe(4);
   });
 });

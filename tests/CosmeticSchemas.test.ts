@@ -1,4 +1,6 @@
 import {
+  CosmeticPackItemSchema,
+  CosmeticPackSchema,
   Cosmetics,
   CosmeticsSchema,
   Effect,
@@ -12,12 +14,12 @@ import {
   NukeExplosionAttributesSchema,
   SubscriptionSchema,
   TrailEffectAttributesSchema,
-} from "../src/core/CosmeticSchemas";
+} from "@openfront/shared/CosmeticSchemas";
 import {
   PlayerCosmeticRefsSchema,
   PlayerCosmeticsSchema,
   PlayerEffectSchema,
-} from "../src/core/Schemas";
+} from "@openfront/shared/WireSchemas";
 
 describe("Effect cosmetic schemas", () => {
   const base = {
@@ -855,6 +857,174 @@ describe("warship effects", () => {
   });
 });
 
+describe("train effects", () => {
+  const gradient = {
+    name: "train_gradient",
+    effectType: "train",
+    attributes: {
+      type: "gradient",
+      colors: ["#ff0000", "#0000ff"],
+      colorSize: 2,
+      movementSpeed: 1,
+    },
+    affiliateCode: null,
+    product: null,
+    priceHard: 10,
+    rarity: "common",
+  };
+  const transition = {
+    name: "train_transition",
+    effectType: "train",
+    attributes: {
+      type: "transition",
+      colors: ["#ff0000", "#ffffff", "#00ff88"],
+      frequency: 3,
+    },
+    affiliateCode: null,
+    product: null,
+    rarity: "common",
+  };
+
+  it("parses the gradient and transition catalog entries", () => {
+    const result = CosmeticsSchema.safeParse({
+      patterns: {},
+      flags: {},
+      effects: {
+        train: {
+          train_gradient: gradient,
+          train_transition: transition,
+        },
+      },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.effects?.train?.train_gradient?.attributes.type).toBe(
+        "gradient",
+      );
+      expect(
+        result.data.effects?.train?.train_transition?.attributes.type,
+      ).toBe("transition");
+    }
+  });
+
+  it("resolves the train slot (slot = effectType)", () => {
+    expect(effectTypeForSlot("train")).toBe("train");
+    const parsed = CosmeticsSchema.safeParse({
+      patterns: {},
+      flags: {},
+      effects: { train: { train_gradient: gradient } },
+    });
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    expect(
+      findEffectForSlot(parsed.data, "train", "train_gradient")?.name,
+    ).toBe("train_gradient");
+  });
+
+  it("shares trail attribute shapes but is not a trail effect", () => {
+    const eff = EffectSchema.parse(gradient);
+    // Renders through the train palette block, not a trail block.
+    expect(isTrailEffect(eff)).toBe(false);
+    expect(effectMatchesSlot(eff, "train")).toBe(true);
+    expect(effectMatchesSlot(eff, "warship")).toBe(false);
+    expect(effectMatchesSlot(eff, "structures")).toBe(false);
+    expect(effectMatchesSlot(eff, "transportShipTrail")).toBe(false);
+  });
+
+  it("rejects a train effect with an unknown attribute type", () => {
+    expect(
+      EffectSchema.safeParse({
+        ...gradient,
+        attributes: { type: "sparkle", colors: [] },
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe("railroad effects", () => {
+  const gradient = {
+    name: "railroad_gradient",
+    effectType: "railroad",
+    attributes: {
+      type: "gradient",
+      colors: ["#ff0000", "#0000ff"],
+      colorSize: 2,
+      movementSpeed: 1,
+    },
+    affiliateCode: null,
+    product: null,
+    priceHard: 10,
+    rarity: "common",
+  };
+  const transition = {
+    name: "railroad_transition",
+    effectType: "railroad",
+    attributes: {
+      type: "transition",
+      colors: ["#ff0000", "#ffffff", "#00ff88"],
+      frequency: 3,
+    },
+    affiliateCode: null,
+    product: null,
+    rarity: "common",
+  };
+
+  it("parses the gradient and transition catalog entries", () => {
+    const result = CosmeticsSchema.safeParse({
+      patterns: {},
+      flags: {},
+      effects: {
+        railroad: {
+          railroad_gradient: gradient,
+          railroad_transition: transition,
+        },
+      },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(
+        result.data.effects?.railroad?.railroad_gradient?.attributes.type,
+      ).toBe("gradient");
+      expect(
+        result.data.effects?.railroad?.railroad_transition?.attributes.type,
+      ).toBe("transition");
+    }
+  });
+
+  it("resolves the railroad slot (slot = effectType)", () => {
+    expect(effectTypeForSlot("railroad")).toBe("railroad");
+    const parsed = CosmeticsSchema.safeParse({
+      patterns: {},
+      flags: {},
+      effects: { railroad: { railroad_gradient: gradient } },
+    });
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    expect(
+      findEffectForSlot(parsed.data, "railroad", "railroad_gradient")?.name,
+    ).toBe("railroad_gradient");
+  });
+
+  it("shares trail attribute shapes but is not a trail effect", () => {
+    const eff = EffectSchema.parse(gradient);
+    // Renders through the railroad palette block, not a trail block.
+    expect(isTrailEffect(eff)).toBe(false);
+    expect(effectMatchesSlot(eff, "railroad")).toBe(true);
+    expect(effectMatchesSlot(eff, "warship")).toBe(false);
+    expect(effectMatchesSlot(eff, "structures")).toBe(false);
+    expect(effectMatchesSlot(eff, "transportShipTrail")).toBe(false);
+  });
+
+  it("rejects a railroad effect with an unknown attribute type", () => {
+    expect(
+      EffectSchema.safeParse({
+        ...gradient,
+        attributes: { type: "sparkle", colors: [] },
+      }).success,
+    ).toBe(false);
+  });
+});
+
 describe("isTrailEffect", () => {
   it("is true for a trail effect and false for a nukeExplosion", () => {
     const trail = EffectSchema.parse({
@@ -1034,8 +1204,8 @@ describe("SubscriptionSchema unlimitedRanked", () => {
     canCreatePublicLobbies: false,
   };
 
-  it("rejects a tier without unlimitedRanked", () => {
-    expect(SubscriptionSchema.safeParse(base).success).toBe(false);
+  it("accepts a tier without unlimitedRanked", () => {
+    expect(SubscriptionSchema.safeParse(base).success).toBe(true);
   });
 
   it("accepts a tier with unlimitedRanked", () => {
@@ -1190,6 +1360,93 @@ describe("CosmeticsSchema tribeNames pricing", () => {
         flags: {},
         tribeNames: { priceHard: 200, boostDurationDays: 30 },
       }).success,
+    ).toBe(false);
+  });
+});
+
+describe("CosmeticsSchema lobbyQueue pricing", () => {
+  it("parses the lobbyQueue config block", () => {
+    const result = CosmeticsSchema.safeParse({
+      patterns: {},
+      flags: {},
+      lobbyQueue: { priceHard: 5 },
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.lobbyQueue?.priceHard).toBe(5);
+  });
+
+  it("parses a cosmetics.json without lobbyQueue (older API)", () => {
+    const result = CosmeticsSchema.safeParse({ patterns: {}, flags: {} });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.lobbyQueue).toBeUndefined();
+  });
+
+  it("rejects a lobbyQueue block missing the price", () => {
+    expect(
+      CosmeticsSchema.safeParse({ patterns: {}, flags: {}, lobbyQueue: {} })
+        .success,
+    ).toBe(false);
+  });
+});
+
+describe("Cosmetic pack schemas", () => {
+  const base = { patterns: {}, flags: {} };
+  const starter = {
+    name: "starter",
+    displayName: "Starter Pack",
+    description: "",
+    priceHard: 250,
+    rarity: "common",
+    items: [
+      { type: "pattern", name: "camo" },
+      { type: "flag", name: "pirate" },
+      { type: "effect", name: "ship_trail_gradient" },
+    ],
+  };
+
+  it("parses packs keyed by slug with their items in order", () => {
+    const parsed = CosmeticsSchema.parse({ ...base, packs: { starter } });
+    expect(parsed.packs).toEqual({ starter });
+  });
+
+  it("lets a pattern item name its colour palette", () => {
+    const item = { type: "pattern", name: "camo", colorPalette: "red" };
+    expect(CosmeticPackItemSchema.parse(item)).toEqual(item);
+    // Legacy: a pattern item without a palette is the uncoloured variant.
+    expect(
+      CosmeticPackItemSchema.parse({ type: "pattern", name: "camo" }),
+    ).toEqual({ type: "pattern", name: "camo" });
+  });
+
+  it("is optional — an older catalog without packs still parses", () => {
+    expect(CosmeticsSchema.parse(base).packs).toBeUndefined();
+  });
+
+  it("drops a pack with an item type this client doesn't know, keeping the rest", () => {
+    const parsed = CosmeticsSchema.parse({
+      ...base,
+      packs: {
+        starter,
+        future: {
+          ...starter,
+          name: "future",
+          items: [{ type: "banner", name: "wave" }],
+        },
+      },
+    });
+    expect(Object.keys(parsed.packs ?? {})).toEqual(["starter"]);
+  });
+
+  it("requires the pack's own hard price and display name", () => {
+    expect(
+      CosmeticPackSchema.safeParse({ ...starter, priceHard: undefined })
+        .success,
+    ).toBe(false);
+    expect(
+      CosmeticPackSchema.safeParse({ ...starter, displayName: undefined })
+        .success,
     ).toBe(false);
   });
 });

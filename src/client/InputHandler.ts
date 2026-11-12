@@ -1,6 +1,12 @@
-import { EventBus, GameEvent } from "../core/EventBus";
-import { PlayerBuildableUnitType, UnitType } from "../core/game/Game";
-import { UserSettings } from "../core/game/UserSettings";
+import { TileRef } from "@openfront/engine-api/game/GameMap";
+import {
+  MAX_UPGRADE_AMOUNT,
+  PlayerBuildableUnitType,
+  PlayerID,
+  UnitType,
+} from "@openfront/engine-api/game/GameTypes";
+import { EventBus, GameEvent } from "@openfront/shared/EventBus";
+import { favoriteSlotForKey } from "./EmojiKeys";
 import { Platform } from "./Platform";
 import {
   MusicNextTrackEvent,
@@ -8,6 +14,12 @@ import {
   MusicTogglePauseEvent,
 } from "./sound/Sounds";
 import { UIState } from "./UIState";
+import {
+  KEYBINDS_KEY,
+  USER_SETTINGS_CHANGED_EVENT,
+  UserSettings,
+} from "./UserSettings";
+
 import { ReplaySpeedMultiplier } from "./utilities/ReplaySpeedMultiplier";
 import { GameView, UnitView } from "./view";
 
@@ -90,6 +102,28 @@ export class AlternateViewEvent implements GameEvent {
 
 export class CloseViewEvent implements GameEvent {}
 
+/**
+ * Marks a click that the radial menu's overlay forwarded to a layer below it.
+ * The layer uses this to tell a forwarded tap apart from a real press, which
+ * the browser handles itself.
+ */
+export const FORWARDED_CLICK = "forwardedFromRadialOverlay";
+/** Marks a click forwarded by the radial overlay that originated from touch. */
+export const FORWARDED_TOUCH_CLICK = "forwardedTouchFromRadialOverlay";
+
+export function isForwardedClick(event: Event): boolean {
+  return (
+    (event as unknown as Record<string, unknown>)[FORWARDED_CLICK] === true
+  );
+}
+
+export function isForwardedTouchClick(event: Event): boolean {
+  return (
+    (event as unknown as Record<string, unknown>)[FORWARDED_TOUCH_CLICK] ===
+    true
+  );
+}
+
 export class RefreshGraphicsEvent implements GameEvent {}
 
 export class ToggleRenderDebugGuiEvent implements GameEvent {}
@@ -102,7 +136,48 @@ export class ToggleStructureEvent implements GameEvent {
   ) {}
 }
 
+export function highlightTypesForUnit(
+  unitType: PlayerBuildableUnitType,
+): PlayerBuildableUnitType[] {
+  switch (unitType) {
+    case UnitType.AtomBomb:
+    case UnitType.HydrogenBomb:
+      return [UnitType.MissileSilo, UnitType.SAMLauncher];
+    case UnitType.Warship:
+      return [UnitType.Port];
+    case UnitType.MIRV:
+      return [UnitType.MissileSilo];
+    default:
+      return [unitType];
+  }
+}
+
 export class ConfirmGhostStructureEvent implements GameEvent {}
+
+export class TouchGhostPlacementEvent implements GameEvent {
+  constructor(
+    public readonly x: number,
+    public readonly y: number,
+  ) {}
+}
+
+export class TouchGhostPlacementSelectEvent implements GameEvent {}
+
+export class TouchGhostPlacementMoveEvent implements GameEvent {
+  constructor(
+    public readonly x: number,
+    public readonly y: number,
+  ) {}
+}
+
+export class TouchGhostPlacementDragStartEvent implements GameEvent {
+  public handled = false;
+
+  constructor(
+    public readonly x: number,
+    public readonly y: number,
+  ) {}
+}
 
 export class SwapRocketDirectionEvent implements GameEvent {
   constructor(public readonly rocketDirectionUp: boolean) {}
@@ -155,15 +230,80 @@ export class ShowEmojiMenuEvent implements GameEvent {
   ) {}
 }
 
-export class DoBoatAttackEvent implements GameEvent {}
+/** Toggles quick chat for the player at screen position (x, y). */
+export class ShowChatMenuEvent implements GameEvent {
+  constructor(
+    public readonly x: number,
+    public readonly y: number,
+  ) {}
+}
+
+/** Toggles the player info panel for the player at screen position (x, y). */
+export class ShowPlayerPanelEvent implements GameEvent {
+  constructor(
+    public readonly x: number | null,
+    public readonly y: number | null,
+  ) {}
+}
+
+/** The donate keybinds: donate to the player at screen position (x, y). */
+export class DoDonateTroopsEvent implements GameEvent {
+  constructor(
+    public readonly x: number,
+    public readonly y: number,
+  ) {}
+}
+
+export class DoDonateGoldEvent implements GameEvent {
+  constructor(
+    public readonly x: number,
+    public readonly y: number,
+  ) {}
+}
+
+/** Emitted by the emoji table whenever it opens or closes. */
+export class EmojiTableVisibleEvent implements GameEvent {
+  constructor(public readonly visible: boolean) {}
+}
+
+/** A favorites slot's key was pressed while the emoji table is open. */
+export class EmojiKeyEvent implements GameEvent {
+  constructor(public readonly slot: number) {}
+}
+
+// The player actions below act on the tile under the cursor (their
+// keybinds), or on `tile` when given (the player info panel's buttons).
+// `playerID` is the player the panel showed: if the tile has changed hands
+// since, the action is dropped rather than hitting its new owner.
+
+export class DoBoatAttackEvent implements GameEvent {
+  constructor(public readonly tile?: TileRef) {}
+}
 
 export class DoGroundAttackEvent implements GameEvent {}
 
 export class DoRetaliateAttackEvent implements GameEvent {}
 
-export class DoRequestAllianceEvent implements GameEvent {}
+export class DoRequestAllianceEvent implements GameEvent {
+  constructor(
+    public readonly tile?: TileRef,
+    public readonly playerID?: PlayerID,
+  ) {}
+}
 
-export class DoBreakAllianceEvent implements GameEvent {}
+export class DoBreakAllianceEvent implements GameEvent {
+  constructor(
+    public readonly tile?: TileRef,
+    public readonly playerID?: PlayerID,
+  ) {}
+}
+
+export class DoTargetPlayerEvent implements GameEvent {
+  constructor(
+    public readonly tile?: TileRef,
+    public readonly playerID?: PlayerID,
+  ) {}
+}
 
 export class AttackRatioEvent implements GameEvent {
   constructor(public readonly attackRatio: number) {}
@@ -219,6 +359,7 @@ export class TickMetricsEvent implements GameEvent {
 interface KeybindEntry {
   handler: (e: KeyboardEvent) => void;
   conditions: Array<(e: KeyboardEvent) => boolean>;
+  ignoreShift?: boolean;
 }
 
 /**
@@ -239,10 +380,19 @@ export class InputHandler {
   private lastPointerX: number = 0;
   private lastPointerY: number = 0;
 
+  private lastMouseX: number | null = null;
+  private lastMouseY: number | null = null;
+
+  private emojiTableOpen = false;
+  /** Favorite keys pressed while the emoji table was open. */
+  private emojiKeysDown = new Set<string>();
+
   private lastPointerDownX: number = 0;
   private lastPointerDownY: number = 0;
 
   private pointers: Map<number, PointerEvent> = new Map();
+  private passThroughPointers: Map<number, { x: number; y: number }> =
+    new Map();
 
   private lastPinchDistance: number = 0;
 
@@ -250,6 +400,7 @@ export class InputHandler {
   private lastGestureScale: number | null = null;
 
   private pointerDown: boolean = false;
+  private lastPointerType: string | null = null;
 
   private alternateView = false;
 
@@ -265,10 +416,16 @@ export class InputHandler {
   private longPressTimer: ReturnType<typeof setTimeout> | null = null;
   private longPressActive: boolean = false;
   private suppressNextTap: boolean = false;
+  private touchPlacementDragState: "idle" | "candidate" | "active" = "idle";
   private readonly LONG_PRESS_MS = 800;
 
   private moveInterval: NodeJS.Timeout | null = null;
+  /** Aborts every window/canvas listener added in
+   * `initializePointerAndKeyboardEvents()`. */
+  private listenerAbort: AbortController | null = null;
   private activeKeys = new Set<string>();
+  private zoomKeysHeldBeforeControl = new Set<string>();
+  private shiftHeld = false;
   private keybinds: Record<string, string> = {};
   private keybindAndEvent: Array<[string, KeybindEntry]> = [];
   private coordinateGridEnabled = false;
@@ -287,7 +444,106 @@ export class InputHandler {
   ) {}
 
   initialize() {
+    this.buildKeybindTable();
+    // Keybinds are editable mid-match now (the in-game settings modal has a
+    // Keybinds tab), and this table is otherwise built once per game, so a
+    // rebind would not take effect until the next one.
+    globalThis.addEventListener(
+      `${USER_SETTINGS_CHANGED_EVENT}:${KEYBINDS_KEY}`,
+      this.onKeybindsChanged,
+    );
+
+    // Listen for warship selection to change cursor. Held in a field so
+    // destroy() can release it: the EventBus is created once per page in
+    // Main.ts and handed to every joinLobby(), so a subscription left behind
+    // keeps this handler -- and the GameView, uiState and overlay it closes
+    // over -- alive for the rest of the session, and runs against the next
+    // game's events. off() first so a second initialize() cannot double it.
+    this.eventBus.off(UnitSelectionEvent, this.onUnitSelection);
+    this.eventBus.on(UnitSelectionEvent, this.onUnitSelection);
+    this.eventBus.off(EmojiTableVisibleEvent, this.onEmojiTableVisible);
+    this.eventBus.on(EmojiTableVisibleEvent, this.onEmojiTableVisible);
+
+    this.initializePointerAndKeyboardEvents();
+  }
+
+  private onEmojiTableVisible = (e: EmojiTableVisibleEvent) => {
+    this.emojiTableOpen = e.visible;
+    this.emojiKeysDown.clear();
+    if (e.visible) {
+      // Stop panning/zooming with a favorite key held from before the table
+      // opened; the table owns those keys now.
+      for (const code of this.activeKeys) {
+        if (favoriteSlotForKey(this.unmodifiedKey(code)) !== null) {
+          this.activeKeys.delete(code);
+        }
+      }
+    }
+  };
+
+  private unmodifiedKey(code: string) {
+    return {
+      code,
+      shiftKey: false,
+      ctrlKey: false,
+      metaKey: false,
+      altKey: false,
+    };
+  }
+
+  private onUnitSelection = (e: UnitSelectionEvent) => {
+    this.unitSelectionActive =
+      e.isSelected && (e.unit !== null || (e.units ?? []).length > 0);
+    if (e.isSelected && (e.units ?? []).length > 0) {
+      // Multi-selection active
+      this.multiSelectionActive = true;
+      this.canvas.style.cursor = "crosshair";
+    } else if (e.isSelected) {
+      // Single warship selected — cursor crosshair, but not multi
+      this.multiSelectionActive = false;
+      this.canvas.style.cursor = "crosshair";
+    } else {
+      // Deselected
+      this.multiSelectionActive = false;
+      if (!this.selectionBoxActive) {
+        this.canvas.style.cursor = "";
+      }
+    }
+  };
+
+  private onKeybindsChanged = () => {
+    this.buildKeybindTable();
+  };
+
+  /**
+   * Drops every piece of in-flight pointer/drag/long-press state. Shared by
+   * the blur handler, the re-initialize guard and destroy(): each has to leave
+   * the handler with nothing latched, or a pointer that was physically down
+   * stays recorded as down while `pointers` is empty, and the next ordinary
+   * move is treated as a drag from a stale origin. Deliberately emits
+   * nothing -- blur re-emits the events it owes around this call.
+   */
+  private resetPointerState() {
+    this.pointerDown = false;
+    this.pointers.clear();
+    this.passThroughPointers.clear();
+    this.lastGestureScale = null;
+    if (this.longPressTimer !== null) {
+      clearTimeout(this.longPressTimer);
+      this.longPressTimer = null;
+    }
+    this.longPressActive = false;
+    this.suppressNextTap = false;
+    this.touchPlacementDragState = "idle";
+    this.selectionBoxActive = false;
+    this.multiSelectionActive = false;
+  }
+
+  /** Re-read the player's keybinds and rebuild the key dispatch table. */
+  private buildKeybindTable() {
+    this.uiState.preventStacking = false;
     this.keybinds = this.userSettings.keybinds(Platform.isMac);
+    this.keybindAndEvent = [];
 
     this.addKeybindAndEvent(this.keybinds.boatAttack, () => {
       this.eventBus.emit(new DoBoatAttackEvent());
@@ -310,6 +566,42 @@ export class InputHandler {
     this.addKeybindAndEvent(this.keybinds.breakAlliance, () => {
       this.eventBus.emit(new DoBreakAllianceEvent());
     });
+    this.addKeybindAndEvent(this.keybinds.targetPlayer, () => {
+      this.eventBus.emit(new DoTargetPlayerEvent());
+    });
+    this.addKeybindAndEvent(this.keybinds.donateTroops, () => {
+      if (this.lastMouseX === null || this.lastMouseY === null) return;
+      this.eventBus.emit(
+        new DoDonateTroopsEvent(this.lastMouseX, this.lastMouseY),
+      );
+    });
+    this.addKeybindAndEvent(this.keybinds.donateGold, () => {
+      if (this.lastMouseX === null || this.lastMouseY === null) return;
+      this.eventBus.emit(
+        new DoDonateGoldEvent(this.lastMouseX, this.lastMouseY),
+      );
+    });
+    // Shares R with reset graphics, which needs its modifier held, so quick
+    // chat only takes the key on its own.
+    this.addKeybindAndEvent(
+      this.keybinds.quickChat,
+      () => {
+        this.eventBus.emit(
+          new ShowChatMenuEvent(this.lastMouseX ?? 0, this.lastMouseY ?? 0),
+        );
+      },
+      (e: KeyboardEvent) =>
+        !e.altKey && !e.ctrlKey && !e.metaKey && !this.resetGfxModifierHeld(e),
+    );
+    this.addKeybindAndEvent(
+      this.keybinds.playerPanel,
+      () => {
+        this.eventBus.emit(
+          new ShowPlayerPanelEvent(this.lastMouseX, this.lastMouseY),
+        );
+      },
+      (e: KeyboardEvent) => !e.altKey && !e.ctrlKey && !e.metaKey,
+    );
     this.addKeybindAndEvent(
       this.keybinds.pauseGame,
       () => {
@@ -343,7 +635,7 @@ export class InputHandler {
       const nextDirection = !this.uiState.rocketDirectionUp;
       this.eventBus.emit(new SwapRocketDirectionEvent(nextDirection));
     });
-    this.addKeybindAndEvent("Shift+KeyD", () => {
+    this.addKeybindAndEvent(this.keybinds.performanceOverlay, () => {
       this.eventBus.emit(new TogglePerformanceOverlayEvent());
     });
     this.addKeybindAndEvent(
@@ -372,38 +664,16 @@ export class InputHandler {
       this.eventBus.emit(new AlternateViewEvent(false));
     });
     const resetKey = this.keybinds.resetGfx ?? "KeyR";
+    const ignoreShift =
+      this.keybinds.altKey === "ShiftLeft" ||
+      this.keybinds.altKey === "ShiftRight";
     this.addKeybindAndEvent(
       resetKey,
       () => {
         this.eventBus.emit(new RefreshGraphicsEvent());
       },
-      (e: KeyboardEvent) => {
-        if (
-          this.keybinds.altKey === "AltLeft" ||
-          this.keybinds.altKey === "AltRight"
-        ) {
-          return e.altKey && !e.ctrlKey;
-        }
-        if (
-          this.keybinds.altKey === "ControlLeft" ||
-          this.keybinds.altKey === "ControlRight"
-        ) {
-          return e.ctrlKey;
-        }
-        if (
-          this.keybinds.altKey === "ShiftLeft" ||
-          this.keybinds.altKey === "ShiftRight"
-        ) {
-          return e.shiftKey;
-        }
-        if (
-          this.keybinds.altKey === "MetaLeft" ||
-          this.keybinds.altKey === "MetaRight"
-        ) {
-          return e.metaKey;
-        }
-        return this.activeKeys.has(this.keybinds.altKey);
-      },
+      (e: KeyboardEvent) => this.resetGfxModifierHeld(e),
+      { ignoreShift },
     );
 
     let buildKeybinds: string[] = [
@@ -468,38 +738,40 @@ export class InputHandler {
           this.resolveBuildKeybind(e.code, e.shiftKey) !== null,
       );
     }
-    // Listen for warship selection to change cursor
-    this.eventBus.on(UnitSelectionEvent, (e) => {
-      this.unitSelectionActive =
-        e.isSelected && (e.unit !== null || (e.units ?? []).length > 0);
-      if (e.isSelected && (e.units ?? []).length > 0) {
-        // Multi-selection active
-        this.multiSelectionActive = true;
-        this.canvas.style.cursor = "crosshair";
-      } else if (e.isSelected) {
-        // Single warship selected — cursor crosshair, but not multi
-        this.multiSelectionActive = false;
-        this.canvas.style.cursor = "crosshair";
-      } else {
-        // Deselected
-        this.multiSelectionActive = false;
-        if (!this.selectionBoxActive) {
-          this.canvas.style.cursor = "";
-        }
-      }
-    });
+  }
 
-    this.canvas.addEventListener("pointerdown", (e) => this.onPointerDown(e));
-    window.addEventListener("pointerup", (e) => this.onPointerUp(e));
-    window.addEventListener("pointercancel", (e) => this.onPointerUp(e));
+  private initializePointerAndKeyboardEvents() {
+    // A second initialize() would otherwise orphan the first listener set and
+    // interval: nothing else holds the old controller, so they could never be
+    // removed. Production only initializes once, but this keeps that from
+    // being load-bearing.
+    this.listenerAbort?.abort();
+    if (this.moveInterval !== null) {
+      clearInterval(this.moveInterval);
+      this.moveInterval = null;
+    }
+    this.resetPointerState();
+    this.listenerAbort = new AbortController();
+    const { signal } = this.listenerAbort;
+    this.canvas.addEventListener("pointerdown", (e) => this.onPointerDown(e), {
+      signal,
+    });
+    window.addEventListener("pointerdown", this.onPassThroughPointerDown, {
+      signal,
+    });
+    window.addEventListener("pointerup", (e) => this.onPointerUp(e), {
+      signal,
+    });
+    window.addEventListener("pointercancel", this.onPointerCancel, {
+      signal,
+    });
     this.canvas.addEventListener(
       "wheel",
       (e) => {
         this.onScroll(e);
-        this.onShiftScroll(e);
         e.preventDefault();
       },
-      { passive: false },
+      { passive: false, signal },
     );
     // Safari trackpad pinch, which fires no ctrl+wheel event.
     this.canvas.addEventListener(
@@ -508,7 +780,7 @@ export class InputHandler {
         e.preventDefault();
         this.lastGestureScale = (e as WebKitGestureEvent).scale;
       },
-      { passive: false },
+      { passive: false, signal },
     );
     this.canvas.addEventListener(
       "gesturechange",
@@ -516,7 +788,7 @@ export class InputHandler {
         e.preventDefault();
         this.onGestureChange(e as WebKitGestureEvent);
       },
-      { passive: false },
+      { passive: false, signal },
     );
     this.canvas.addEventListener(
       "gestureend",
@@ -524,70 +796,81 @@ export class InputHandler {
         e.preventDefault();
         this.lastGestureScale = null;
       },
-      { passive: false },
+      { passive: false, signal },
     );
-    window.addEventListener("pointermove", this.onPointerMove.bind(this));
-    this.canvas.addEventListener("contextmenu", (e) => this.onContextMenu(e));
-    window.addEventListener("mousemove", (e) => {
-      if (e.movementX || e.movementY) {
-        this.eventBus.emit(new MouseMoveEvent(e.clientX, e.clientY));
-      }
+    window.addEventListener("pointermove", this.onPointerMove.bind(this), {
+      signal,
     });
+    this.canvas.addEventListener("contextmenu", (e) => this.onContextMenu(e), {
+      signal,
+    });
+    window.addEventListener(
+      "mousemove",
+      (e) => {
+        this.lastMouseX = e.clientX;
+        this.lastMouseY = e.clientY;
+      },
+      { signal },
+    );
     // Clear all tracked keys when the window loses focus so keys that had
     // their keyup swallowed by the browser (e.g. cmd+zoom) don't stay stuck.
     // Also release the hold-to-view state and any active pointer/drag state
     // so the alternate view and drags aren't left latched when focus returns.
-    window.addEventListener("blur", () => {
-      this.activeKeys.clear();
-      if (this.alternateView) {
-        this.alternateView = false;
-        this.eventBus.emit(new AlternateViewEvent(false));
-      }
-      this.pointerDown = false;
-      this.pointers.clear();
-      this.lastGestureScale = null;
-      if (this.longPressTimer !== null) {
-        clearTimeout(this.longPressTimer);
-        this.longPressTimer = null;
-      }
-      this.longPressActive = false;
-      this.suppressNextTap = false;
-      if (this.selectionBoxActive || this.multiSelectionActive) {
-        this.selectionBoxActive = false;
-        this.multiSelectionActive = false;
-        this.eventBus.emit(new WarshipSelectionBoxCancelEvent());
-      }
-      this.canvas.style.cursor = "";
-    });
+    window.addEventListener(
+      "blur",
+      () => {
+        this.activeKeys.clear();
+        this.uiState.preventStacking = false;
+        this.zoomKeysHeldBeforeControl.clear();
+        this.shiftHeld = false;
+        if (this.alternateView) {
+          this.alternateView = false;
+          this.eventBus.emit(new AlternateViewEvent(false));
+        }
+        const hadSelection =
+          this.selectionBoxActive || this.multiSelectionActive;
+        this.resetPointerState();
+        if (hadSelection) {
+          this.eventBus.emit(new WarshipSelectionBoxCancelEvent());
+        }
+        this.canvas.style.cursor = "";
+      },
+      { signal },
+    );
     this.pointers.clear();
 
     this.moveInterval = setInterval(() => {
       let deltaX = 0;
       let deltaY = 0;
 
-      // Skip if select warship modifier is held down
-      if (this.activeKeys.has(this.keybinds.boxSelectWarships)) {
+      // Skip movement if selection box drag is active or a non-Shift warship selector is held
+      if (
+        this.selectionBoxActive ||
+        (this.keybinds.boxSelectWarships !== "ShiftLeft" &&
+          this.keybinds.boxSelectWarships !== "ShiftRight" &&
+          this.activeKeys.has(this.keybinds.boxSelectWarships))
+      ) {
         return;
       }
 
       if (
-        this.activeKeys.has(this.keybinds.moveUp) ||
-        this.activeKeys.has("ArrowUp")
+        this.isContinuousActionActive(this.keybinds.moveUp) ||
+        this.isContinuousActionActive(this.keybinds.moveUpArrow)
       )
         deltaY += this.PAN_SPEED;
       if (
-        this.activeKeys.has(this.keybinds.moveDown) ||
-        this.activeKeys.has("ArrowDown")
+        this.isContinuousActionActive(this.keybinds.moveDown) ||
+        this.isContinuousActionActive(this.keybinds.moveDownArrow)
       )
         deltaY -= this.PAN_SPEED;
       if (
-        this.activeKeys.has(this.keybinds.moveLeft) ||
-        this.activeKeys.has("ArrowLeft")
+        this.isContinuousActionActive(this.keybinds.moveLeft) ||
+        this.isContinuousActionActive(this.keybinds.moveLeftArrow)
       )
         deltaX += this.PAN_SPEED;
       if (
-        this.activeKeys.has(this.keybinds.moveRight) ||
-        this.activeKeys.has("ArrowRight")
+        this.isContinuousActionActive(this.keybinds.moveRight) ||
+        this.isContinuousActionActive(this.keybinds.moveRightArrow)
       )
         deltaX -= this.PAN_SPEED;
 
@@ -599,202 +882,312 @@ export class InputHandler {
       const cy = window.innerHeight / 2;
 
       if (
-        this.activeKeys.has(this.keybinds.zoomOut) ||
-        this.activeKeys.has("Minus") ||
-        this.activeKeys.has("NumpadSubtract")
+        this.isContinuousActionActive(this.keybinds.zoomOut) ||
+        this.isContinuousActionActive(this.keybinds.zoomOutMinus) ||
+        this.isContinuousActionActive(this.keybinds.zoomOutNumpad)
       ) {
         this.eventBus.emit(new ZoomEvent(cx, cy, this.ZOOM_SPEED));
       }
       if (
-        this.activeKeys.has(this.keybinds.zoomIn) ||
-        this.activeKeys.has("Equal") ||
-        this.activeKeys.has("NumpadAdd")
+        this.isContinuousActionActive(this.keybinds.zoomIn) ||
+        this.isContinuousActionActive(this.keybinds.zoomInEqual) ||
+        this.isContinuousActionActive(this.keybinds.zoomInNumpad)
       ) {
         this.eventBus.emit(new ZoomEvent(cx, cy, -this.ZOOM_SPEED));
       }
     }, 1);
 
-    window.addEventListener("keydown", (e) => {
-      const isTextInput = this.isTextInputTarget(e.target);
-      if (isTextInput && e.code !== "Escape") {
-        return;
-      }
-
-      if (this.keybindMatchesEvent(e, this.keybinds.toggleView)) {
-        e.preventDefault();
-        if (!this.alternateView) {
-          this.alternateView = true;
-          this.eventBus.emit(new AlternateViewEvent(true));
-        }
-      }
-
-      if (
-        this.keybindMatchesEvent(e, this.keybinds.coordinateGrid) &&
-        !e.repeat
-      ) {
-        e.preventDefault();
-        this.coordinateGridEnabled = !this.coordinateGridEnabled;
-        this.eventBus.emit(
-          new ToggleCoordinateGridEvent(this.coordinateGridEnabled),
-        );
-      }
-
-      if (e.code === "Escape") {
-        e.preventDefault();
-        let closedUI = false;
-
-        if (this.uiState.ghostStructure !== null) {
-          this.setGhostStructure(null);
-          closedUI = true;
+    window.addEventListener(
+      "keydown",
+      (e) => {
+        const isTextInput = this.isTextInputTarget(e.target);
+        if (isTextInput && e.code !== "Escape") {
+          return;
         }
 
-        if (this.selectionBoxActive) {
-          this.selectionBoxActive = false;
-          this.eventBus.emit(new WarshipSelectionBoxCancelEvent());
-          closedUI = true;
+        // The emoji menu key works on keydown, unlike most keybinds, so a
+        // favorite key typed right after it (before it is released) already
+        // goes to the table instead of panning the map. Pressed again, it
+        // closes the table, like Escape.
+        if (this.keybindMatchesEvent(e, this.keybinds.emojiMenu) && !e.repeat) {
+          e.preventDefault();
+          if (this.emojiTableOpen) {
+            this.eventBus.emit(new CloseViewEvent());
+          } else {
+            this.eventBus.emit(
+              new ShowEmojiMenuEvent(
+                this.lastMouseX ?? 0,
+                this.lastMouseY ?? 0,
+              ),
+            );
+          }
+          return;
         }
 
-        this.eventBus.emit(new CloseViewEvent());
+        // Favorite keys are handled on keyup; keep them away from the game's
+        // keybinds (and from activeKeys) while the table is open.
+        if (this.emojiTableOpen && favoriteSlotForKey(e) !== null) {
+          e.preventDefault();
+          this.emojiKeysDown.add(e.code);
+          return;
+        }
+        // for hotkey usage, mostly an issue on Firefox.
+        // we specifically prevent the Left Alt key to avoid browser menu triggers,
+        // but allow Right Alt (often AltGr) to preserve international character input.
+        if (e.code === "AltLeft") {
+          e.preventDefault();
+        }
+
+        if (this.keybindMatchesEvent(e, this.keybinds.preventStacking)) {
+          this.uiState.preventStacking = true;
+        }
+        if (this.keybindMatchesEvent(e, this.keybinds.toggleView)) {
+          e.preventDefault();
+          if (!this.alternateView) {
+            this.alternateView = true;
+            this.eventBus.emit(new AlternateViewEvent(true));
+          }
+        }
 
         if (
-          !closedUI &&
-          (this.unitSelectionActive || this.multiSelectionActive)
+          this.keybindMatchesEvent(e, this.keybinds.coordinateGrid) &&
+          !e.repeat
         ) {
-          this.eventBus.emit(new UnitSelectionEvent(null, false));
+          e.preventDefault();
+          this.coordinateGridEnabled = !this.coordinateGridEnabled;
+          this.eventBus.emit(
+            new ToggleCoordinateGridEvent(this.coordinateGridEnabled),
+          );
         }
-      }
 
-      if (
-        (e.code === "Enter" || e.code === "NumpadEnter") &&
-        this.uiState.ghostStructure !== null
-      ) {
-        e.preventDefault();
-        this.eventBus.emit(new ConfirmGhostStructureEvent());
-      }
+        if (e.code === "Escape") {
+          e.preventDefault();
+          let closedUI = false;
 
-      // Don't track zoom keys when a meta/ctrl modifier is held — that means
-      // the browser is handling its own zoom (cmd+/cmd-) and the keyup will
-      // never fire, which would leave the key stuck in activeKeys forever.
-      // Also covers numpad zoom shortcuts (Ctrl+NumpadAdd/NumpadSubtract).
-      const isBrowserZoomCombo =
-        (e.metaKey || e.ctrlKey) &&
-        (e.code === "Minus" ||
-          e.code === "Equal" ||
-          e.code === "NumpadAdd" ||
-          e.code === "NumpadSubtract");
+          if (this.uiState.ghostStructure !== null) {
+            this.setGhostStructure(null);
+            closedUI = true;
+          }
 
-      const isConfiguredKeybind =
-        Object.values(this.keybinds).includes(e.code) ||
-        this.keybindAndEvent.some(([k]) => this.keybindMatchesEvent(e, k));
+          if (this.selectionBoxActive) {
+            this.selectionBoxActive = false;
+            this.eventBus.emit(new WarshipSelectionBoxCancelEvent());
+            closedUI = true;
+          }
 
-      if (isConfiguredKeybind && !isBrowserZoomCombo) {
-        e.preventDefault();
-      }
+          this.eventBus.emit(new CloseViewEvent());
 
-      if (
-        !isBrowserZoomCombo &&
-        [
-          this.keybinds.moveUp,
-          this.keybinds.moveDown,
-          this.keybinds.moveLeft,
-          this.keybinds.moveRight,
-          this.keybinds.zoomOut,
-          this.keybinds.zoomIn,
-          "ArrowUp",
-          "ArrowLeft",
-          "ArrowDown",
-          "ArrowRight",
-          "Minus",
-          "Equal",
-          "NumpadAdd",
-          "NumpadSubtract",
-          this.keybinds.attackRatioDown,
-          this.keybinds.attackRatioUp,
-          this.keybinds.centerCamera,
-          "ControlLeft",
-          "ControlRight",
-          this.keybinds.boxSelectWarships,
-          this.keybinds.emojiMenuModifier,
-          this.keybinds.buildMenuModifier,
-          this.keybinds.altKey,
-        ].includes(e.code)
-      ) {
-        this.activeKeys.add(e.code);
-      }
-
-      // warship box selection mode.
-      // If a ghost structure is active, discard it first.
-      if (e.code === this.keybinds.boxSelectWarships) {
-        if (this.uiState.ghostStructure !== null) {
-          this.setGhostStructure(null);
+          if (
+            !closedUI &&
+            (this.unitSelectionActive || this.multiSelectionActive)
+          ) {
+            this.eventBus.emit(new UnitSelectionEvent(null, false));
+          }
         }
-        this.canvas.style.cursor = "crosshair";
-      }
-    });
-    window.addEventListener("keyup", (e) => {
-      const isTextInput = this.isTextInputTarget(e.target);
-      if (isTextInput && !this.activeKeys.has(e.code)) {
-        return;
-      }
 
-      // When the meta (cmd) or ctrl key is released, any keys that were held
-      // simultaneously will have had their keyup swallowed by the browser
-      // (e.g. cmd+Plus for browser zoom). Clear zoom-related keys to
-      // prevent them staying stuck in activeKeys.
-      if (
-        e.code === "MetaLeft" ||
-        e.code === "MetaRight" ||
-        e.code === "ControlLeft" ||
-        e.code === "ControlRight"
-      ) {
-        this.activeKeys.delete("Minus");
-        this.activeKeys.delete("Equal");
-        this.activeKeys.delete("NumpadAdd");
-        this.activeKeys.delete("NumpadSubtract");
-        this.activeKeys.delete(this.keybinds.zoomIn);
-        this.activeKeys.delete(this.keybinds.zoomOut);
-      }
+        if (
+          (e.code === "Enter" || e.code === "NumpadEnter") &&
+          this.uiState.ghostStructure !== null
+        ) {
+          e.preventDefault();
+          this.eventBus.emit(new ConfirmGhostStructureEvent());
+        }
 
-      outerLoop: for (const item of this.keybindAndEvent) {
-        if (this.keybindMatchesEvent(e, item[0])) {
-          for (const i of item[1].conditions) {
-            if (!i(e)) {
-              continue outerLoop;
+        // Don't track zoom keys when a meta/ctrl modifier is held — that means
+        // the browser is handling its own zoom (cmd+/cmd-) and the keyup will
+        // never fire, which would leave the key stuck in activeKeys forever.
+        // Also covers numpad zoom shortcuts (Ctrl+NumpadAdd/NumpadSubtract).
+        const isBrowserZoomCombo =
+          (e.metaKey || e.ctrlKey) &&
+          (e.code === "Minus" ||
+            e.code === "Equal" ||
+            e.code === "NumpadAdd" ||
+            e.code === "NumpadSubtract");
+
+        if (
+          (e.code === "ControlLeft" || e.code === "ControlRight") &&
+          !this.activeKeys.has("ControlLeft") &&
+          !this.activeKeys.has("ControlRight")
+        ) {
+          const zoomCodes = this.getZoomPhysicalCodes();
+          this.zoomKeysHeldBeforeControl = new Set(
+            zoomCodes.filter((code) => this.activeKeys.has(code)),
+          );
+        }
+
+        const continuousBindings = this.getContinuousBindings();
+
+        const isConfiguredKeybind =
+          Object.values(this.keybinds).some((k) =>
+            this.keybindMatchesEvent(e, k),
+          ) ||
+          this.keybindAndEvent.some(([k, entry]) =>
+            this.keybindMatchesEvent(e, k, entry.ignoreShift),
+          ) ||
+          continuousBindings.some((k) => this.keybindMatchesEvent(e, k));
+
+        const isDevToolsCombo =
+          (e.metaKey || e.ctrlKey) && e.altKey && e.code === "KeyI";
+
+        if (isConfiguredKeybind && !isBrowserZoomCombo && !isDevToolsCombo) {
+          e.preventDefault();
+        }
+
+        this.shiftHeld = e.shiftKey;
+
+        const continuousPhysicalCodes = continuousBindings.map(
+          (k) => this.parseKeybind(k).code,
+        );
+
+        if (
+          !isBrowserZoomCombo &&
+          (continuousPhysicalCodes.includes(e.code) ||
+            [
+              "ShiftLeft",
+              "ShiftRight",
+              "ControlLeft",
+              "ControlRight",
+              "AltLeft",
+              "AltRight",
+              "MetaLeft",
+              "MetaRight",
+              this.keybinds.boxSelectWarships,
+              this.keybinds.emojiMenuModifier,
+              this.keybinds.buildMenuModifier,
+              this.keybinds.buildScrollModifier,
+              this.keybinds.altKey,
+            ].includes(e.code))
+        ) {
+          this.activeKeys.add(e.code);
+        }
+
+        // warship box selection mode.
+        // If a ghost structure is active, discard it first.
+        if (e.code === this.keybinds.boxSelectWarships) {
+          if (this.uiState.ghostStructure !== null) {
+            this.setGhostStructure(null);
+          }
+          this.canvas.style.cursor = "crosshair";
+        }
+      },
+      { signal },
+    );
+    window.addEventListener(
+      "keyup",
+      (e) => {
+        const hold = this.parseKeybind(this.keybinds.preventStacking);
+        // macOS can swallow H's keyup while Cmd is held. Reset on Cmd release
+        // before the text-input guard as focus may have moved into a menu.
+        if (
+          e.code === hold.code ||
+          (hold.shift && !e.shiftKey) ||
+          e.code === "MetaLeft" ||
+          e.code === "MetaRight"
+        ) {
+          this.uiState.preventStacking = false;
+        }
+        const isTextInput = this.isTextInputTarget(e.target);
+        if (isTextInput && !this.activeKeys.has(e.code)) {
+          return;
+        }
+        // for hotkey usage, mostly an issue on Firefox.
+        // we specifically prevent the Left Alt key to avoid browser menu triggers,
+        // but allow Right Alt (often AltGr) to preserve international character input.
+        if (e.code === "AltLeft") {
+          e.preventDefault();
+        }
+
+        this.shiftHeld = e.shiftKey;
+
+        // When meta (Cmd on macOS) is released, any keys released while Cmd was
+        // held will have had their keyup swallowed by the browser (e.g. Cmd+Plus
+        // for browser zoom, or releasing a zoom key while Cmd was held). Clear all
+        // zoom keys to prevent them staying stuck in activeKeys forever.
+        if (e.code === "MetaLeft" || e.code === "MetaRight") {
+          const otherMetaHeld =
+            (e.code === "MetaLeft" && this.activeKeys.has("MetaRight")) ||
+            (e.code === "MetaRight" && this.activeKeys.has("MetaLeft"));
+          if (!otherMetaHeld) {
+            for (const code of this.getZoomPhysicalCodes()) {
+              this.activeKeys.delete(code);
             }
           }
-          e.preventDefault();
-          item[1].handler(e);
         }
-      }
-
-      // Media hardware keys ΓÇö not configurable via keybinds, handled directly.
-      if (!e.repeat) {
-        if (e.code === "MediaPlayPause") {
-          e.preventDefault();
-          this.eventBus.emit(new MusicTogglePauseEvent());
-        } else if (e.code === "MediaTrackPrevious") {
-          e.preventDefault();
-          this.eventBus.emit(new MusicPrevTrackEvent());
-        } else if (e.code === "MediaTrackNext") {
-          e.preventDefault();
-          this.eventBus.emit(new MusicNextTrackEvent());
+        // Media hardware keys ΓÇö not configurable via keybinds, handled directly.
+        if (!e.repeat) {
+          if (e.code === "MediaPlayPause") {
+            e.preventDefault();
+            this.eventBus.emit(new MusicTogglePauseEvent());
+          } else if (e.code === "MediaTrackPrevious") {
+            e.preventDefault();
+            this.eventBus.emit(new MusicPrevTrackEvent());
+          } else if (e.code === "MediaTrackNext") {
+            e.preventDefault();
+            this.eventBus.emit(new MusicNextTrackEvent());
+          }
         }
-      }
 
-      this.activeKeys.delete(e.code);
+        // When Control is released, clear zoom keys that were pressed after
+        // Control was held (e.g. Ctrl+Plus for browser zoom), but preserve keys
+        // that were already held before Control was pressed.
+        if (e.code === "ControlLeft" || e.code === "ControlRight") {
+          const otherCtrlHeld =
+            (e.code === "ControlLeft" && this.activeKeys.has("ControlRight")) ||
+            (e.code === "ControlRight" && this.activeKeys.has("ControlLeft"));
+          if (!otherCtrlHeld) {
+            for (const code of this.getZoomPhysicalCodes()) {
+              if (!this.zoomKeysHeldBeforeControl.has(code)) {
+                this.activeKeys.delete(code);
+              }
+            }
+            this.zoomKeysHeldBeforeControl.clear();
+          }
+        }
 
-      // Reset crosshair when Shift is released (unless selection box or multi-selection still active)
-      if (
-        e.code === this.keybinds.boxSelectWarships &&
-        !this.selectionBoxActive &&
-        !this.multiSelectionActive
-      ) {
-        this.canvas.style.cursor = "";
-      }
-    });
+        if (this.emojiTableOpen) {
+          const slot = favoriteSlotForKey(e);
+          if (slot !== null) {
+            e.preventDefault();
+            this.zoomKeysHeldBeforeControl.delete(e.code);
+            this.activeKeys.delete(e.code);
+            // Only a press made while the table was open sends; releasing a
+            // key held from before (say, to pan) doesn't.
+            if (this.emojiKeysDown.delete(e.code)) {
+              this.eventBus.emit(new EmojiKeyEvent(slot));
+            }
+            return;
+          }
+        }
+
+        outerLoop: for (const item of this.keybindAndEvent) {
+          if (this.keybindMatchesEvent(e, item[0], item[1].ignoreShift)) {
+            for (const i of item[1].conditions) {
+              if (!i(e)) {
+                continue outerLoop;
+              }
+            }
+            e.preventDefault();
+            item[1].handler(e);
+          }
+        }
+        this.zoomKeysHeldBeforeControl.delete(e.code);
+        this.activeKeys.delete(e.code);
+
+        // Reset crosshair when Shift is released (unless selection box or multi-selection still active)
+        if (
+          e.code === this.keybinds.boxSelectWarships &&
+          !this.selectionBoxActive &&
+          !this.multiSelectionActive
+        ) {
+          this.canvas.style.cursor = "";
+        }
+      },
+      { signal },
+    );
   }
 
   private onPointerDown(event: PointerEvent) {
+    this.lastPointerType = event.pointerType;
     if (event.button === 1) {
       event.preventDefault();
       this.eventBus.emit(new AutoUpgradeEvent(event.clientX, event.clientY));
@@ -815,10 +1208,32 @@ export class InputHandler {
       this.lastPointerDownX = event.clientX;
       this.lastPointerDownY = event.clientY;
 
+      // A new gesture starts clean: a tap suppression from an earlier
+      // gesture (eg. a pinch) must not swallow this one's tap.
+      this.suppressNextTap = false;
+
       this.eventBus.emit(new MouseDownEvent(event.clientX, event.clientY));
 
+      this.touchPlacementDragState = "idle";
+      if (
+        event.pointerType === "touch" &&
+        this.uiState.ghostStructure !== null
+      ) {
+        const dragStart = new TouchGhostPlacementDragStartEvent(
+          event.clientX,
+          event.clientY,
+        );
+        this.eventBus.emit(dragStart);
+        if (dragStart.handled) {
+          this.touchPlacementDragState = "candidate";
+        }
+      }
+
       // Start long-press timer for touch devices
-      if (event.pointerType === "touch") {
+      if (
+        event.pointerType === "touch" &&
+        this.uiState.ghostStructure === null
+      ) {
         this.longPressActive = false;
         if (this.longPressTimer !== null) {
           clearTimeout(this.longPressTimer);
@@ -847,9 +1262,77 @@ export class InputHandler {
         this.longPressActive = false;
         this.canvas.style.cursor = "";
       }
+      this.touchPlacementDragState = "idle";
+      // The drag is over, but the finger that started it must not read as a
+      // tap: releasing it would confirm the build preview it was dragging.
+      this.suppressNextTap = true;
       this.lastPinchDistance = this.getPinchDistance();
     }
   }
+
+  private isGameInputPassThrough(event: PointerEvent): boolean {
+    return (
+      event
+        .composedPath?.()
+        .some(
+          (target) =>
+            target instanceof HTMLElement &&
+            target.hasAttribute("data-game-input-pass-through"),
+        ) ?? false
+    );
+  }
+
+  private onPassThroughPointerDown = (event: PointerEvent): void => {
+    if (this.isGameInputPassThrough(event)) {
+      if (event.button === 0) {
+        this.passThroughPointers.set(event.pointerId, {
+          x: event.clientX,
+          y: event.clientY,
+        });
+      }
+      this.onPointerDown(event);
+    }
+  };
+
+  private cancelPassThroughDrag(pointerId: number): void {
+    this.passThroughPointers.delete(pointerId);
+    const wasPrimaryPointer = this.pointers.keys().next().value === pointerId;
+    if (!this.pointers.delete(pointerId)) return;
+
+    this.pointerDown = this.pointers.size > 0;
+    if (this.pointerDown) {
+      if (wasPrimaryPointer) {
+        const nextPointer = this.pointers.values().next().value;
+        if (nextPointer) {
+          this.lastPointerX = nextPointer.clientX;
+          this.lastPointerY = nextPointer.clientY;
+          this.lastPointerDownX = nextPointer.clientX;
+          this.lastPointerDownY = nextPointer.clientY;
+        }
+      }
+      this.lastPinchDistance =
+        this.pointers.size >= 2 ? this.getPinchDistance() : 0;
+      return;
+    }
+
+    if (this.longPressTimer !== null) {
+      clearTimeout(this.longPressTimer);
+      this.longPressTimer = null;
+    }
+    if (this.longPressActive) {
+      this.canvas.style.cursor = "";
+    }
+    this.longPressActive = false;
+    this.suppressNextTap = false;
+  }
+
+  private onPointerCancel = (event: PointerEvent): void => {
+    if (this.passThroughPointers.has(event.pointerId)) {
+      this.cancelPassThroughDrag(event.pointerId);
+      return;
+    }
+    this.onPointerUp(event);
+  };
 
   onPointerUp(event: PointerEvent) {
     if (event.button === 1) {
@@ -858,6 +1341,19 @@ export class InputHandler {
     }
 
     if (event.button > 0) {
+      return;
+    }
+    if (
+      this.passThroughPointers.has(event.pointerId) &&
+      this.pointers.size > 1
+    ) {
+      this.cancelPassThroughDrag(event.pointerId);
+      return;
+    }
+    this.passThroughPointers.delete(event.pointerId);
+    // The release listener is global so map drags can end over the HUD. A HUD
+    // click has no matching map pointerdown and must not reuse stale map state.
+    if (!this.pointerDown || !this.pointers.has(event.pointerId)) {
       return;
     }
     this.pointerDown = false;
@@ -870,6 +1366,29 @@ export class InputHandler {
     }
     const wasLongPress = this.longPressActive;
     this.longPressActive = false;
+    const wasTouchPlacementDrag = this.touchPlacementDragState === "active";
+    this.touchPlacementDragState = "idle";
+    if (wasTouchPlacementDrag) {
+      if (event.type === "pointerup") {
+        this.eventBus.emit(
+          new TouchGhostPlacementMoveEvent(event.clientX, event.clientY),
+        );
+      } else {
+        this.suppressNextTap = false;
+      }
+      event.preventDefault();
+      return;
+    }
+    if (event.type === "pointercancel") {
+      this.suppressNextTap = false;
+      this.canvas.style.cursor = "";
+      if (this.selectionBoxActive) {
+        this.selectionBoxActive = false;
+        this.eventBus.emit(new WarshipSelectionBoxCancelEvent());
+      }
+      event.preventDefault();
+      return;
+    }
     if (wasLongPress) {
       this.canvas.style.cursor = "";
       // If long-press fired but no drag happened (selectionBoxActive is false),
@@ -899,6 +1418,21 @@ export class InputHandler {
         this.eventBus.emit(new WarshipSelectionBoxCancelEvent());
       }
     }
+
+    // macOS treats Ctrl+Left as secondary-click (context menu). Skip the
+    // primary-click path so we don't also fire an attack (#4918), and do it
+    // before modifier menus: if buildMenuModifier is rebound to ControlLeft,
+    // we'd otherwise emit ShowBuildMenuEvent and still get ContextMenuEvent.
+    // Mac-only: on Win/Linux event.ctrlKey is also true for Right Ctrl, which
+    // is not the default build-menu bind and must still attack. Spawn-phase
+    // Ctrl+click still needs MouseUpEvent — contextmenu is ignored then.
+    if (Platform.isMac && event.ctrlKey && !this.gameView.inSpawnPhase()) {
+      this.suppressNextTap = false;
+      return;
+    }
+
+    // Modifier menus: on Win/Linux Ctrl is the default build-menu key, so a
+    // ctrl+left must still reach ShowBuildMenuEvent (Mac already returned).
     if (this.activeKeys.has(this.keybinds.buildMenuModifier)) {
       this.suppressNextTap = false;
       this.eventBus.emit(new ShowBuildMenuEvent(event.clientX, event.clientY));
@@ -920,7 +1454,11 @@ export class InputHandler {
           event.preventDefault();
           return;
         }
-        this.eventBus.emit(new TouchEvent(event.x, event.y));
+        if (this.uiState.ghostStructure !== null) {
+          this.eventBus.emit(new TouchGhostPlacementEvent(event.x, event.y));
+        } else {
+          this.eventBus.emit(new TouchEvent(event.x, event.y));
+        }
         event.preventDefault();
         return;
       }
@@ -929,42 +1467,71 @@ export class InputHandler {
         !this.userSettings.leftClickOpensMenu() ||
         event.shiftKey ||
         this.gameView.inSpawnPhase() || // No Radial Menu during spawn phase, only spawn point selection
-        this.uiState.ghostStructure !== null // Block radial menu on left click if building
+        this.uiState.ghostStructure !== null || // Block radial menu on left click if building
+        this.gameView.config().gameConfig().tutorial === true // The tutorial teaches the click that attacks
       ) {
         this.eventBus.emit(new MouseUpEvent(event.x, event.y));
       } else {
         this.eventBus.emit(new ContextMenuEvent(event.clientX, event.clientY));
       }
+      return;
     }
+
+    // The gesture ended as a drag, so it was never a tap. Drop any tap
+    // suppression it left behind instead of letting it swallow the next
+    // gesture's tap.
+    this.suppressNextTap = false;
   }
 
   private onScroll(event: WheelEvent) {
-    if (!event.shiftKey) {
-      const realCtrl =
-        this.activeKeys.has("ControlLeft") ||
-        this.activeKeys.has("ControlRight");
-      if (event.ctrlKey) {
-        if (!realCtrl) {
-          // Pinch-to-zoom gesture (trackpad): small deltas, amplify.
-          // Ignore large deltas — those are browser zoom shortcuts (cmd+/cmd-)
-          // which fire synthetic wheel events we don't want to handle.
-          if (Math.abs(event.deltaY) <= 10) {
-            this.eventBus.emit(
-              new ZoomEvent(event.x, event.y, event.deltaY * 10),
-            );
-          }
-        }
-        // Always return when ctrlKey is set — whether it's a real ctrl scroll,
-        // a pinch gesture, or a browser zoom event, none should reach the
-        // regular scroll path below.
-        return;
-      }
-      // Regular scroll wheel: ignore tiny residual momentum events that macOS
-      // keeps sending after a gesture ends (especially after browser zoom changes
-      // devicePixelRatio, which can cause these to accumulate into runaway zoom).
-      if (Math.abs(event.deltaY) < 2) return;
-      this.eventBus.emit(new ZoomEvent(event.x, event.y, event.deltaY));
+    const scrollValue = event.deltaY === 0 ? event.deltaX : event.deltaY;
+    // The hardcoded shift scroll attack ratio changing takes priority.
+    if (event.shiftKey) {
+      const increment = this.userSettings.attackRatioIncrement();
+      const ratio = scrollValue > 0 ? -increment : increment;
+      this.eventBus.emit(new AttackRatioEvent(ratio));
+      return;
     }
+
+    if (this.activeKeys.has(this.keybinds.buildScrollModifier)) {
+      if (Math.abs(scrollValue) > 2) {
+        this.setGhostStructure(
+          this.uiState.ghostStructure,
+          scrollValue > 0 ? "decrease" : "increase",
+        );
+      }
+      // Prevent zooming if the build scroll modifier is active.
+      return;
+    }
+
+    // Any alt also blocks zooming, to match behavior of Ctrl / Shift
+    if (event.altKey) {
+      return;
+    }
+
+    const realCtrl =
+      this.activeKeys.has("ControlLeft") || this.activeKeys.has("ControlRight");
+    if (event.ctrlKey) {
+      if (!realCtrl) {
+        // Pinch-to-zoom gesture (trackpad): small deltas, amplify.
+        // Ignore large deltas — those are browser zoom shortcuts (cmd+/cmd-)
+        // which fire synthetic wheel events we don't want to handle.
+        if (Math.abs(event.deltaY) <= 10) {
+          this.eventBus.emit(
+            new ZoomEvent(event.x, event.y, event.deltaY * 10),
+          );
+        }
+      }
+      // Always return when ctrlKey is set — whether it's a real ctrl scroll,
+      // a pinch gesture, or a browser zoom event, none should reach the
+      // regular scroll path below.
+      return;
+    }
+    // Regular scroll wheel: ignore tiny residual momentum events that macOS
+    // keeps sending after a gesture ends (especially after browser zoom changes
+    // devicePixelRatio, which can cause these to accumulate into runaway zoom).
+    if (Math.abs(event.deltaY) < 2) return;
+    this.eventBus.emit(new ZoomEvent(event.x, event.y, event.deltaY));
   }
 
   /**
@@ -990,16 +1557,15 @@ export class InputHandler {
     this.eventBus.emit(new ZoomEvent(event.clientX, event.clientY, delta));
   }
 
-  private onShiftScroll(event: WheelEvent) {
-    if (event.shiftKey) {
-      const scrollValue = event.deltaY === 0 ? event.deltaX : event.deltaY;
-      const increment = this.userSettings.attackRatioIncrement();
-      const ratio = scrollValue > 0 ? -increment : increment;
-      this.eventBus.emit(new AttackRatioEvent(ratio));
-    }
-  }
-
   private onPointerMove(event: PointerEvent) {
+    if (event.pointerType !== "touch") {
+      this.lastMouseX = event.clientX;
+      this.lastMouseY = event.clientY;
+      if (event.movementX || event.movementY) {
+        this.eventBus.emit(new MouseMoveEvent(event.clientX, event.clientY));
+      }
+    }
+
     if (event.button === 1) {
       event.preventDefault();
       return;
@@ -1009,22 +1575,43 @@ export class InputHandler {
       return;
     }
 
-    this.pointers.set(event.pointerId, event);
-
     if (!this.pointerDown) {
       this.eventBus.emit(new MouseOverEvent(event.clientX, event.clientY));
       return;
     }
 
+    if (!this.pointers.has(event.pointerId)) {
+      return;
+    }
+
+    const passThroughOrigin = this.passThroughPointers.get(event.pointerId);
+    if (passThroughOrigin) {
+      const distance =
+        Math.abs(event.clientX - passThroughOrigin.x) +
+        Math.abs(event.clientY - passThroughOrigin.y);
+      if (distance >= this.DRAG_THRESHOLD_PX) {
+        this.cancelPassThroughDrag(event.pointerId);
+      }
+      return;
+    }
+    this.pointers.set(event.pointerId, event);
+
     if (this.pointers.size === 1) {
       const deltaX = event.clientX - this.lastPointerX;
       const deltaY = event.clientY - this.lastPointerY;
+      const moveDist =
+        Math.abs(event.clientX - this.lastPointerDownX) +
+        Math.abs(event.clientY - this.lastPointerDownY);
+
+      if (
+        this.touchPlacementDragState === "candidate" &&
+        moveDist >= this.DRAG_THRESHOLD_PX
+      ) {
+        this.touchPlacementDragState = "active";
+      }
 
       // Cancel long-press if finger moved significantly before timer fires
       if (this.longPressTimer !== null) {
-        const moveDist =
-          Math.abs(event.clientX - this.lastPointerDownX) +
-          Math.abs(event.clientY - this.lastPointerDownY);
         if (moveDist >= this.DRAG_THRESHOLD_PX) {
           clearTimeout(this.longPressTimer);
           this.longPressTimer = null;
@@ -1033,7 +1620,14 @@ export class InputHandler {
 
       // If shift is held OR touch long-press is active OR selection box already
       // started, continue emitting selection box updates
-      if (
+      if (this.touchPlacementDragState === "active") {
+        this.eventBus.emit(
+          new TouchGhostPlacementMoveEvent(event.clientX, event.clientY),
+        );
+      } else if (this.touchPlacementDragState === "candidate") {
+        // Keep a hold that began on the preview stable until the long-press
+        // threshold is reached; ordinary touches elsewhere still pan.
+      } else if (
         this.selectionBoxActive ||
         this.activeKeys.has(this.keybinds.boxSelectWarships) ||
         this.longPressActive
@@ -1069,6 +1663,12 @@ export class InputHandler {
 
   private onContextMenu(event: MouseEvent) {
     event.preventDefault();
+    if (
+      this.lastPointerType === "touch" &&
+      this.uiState.ghostStructure !== null
+    ) {
+      return;
+    }
     if (this.gameView.inSpawnPhase()) {
       return;
     }
@@ -1085,13 +1685,65 @@ export class InputHandler {
     this.eventBus.emit(new ContextMenuEvent(event.clientX, event.clientY));
   }
 
-  private setGhostStructure(ghostStructure: PlayerBuildableUnitType | null) {
+  public setGhostStructure(
+    ghostStructure: PlayerBuildableUnitType | null,
+    source: "increase" | "decrease" | "GUIclick" | "hotkey" = "hotkey",
+  ) {
+    const previousGhostStructure = this.uiState.ghostStructure;
+    if (source === "GUIclick" && previousGhostStructure !== ghostStructure) {
+      this.eventBus.emit(new CloseViewEvent());
+    }
+    if (previousGhostStructure !== null && ghostStructure === null) {
+      this.eventBus.emit(new ToggleStructureEvent(null));
+    }
+    if (
+      source === "hotkey" &&
+      ghostStructure !== null &&
+      previousGhostStructure !== ghostStructure
+    ) {
+      this.eventBus.emit(
+        new ToggleStructureEvent(highlightTypesForUnit(ghostStructure)),
+      );
+    }
+
     if (
       this.uiState.ghostStructure === ghostStructure &&
       ghostStructure !== null
     ) {
-      this.uiState.upgradeMultiplier =
-        this.uiState.upgradeMultiplier === 1 ? 5 : 1;
+      if (
+        source === "hotkey" &&
+        (this.gameView.updatesSinceLastTick?.() === null ||
+          this.gameView.isCatchingUp?.() ||
+          this.gameView.isPaused?.())
+      ) {
+        return;
+      }
+
+      const currentMultiplier = this.uiState.upgradeMultiplier ?? 1;
+      switch (source) {
+        case "GUIclick":
+        case "hotkey":
+          // first jump goes 1 -> 5 as before
+          this.uiState.upgradeMultiplier =
+            currentMultiplier === 1 ? 5 : currentMultiplier + 5;
+          // allow going back to 1 quickly by using hotkey.
+          if (this.uiState.upgradeMultiplier > MAX_UPGRADE_AMOUNT) {
+            this.uiState.upgradeMultiplier = 1;
+          }
+          break;
+        case "increase":
+          this.uiState.upgradeMultiplier = currentMultiplier + 1;
+          // clamp mouse wheel users to max
+          if (this.uiState.upgradeMultiplier > MAX_UPGRADE_AMOUNT) {
+            this.uiState.upgradeMultiplier = MAX_UPGRADE_AMOUNT;
+          }
+          break;
+        case "decrease":
+          // decrease only if above 1, we do not clear ghosts with scrollDown
+          this.uiState.upgradeMultiplier =
+            currentMultiplier > 1 ? currentMultiplier - 1 : 1;
+          break;
+      }
     } else {
       this.uiState.upgradeMultiplier = 1;
       this.uiState.ghostStructure = ghostStructure;
@@ -1117,9 +1769,73 @@ export class InputHandler {
   private keybindMatchesEvent(
     e: KeyboardEvent | { shiftKey: boolean; code: string },
     keybindValue: string,
+    ignoreShift = false,
   ): boolean {
     const parsed = this.parseKeybind(keybindValue);
-    return e.code === parsed.code && e.shiftKey === parsed.shift;
+    return (
+      e.code === parsed.code && (ignoreShift || e.shiftKey === parsed.shift)
+    );
+  }
+
+  private isShiftHeld(): boolean {
+    return this.shiftHeld;
+  }
+
+  /**
+   * Evaluates whether a continuous movement or zoom action is currently active.
+   *
+   * A binding is active when its physical key is held in `activeKeys` and its
+   * Shift-modifier condition is satisfied:
+   * - Shift-modified bindings (e.g. "Shift+ArrowUp") require Shift to be held.
+   *   Releasing Shift while the physical key remains held stops the action.
+   *   Pressing Shift while the physical key is already held activates the action.
+   * - Unmodified bindings (e.g. "ArrowUp") require Shift NOT to be held.
+   *   This ensures unmodified controls do not activate when Shift is held for
+   *   other actions (such as warship box selection).
+   * - Unbound ("Null" or undefined) bindings never activate.
+   */
+  private isContinuousActionActive(keybindValue: string | undefined): boolean {
+    if (!keybindValue || keybindValue === "Null") {
+      return false;
+    }
+    const { shift, code } = this.parseKeybind(keybindValue);
+    if (!this.activeKeys.has(code)) {
+      return false;
+    }
+    const shiftHeld = this.isShiftHeld();
+    return shift ? shiftHeld : !shiftHeld;
+  }
+
+  private getContinuousBindings(): string[] {
+    const bindings = [
+      this.keybinds.moveUp,
+      this.keybinds.moveUpArrow,
+      this.keybinds.moveDown,
+      this.keybinds.moveDownArrow,
+      this.keybinds.moveLeft,
+      this.keybinds.moveLeftArrow,
+      this.keybinds.moveRight,
+      this.keybinds.moveRightArrow,
+      this.keybinds.zoomOut,
+      this.keybinds.zoomOutMinus,
+      this.keybinds.zoomOutNumpad,
+      this.keybinds.zoomIn,
+      this.keybinds.zoomInEqual,
+      this.keybinds.zoomInNumpad,
+      this.keybinds.attackRatioDown,
+      this.keybinds.attackRatioUp,
+      this.keybinds.centerCamera,
+    ];
+    return bindings.filter(
+      (k): k is string => typeof k === "string" && k !== "" && k !== "Null",
+    );
+  }
+
+  private getZoomPhysicalCodes(): string[] {
+    const configured = [this.keybinds.zoomIn, this.keybinds.zoomOut]
+      .filter((code): code is string => Boolean(code) && code !== "Null")
+      .map((code) => this.parseKeybind(code).code);
+    return ["Minus", "Equal", "NumpadAdd", "NumpadSubtract", ...configured];
   }
 
   /**
@@ -1156,20 +1872,61 @@ export class InputHandler {
     return digit !== null && bindDigit !== null && digit === bindDigit;
   }
 
+  /** Whether the reset-graphics modifier (keybinds.altKey) is held. */
+  private resetGfxModifierHeld(e: KeyboardEvent): boolean {
+    if (
+      this.keybinds.altKey === "AltLeft" ||
+      this.keybinds.altKey === "AltRight"
+    ) {
+      return e.altKey && !e.ctrlKey;
+    }
+    if (
+      this.keybinds.altKey === "ControlLeft" ||
+      this.keybinds.altKey === "ControlRight"
+    ) {
+      return e.ctrlKey;
+    }
+    if (
+      this.keybinds.altKey === "ShiftLeft" ||
+      this.keybinds.altKey === "ShiftRight"
+    ) {
+      return e.shiftKey;
+    }
+    if (
+      this.keybinds.altKey === "MetaLeft" ||
+      this.keybinds.altKey === "MetaRight"
+    ) {
+      return e.metaKey;
+    }
+    return this.activeKeys.has(this.keybinds.altKey);
+  }
+
   /**
    * Add a keybind that activates on one press
    * @param keybind The keybind that is being activated
-   * @param event The code to be exectued when this keybind is pressed
-   * @param conditions Optional conditions that can be added, they get the keyboard up event passed to them
+   * @param event The code to be executed when this keybind is pressed
+   * @param conditionsOrOptions Conditions that get the keyboard event passed to them, or options like ignoreShift
    */
   private addKeybindAndEvent(
     keybind: string,
     event: (type: KeyboardEvent) => any,
-    ...conditions: ((type: KeyboardEvent) => any)[]
+    ...conditionsOrOptions: Array<
+      ((type: KeyboardEvent) => any) | { ignoreShift?: boolean }
+    >
   ) {
+    let ignoreShift: boolean | undefined;
+    const conditions: Array<(type: KeyboardEvent) => boolean> = [];
+    for (const item of conditionsOrOptions) {
+      if (typeof item === "function") {
+        conditions.push(item);
+      } else if (item && typeof item === "object") {
+        ignoreShift = item.ignoreShift;
+      }
+    }
     const entry: KeybindEntry = {
       handler: event,
       conditions,
+      ignoreShift,
     };
     this.keybindAndEvent.push([keybind, entry]);
   }
@@ -1231,6 +1988,15 @@ export class InputHandler {
   private isTextInputTarget(target: EventTarget | null): boolean {
     const element = target as HTMLElement | null;
     if (!element) return false;
+    // The keybind editor captures a raw key press on its own button and only
+    // calls preventDefault(). Now that keybinds are editable in-game, binding
+    // e.g. KeyG would otherwise also fire the ground attack behind the modal.
+    if (
+      typeof element.closest === "function" &&
+      element.closest("setting-keybind") !== null
+    ) {
+      return true;
+    }
     if (element.tagName === "TEXTAREA" || element.isContentEditable) {
       return true;
     }
@@ -1247,9 +2013,29 @@ export class InputHandler {
   destroy() {
     if (this.moveInterval !== null) {
       clearInterval(this.moveInterval);
+      this.moveInterval = null;
     }
+    globalThis.removeEventListener(
+      `${USER_SETTINGS_CHANGED_EVENT}:${KEYBINDS_KEY}`,
+      this.onKeybindsChanged,
+    );
+    this.listenerAbort?.abort();
+    this.listenerAbort = null;
+    this.eventBus.off(EmojiTableVisibleEvent, this.onEmojiTableVisible);
+    this.eventBus.off(UnitSelectionEvent, this.onUnitSelection);
+    // Includes the 800ms long-press timer a touch pointerdown arms: aborting
+    // the listeners does not cancel it, so without this it can still fire
+    // after teardown, emitting TouchLongPressStartEvent on the page-global
+    // bus, into the next game, and setting the cursor on a canvas the
+    // renderer has already removed.
+    this.resetPointerState();
     this.activeKeys.clear();
-    this.lastGestureScale = null;
+    this.uiState.preventStacking = false;
+    this.zoomKeysHeldBeforeControl.clear();
+    this.shiftHeld = false;
+    this.emojiTableOpen = false;
+    this.emojiKeysDown.clear();
     this.keybindAndEvent = [];
+    this.keybinds = {};
   }
 }

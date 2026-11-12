@@ -1,21 +1,23 @@
-import EventEmitter from "events";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { WebSocket } from "ws";
 import {
   Difficulty,
   GameMapSize,
   GameMapType,
   GameMode,
   GameType,
-} from "../../src/core/game/Game";
+  Trios,
+} from "@openfront/engine-api/game/GameTypes";
+import { LOBBY_LABEL_MAX } from "@openfront/engine-lib/Util";
+import { GameEnv } from "@openfront/shared/configuration/Env";
+import { sanitizeLobbyLabel } from "@openfront/shared/SharedUtil";
 import {
   FEATURED_LOBBY_AUTO_START_MS,
   HOSTED_LOBBY_AUTO_START_MS,
   LobbyLabelSchema,
   MAX_HOSTED_LOBBIES,
-} from "../../src/core/Schemas";
-import { LOBBY_LABEL_MAX, sanitizeLobbyLabel } from "../../src/core/Util";
-import { Client } from "../../src/server/Client";
+} from "@openfront/shared/WireSchemas";
+import EventEmitter from "events";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { WebSocket } from "ws";
 import { GameManager } from "../../src/server/GameManager";
 import {
   GamePhase,
@@ -26,9 +28,22 @@ import {
   InternalGameInfo,
   InternalPublicGames,
 } from "../../src/server/IPCBridgeSchema";
+import * as jwtModule from "../../src/server/jwt";
 import { MasterLobbyService } from "../../src/server/MasterLobbyService";
 import { ServerEnv } from "../../src/server/ServerEnv";
+import {
+  getListingEligibilityError,
+  registerListingRoute,
+} from "../../src/server/Worker";
 import { WorkerLobbyService } from "../../src/server/WorkerLobbyService";
+import {
+  makeClient as harnessClient,
+  mockLogger as harnessLogger,
+  makeMockWs,
+  MockWs,
+  startGame,
+} from "../util/GameServerHarness";
+import { decodeSentLobbyMessage, testGameConfig } from "../util/Wire";
 
 vi.mock("../../src/server/Logger", () => ({
   logger: {
@@ -44,12 +59,13 @@ vi.mock("../../src/server/PollingLoop", () => ({
   startPolling: vi.fn(),
 }));
 
-const mockLogger: any = {
-  child: vi.fn().mockReturnThis(),
-  info: vi.fn(),
-  warn: vi.fn(),
-  error: vi.fn(),
-};
+// The Box's land tiles by default: its public lobbies reach 210 players.
+const landTiles = vi.hoisted(() => ({ read: async () => 4_194_304 }));
+vi.mock("../../src/server/MapLandTiles", () => ({
+  readMapLandTiles: () => landTiles.read(),
+}));
+
+const mockLogger = harnessLogger();
 
 const CREATOR = "11111111-1111-4111-8111-111111111111";
 const OTHER_CREATOR = "22222222-2222-4222-8222-222222222222";
@@ -59,23 +75,45 @@ function makeGame(
   creatorPersistentID: string | undefined = CREATOR,
   config: Record<string, unknown> = {},
 ) {
-  return new GameServer(
+  return new GameServer({
     id,
-    mockLogger,
-    Date.now(),
-    { gameType: GameType.Private, ...config } as any,
+    log: mockLogger,
+    createdAt: Date.now(),
+    gameConfig: testGameConfig({ gameType: GameType.Private, ...config }),
     creatorPersistentID,
-  );
+  });
 }
 
 describe("GameServer listing", () => {
   it("is unlisted by default and toggles via setListed", () => {
     const game = makeGame();
     expect(game.isListed()).toBe(false);
+    expect(game.getVisibleAt()).toBeUndefined();
+
     game.setListed(true);
     expect(game.isListed()).toBe(true);
+    const visibleAt = game.getVisibleAt();
+    expect(visibleAt).toBeTypeOf("number");
+
     game.setListed(false);
     expect(game.isListed()).toBe(false);
+    expect(game.getVisibleAt()).toBe(visibleAt);
+  });
+
+  it("does not stamp visibleAt when private game countdown starts", () => {
+    const game = makeGame();
+    expect(game.getVisibleAt()).toBeUndefined();
+    game.setStartsAt(Date.now() + 5000);
+    expect(game.getVisibleAt()).toBeUndefined();
+  });
+
+  it("stamps visibleAt when public game countdown starts", () => {
+    const game = makeGame("public-game", CREATOR, {
+      gameType: GameType.Public,
+    });
+    expect(game.getVisibleAt()).toBeUndefined();
+    game.setStartsAt(Date.now() + 5000);
+    expect(game.getVisibleAt()).toBeTypeOf("number");
   });
 
   it("cannot be listed through update_game_config", () => {
@@ -100,9 +138,12 @@ describe("GameServer listing", () => {
   });
 
   it("never matches a creator when created without one", () => {
-    const game = new GameServer("no-creator", mockLogger, Date.now(), {
-      gameType: GameType.Private,
-    } as any);
+    const game = new GameServer({
+      id: "no-creator",
+      log: mockLogger,
+      createdAt: Date.now(),
+      gameConfig: { gameType: GameType.Private } as any,
+    });
     expect(game.isCreator(CREATOR)).toBe(false);
     expect(game.hashedCreatorID()).toBeUndefined();
   });
@@ -125,27 +166,296 @@ describe("GameServer listing", () => {
     ).toBe(true);
   });
 
-  it("delists when a join whitelist is added via config update", () => {
-    const game = makeGame();
-    game.setListed(true);
-
-    game.updateGameConfig({ allowedPublicIds: [] });
-    expect(game.isListed()).toBe(true);
-
-    game.updateGameConfig({ allowedPublicIds: ["p1"] });
-    expect(game.isListed()).toBe(false);
-  });
-
   it("exposes the listed flag in gameInfo for private lobbies only", () => {
     const game = makeGame();
     expect(game.gameInfo().listed).toBe(false);
     game.setListed(true);
     expect(game.gameInfo().listed).toBe(true);
 
-    const pub = new GameServer("pub", mockLogger, Date.now(), {
-      gameType: GameType.Public,
-    } as any);
+    const pub = new GameServer({
+      id: "pub",
+      log: mockLogger,
+      createdAt: Date.now(),
+      gameConfig: { gameType: GameType.Public } as any,
+    });
     expect(pub.gameInfo().listed).toBeUndefined();
+  });
+
+  describe("getListingEligibilityError", () => {
+    it("returns null for a valid, private lobby with no cheats or whitelist", () => {
+      const game = makeGame();
+      expect(getListingEligibilityError(game, 10)).toBeNull();
+    });
+
+    it("rejects public games or already started games", () => {
+      const pub = new GameServer({
+        id: "pub",
+        log: mockLogger,
+        createdAt: Date.now(),
+        gameConfig: testGameConfig({ gameType: GameType.Public }),
+      });
+      expect(getListingEligibilityError(pub)).toBe("Game cannot be listed");
+
+      const started = makeGame();
+      started.prestart();
+      expect(getListingEligibilityError(started)).toBe("Game cannot be listed");
+    });
+
+    it("rejects lobbies with an active join whitelist", () => {
+      const game = makeGame("g", CREATOR, { allowedPublicIds: ["p1"] });
+      expect(getListingEligibilityError(game)).toBe(
+        "listing_whitelist_enabled",
+      );
+    });
+
+    it("rejects lobbies with host cheats enabled", () => {
+      const game = makeGame("g", CREATOR, {
+        hostCheats: { infiniteGold: true },
+      });
+      expect(getListingEligibilityError(game)).toBe(
+        "listing_host_cheats_enabled",
+      );
+    });
+
+    it("rejects when player count meets or exceeds maxPlayers cap", () => {
+      const game = makeGame();
+      expect(getListingEligibilityError(game, 0)).toBe(
+        "listing_max_players_too_low",
+      );
+    });
+
+    it("checks the effective team cap against player count", () => {
+      const game = makeGame("team-eligibility", CREATOR, {
+        gameMode: GameMode.Team,
+        playerTeams: Trios,
+      });
+      game.joinClient(makeClient("p1", "c1", fakeWs()));
+      game.joinClient(makeClient("p2", "c2", fakeWs()));
+      game.joinClient(makeClient("p3", "c3", fakeWs()));
+      expect(getListingEligibilityError(game, 5)).toBe(
+        "listing_max_players_too_low",
+      );
+      expect(getListingEligibilityError(game, 6)).toBeNull();
+
+      game.gameConfig.maxPlayers = 3;
+      expect(getListingEligibilityError(game)).toBe(
+        "listing_max_players_too_low",
+      );
+    });
+
+    it("skips stored maxPlayers cap check when lobby is already listed and request omits maxPlayers", () => {
+      const game = makeGame("listed-game", CREATOR);
+      game.joinClient(makeClient("p1", "c1", fakeWs()));
+      game.joinClient(makeClient("p2", "c2", fakeWs()));
+      game.setListed(true, { maxPlayers: 2 });
+      expect(game.isListed()).toBe(true);
+      expect(game.numPlayers()).toBe(2);
+
+      // Omitting maxPlayers on relist skips the stored cap check even when full.
+      expect(getListingEligibilityError(game)).toBeNull();
+
+      // Passing explicit maxPlayers <= numPlayers still rejects.
+      expect(getListingEligibilityError(game, 2)).toBe(
+        "listing_max_players_too_low",
+      );
+    });
+  });
+
+  describe("app.post('/api/game/:id/listing') interleaving", () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it("rejects listing when lobby settings change to enable host cheats while getUserMe is pending", async () => {
+      let routeHandler!: (req: any, res: any) => Promise<any>;
+      const mockApp = {
+        post(path: string, handler: any) {
+          if (path === "/api/game/:id/listing") {
+            routeHandler = handler;
+          }
+        },
+      };
+
+      const game = makeGame("test-interleaving", CREATOR);
+      const mockGm: any = {
+        game: vi.fn((id: string) => (id === "test-interleaving" ? game : null)),
+      };
+      const mockLobbyService: any = {
+        creatorHasListedLobby: vi.fn().mockReturnValue(false),
+        hostedLobbyCount: vi.fn().mockReturnValue(0),
+      };
+
+      registerListingRoute({
+        app: mockApp as any,
+        gm: mockGm,
+        lobbyService: mockLobbyService,
+        log: mockLogger as any,
+      });
+
+      vi.spyOn(jwtModule, "verifyClientToken").mockResolvedValue({
+        type: "success",
+        persistentId: CREATOR,
+        claims: null,
+      });
+
+      vi.spyOn(ServerEnv, "env").mockReturnValue(GameEnv.Prod);
+
+      let resolveUserMe!: (val: any) => void;
+      const userMePromise = new Promise((resolve) => {
+        resolveUserMe = resolve;
+      });
+      const getUserMeSpy = vi
+        .spyOn(jwtModule, "getUserMe")
+        .mockImplementation(() => userMePromise as any);
+
+      const req: any = {
+        headers: { authorization: "Bearer test-token" },
+        params: { id: "test-interleaving" },
+        body: { listed: true },
+      };
+      const res: any = {
+        statusCode: 200,
+        body: undefined,
+        status(code: number) {
+          this.statusCode = code;
+          return this;
+        },
+        json(data: unknown) {
+          this.body = data;
+          return this;
+        },
+      };
+
+      const listingPromise = routeHandler(req, res);
+
+      // Wait until the handler passes preError validation and is suspended on getUserMe
+      await vi.waitFor(() => expect(getUserMeSpy).toHaveBeenCalled());
+
+      // Mutate the lobby config while getUserMe is pending
+      game.updateGameConfig({ hostCheats: { infiniteGold: true } });
+
+      resolveUserMe({
+        type: "success",
+        response: { player: { canCreatePublicLobbies: true } },
+      });
+
+      await listingPromise;
+
+      expect(res.statusCode).toBe(409);
+      expect(res.body).toEqual({ error: "listing_host_cheats_enabled" });
+      expect(game.isListed()).toBe(false);
+    });
+  });
+
+  describe("app.post('/api/game/:id/listing') player cap", () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    async function list(
+      maxPlayers: number | undefined,
+      config: Record<string, unknown> = {},
+    ) {
+      let routeHandler!: (req: any, res: any) => Promise<any>;
+      const game = makeGame("test-cap", CREATOR, config);
+      registerListingRoute({
+        app: {
+          post(path: string, handler: any) {
+            if (path === "/api/game/:id/listing") routeHandler = handler;
+          },
+        } as any,
+        gm: { game: () => game } as any,
+        lobbyService: {
+          creatorHasListedLobby: () => false,
+          hostedLobbyCount: () => 0,
+        } as any,
+        log: mockLogger as any,
+      });
+      vi.spyOn(jwtModule, "verifyClientToken").mockResolvedValue({
+        type: "success",
+        persistentId: CREATOR,
+        claims: null,
+      });
+      vi.spyOn(ServerEnv, "env").mockReturnValue(GameEnv.Dev);
+      const res: any = {
+        statusCode: 200,
+        body: undefined,
+        status(code: number) {
+          this.statusCode = code;
+          return this;
+        },
+        json(data: unknown) {
+          this.body = data;
+          return this;
+        },
+      };
+      await routeHandler(
+        {
+          headers: { authorization: "Bearer test-token" },
+          params: { id: "test-cap" },
+          body: { listed: true, maxPlayers },
+        },
+        res,
+      );
+      return { game, res };
+    }
+
+    it("allows caps above 100 up to the map's public lobby size", async () => {
+      const { game, res } = await list(210);
+      expect(res.statusCode).toBe(200);
+      expect(game.gameInfo().gameConfig?.maxPlayers).toBe(210);
+    });
+
+    it("rejects caps above the map's public lobby size", async () => {
+      const { game, res } = await list(211);
+      expect(res.statusCode).toBe(409);
+      expect(res.body).toEqual({ error: "listing_max_players_too_high" });
+      expect(game.isListed()).toBe(false);
+    });
+
+    it("refuses to list when the map's size can't be read", async () => {
+      const read = landTiles.read;
+      landTiles.read = async () => {
+        throw new Error("no manifest");
+      };
+      try {
+        const { game, res } = await list(50);
+        expect(res.statusCode).toBe(503);
+        expect(res.body).toEqual({ error: "listing_failed" });
+        expect(game.isListed()).toBe(false);
+      } finally {
+        landTiles.read = read;
+      }
+    });
+
+    it("checks the lobby's existing cap when the request omits one", async () => {
+      const { game, res } = await list(undefined, { maxPlayers: 300 });
+      expect(res.body).toEqual({ error: "listing_max_players_too_high" });
+      expect(game.isListed()).toBe(false);
+    });
+
+    it("rejects when the map changed while its size was read", () => {
+      const game = makeGame("test-map-change", CREATOR, {
+        gameMap: GameMapType.World,
+      });
+      expect(
+        getListingEligibilityError(game, 50, {
+          map: GameMapType.TheBox,
+          landTiles: 4_194_304,
+        }),
+      ).toBe("listing_failed");
+      expect(
+        getListingEligibilityError(game, 50, {
+          map: GameMapType.World,
+          landTiles: 4_194_304,
+        }),
+      ).toBeNull();
+    });
+
+    it("uses the compact size on compact maps", async () => {
+      const { res } = await list(100, { gameMapSize: GameMapSize.Compact });
+      expect(res.body).toEqual({ error: "listing_max_players_too_high" });
+    });
   });
 });
 
@@ -174,7 +484,7 @@ describe("GameManager.listedLobbies", () => {
     const gm = new GameManager(mockLogger);
     const pub = gm.createGame(
       "g-public",
-      { gameType: GameType.Public } as any,
+      testGameConfig({ gameType: GameType.Public }),
       undefined,
     )!;
     pub.setListed(true);
@@ -189,7 +499,7 @@ describe("GameManager.listedLobbies", () => {
     game.setListed(true);
     expect(gm.listedLobbies()).toHaveLength(1);
 
-    (game as any)._hasStarted = true;
+    startGame(game);
     expect(gm.listedLobbies()).toEqual([]);
   });
 });
@@ -246,6 +556,61 @@ describe("listed lobby auto-start", () => {
     expect(gm.listedLobbies()).toHaveLength(1);
   });
 
+  it("applies the host's start time and player cap", () => {
+    const game = makeGame();
+    game.joinClient(makeClient("host", CREATOR, fakeWs()));
+    game.setListed(true, { autoStartMs: 2 * 60_000, maxPlayers: 2 });
+    expect(game.autoStartAt()).toBe(Date.now() + 2 * 60_000);
+    expect(game.gameInfo().gameConfig?.maxPlayers).toBe(2);
+    expect(game.phase()).toBe(GamePhase.Lobby);
+
+    // Relisting can't change the advertised cap.
+    game.setListed(true, { maxPlayers: 50 });
+    expect(game.gameInfo().gameConfig?.maxPlayers).toBe(2);
+
+    // Filling to the cap starts the game before the deadline.
+    game.joinClient(makeClient("guest", OTHER_CREATOR, fakeWs()));
+    expect(game.phase()).toBe(GamePhase.Active);
+  });
+
+  it("adjusts the listing player cap for team games", () => {
+    const game = makeGame("team-game", CREATOR, {
+      gameMode: GameMode.Team,
+      playerTeams: Trios,
+    });
+    game.joinClient(makeClient("host", CREATOR, fakeWs()));
+    game.setListed(true, { maxPlayers: 100 });
+    expect(game.gameInfo().gameConfig?.maxPlayers).toBe(99);
+
+    // Adjusts unaligned stored maxPlayers when options omit maxPlayers.
+    const game2 = makeGame("team-game-no-opts", CREATOR, {
+      gameMode: GameMode.Team,
+      playerTeams: Trios,
+      maxPlayers: 100,
+    });
+    game2.joinClient(makeClient("host", CREATOR, fakeWs()));
+    game2.setListed(true);
+    expect(game2.gameInfo().gameConfig?.maxPlayers).toBe(99);
+
+    // Enforces at least a full team size when cap is smaller than team size.
+    const game3 = makeGame("team-game-small", CREATOR, {
+      gameMode: GameMode.Team,
+      playerTeams: Trios,
+    });
+    game3.joinClient(makeClient("host", CREATOR, fakeWs()));
+    game3.setListed(true, { maxPlayers: 2 });
+    expect(game3.gameInfo().gameConfig?.maxPlayers).toBe(3);
+
+    // Leaves configured cap unchanged for numeric team counts.
+    const game4 = makeGame("team-game-numeric", CREATOR, {
+      gameMode: GameMode.Team,
+      playerTeams: 3,
+    });
+    game4.joinClient(makeClient("host", CREATOR, fakeWs()));
+    game4.setListed(true, { maxPlayers: 5 });
+    expect(game4.gameInfo().gameConfig?.maxPlayers).toBe(5);
+  });
+
   it("never auto-starts an unlisted lobby", () => {
     const gm = new GameManager(mockLogger);
     const game = gm.createGame("g-manual", undefined, CREATOR)!;
@@ -256,29 +621,16 @@ describe("listed lobby auto-start", () => {
   });
 });
 
-function fakeWs() {
-  const ws = new EventEmitter() as any;
-  ws.readyState = WebSocket.OPEN;
-  ws.send = vi.fn();
-  ws.close = vi.fn();
-  return ws;
-}
+const fakeWs = makeMockWs;
 
-function makeClient(clientID: string, persistentID: string, ws: any) {
-  return new Client(
+function makeClient(clientID: string, persistentID: string, ws: MockWs) {
+  return harnessClient({
     clientID,
     persistentID,
-    null,
-    null,
-    undefined,
-    "1.2.3.4",
-    `user_${clientID}`,
-    null,
+    ip: "1.2.3.4",
+    username: `user_${clientID}`,
     ws,
-    undefined,
-    undefined,
-    [],
-  );
+  });
 }
 
 describe("host-left lobby teardown", () => {
@@ -291,10 +643,9 @@ describe("host-left lobby teardown", () => {
     vi.useRealTimers();
   });
 
-  it("ends, delists and prunes an unstarted lobby when the host leaves", () => {
+  it("ends and prunes an unlisted lobby when the host leaves", async () => {
     const gm = new GameManager(mockLogger);
     const game = gm.createGame("g-host-leaves", undefined, CREATOR)!;
-    game.setListed(true);
 
     const hostWs = fakeWs();
     const guestWs = fakeWs();
@@ -302,41 +653,56 @@ describe("host-left lobby teardown", () => {
     expect(game.joinClient(makeClient("guest", OTHER_CREATOR, guestWs))).toBe(
       "joined",
     );
-    expect(gm.listedLobbies()).toHaveLength(1);
 
-    hostWs.emit("close");
+    await hostWs.trigger("close");
 
-    // Remaining players are kicked and the ghost leaves the listing...
+    // Remaining players are kicked...
     expect(guestWs.close).toHaveBeenCalled();
     expect(game.phase()).toBe(GamePhase.Finished);
-    expect(gm.listedLobbies()).toEqual([]);
 
-    // ...and the next manager tick prunes the game entirely, freeing the
-    // creator's one-listing quota.
+    // ...and the next manager tick prunes the game entirely.
     gm.tick();
     expect(gm.game("g-host-leaves")).toBeNull();
+  });
+
+  it("keeps a listed lobby going when the host leaves", async () => {
+    const gm = new GameManager(mockLogger);
+    const game = gm.createGame("g-listed-host-leaves", undefined, CREATOR)!;
+    game.setListed(true);
+
+    const hostWs = fakeWs();
+    const guestWs = fakeWs();
+    game.joinClient(makeClient("host", CREATOR, hostWs));
+    game.joinClient(makeClient("guest", OTHER_CREATOR, guestWs));
+
+    await hostWs.trigger("close");
+
+    // The guest keeps their seat, the lobby stays listed, and it still
+    // starts on its listing deadline.
+    expect(guestWs.close).not.toHaveBeenCalled();
+    expect(game.phase()).toBe(GamePhase.Lobby);
+    expect(gm.listedLobbies()).toEqual([game]);
+    expect(game.autoStartAt()).toBeDefined();
   });
 
   it("tears down even when the host socket was already dead on join", () => {
     const gm = new GameManager(mockLogger);
     const game = gm.createGame("g-dead-socket", undefined, CREATOR)!;
-    game.setListed(true);
 
     const hostWs = fakeWs();
     hostWs.readyState = WebSocket.CLOSED;
     game.joinClient(makeClient("host", CREATOR, hostWs));
 
     expect(game.phase()).toBe(GamePhase.Finished);
-    expect(gm.listedLobbies()).toEqual([]);
   });
 
-  it("rejects joins into an ended lobby before it is pruned", () => {
+  it("rejects joins into an ended lobby before it is pruned", async () => {
     const game = makeGame();
-    (game as any)._hasEnded = true;
-    expect(game.joinClient({} as any)).toBe("rejected");
+    await game.end();
+    expect(game.joinClient({} as any)).toBe("ended");
   });
 
-  it("does not tear down when the host disconnects during prestart", () => {
+  it("does not tear down when the host disconnects during prestart", async () => {
     // During the lobby -> game transition the host modal closes and sockets
     // churn; a starting game (e.g. listed-lobby auto-start) must survive it.
     const gm = new GameManager(mockLogger);
@@ -345,11 +711,10 @@ describe("host-left lobby teardown", () => {
 
     const hostWs = fakeWs();
     game.joinClient(makeClient("host", CREATOR, hostWs));
-    (game as any)._hasPrestarted = true;
+    game.prestart();
 
-    hostWs.emit("close");
+    await hostWs.trigger("close");
 
-    expect((game as any)._hasEnded).toBe(false);
     expect(game.phase()).not.toBe(GamePhase.Finished);
   });
 });
@@ -370,6 +735,20 @@ describe("listed lobby host powers", () => {
     isAdmin: false,
     isAdminBot: false,
   };
+  const asBot = {
+    clientID: "bot",
+    isLobbyCreator: false,
+    isAdmin: true,
+    isAdminBot: true,
+  };
+
+  it("freezes the host's config once listed", () => {
+    const game = makeGame();
+    const bots = { type: "update_game_config", config: { bots: 7 } } as any;
+    game.setListed(true);
+    expect(game.handleIntent(bots, asHost).status).toBe(409);
+    expect(game.gameInfo().gameConfig?.bots).not.toBe(7);
+  });
 
   it("reports host cheats only when a cheat is actually granted", () => {
     expect(makeGame().hasHostCheats()).toBe(false);
@@ -409,7 +788,7 @@ describe("listed lobby host powers", () => {
 
   it("blocks host pause controls while listed", () => {
     const game = makeGame("g-pause");
-    (game as any)._hasStarted = true;
+    startGame(game);
     game.setListed(true);
 
     const pause = { type: "toggle_pause", paused: true } as any;
@@ -417,12 +796,12 @@ describe("listed lobby host powers", () => {
       status: 403,
       error: "the host cannot pause a publicly listed game",
     });
-    expect((game as any).isPaused).toBe(false);
+    expect(game.isPaused()).toBe(false);
 
     // Unlisting restores the host's pause control.
     game.setListed(false);
     expect(game.handleIntent(pause, asHost).status).toBe(200);
-    expect((game as any).isPaused).toBe(true);
+    expect(game.isPaused()).toBe(true);
   });
 
   it("lets admins kick in a listed lobby", () => {
@@ -445,6 +824,26 @@ describe("listed lobby host powers", () => {
     ).toBe(200);
   });
 
+  it("rejects a join whitelist while listed instead of delisting", () => {
+    const game = makeGame();
+    game.setListed(true);
+
+    const empty = {
+      type: "update_game_config",
+      config: { allowedPublicIds: [] },
+    } as any;
+    expect(game.handleIntent(empty, asBot).status).toBe(200);
+    expect(game.isListed()).toBe(true);
+
+    const whitelist = {
+      type: "update_game_config",
+      config: { allowedPublicIds: ["p1"] },
+    } as any;
+    expect(game.handleIntent(whitelist, asBot).status).toBe(409);
+    expect(game.isListed()).toBe(true);
+    expect(game.hasJoinWhitelist()).toBe(false);
+  });
+
   it("rejects enabling host cheats while listed", () => {
     const game = makeGame();
     game.setListed(true);
@@ -453,7 +852,7 @@ describe("listed lobby host powers", () => {
       type: "update_game_config",
       config: { hostCheats: { infiniteGold: true } },
     } as any;
-    expect(game.handleIntent(cheats, asHost).status).toBe(409);
+    expect(game.handleIntent(cheats, asBot).status).toBe(409);
     expect(game.hasHostCheats()).toBe(false);
 
     // A neutral hostCheats block still goes through (the client always
@@ -461,7 +860,7 @@ describe("listed lobby host powers", () => {
     expect(
       game.handleIntent(
         { type: "update_game_config", config: { hostCheats: {} } } as any,
-        asHost,
+        asBot,
       ).status,
     ).toBe(200);
     game.setListed(false);
@@ -486,6 +885,9 @@ function hostedLobby(
 
 describe("MasterLobbyService hosted lobbies", () => {
   function createService() {
+    // Scheduling mints game ids under the own instance letter, which resolves
+    // through DOMAIN against the dev-default cluster map.
+    vi.stubEnv("DOMAIN", "localhost");
     vi.spyOn(ServerEnv, "numWorkers").mockReturnValue(2);
     vi.spyOn(ServerEnv, "workerIndex").mockReturnValue(1);
     vi.spyOn(ServerEnv, "gameCreationRate").mockReturnValue(60_000);
@@ -706,6 +1108,7 @@ describe("WorkerLobbyService hosted lobbies", () => {
       publicLobbies: vi.fn().mockReturnValue([]),
       listedLobbies: vi.fn().mockReturnValue([]),
       game: vi.fn().mockReturnValue(null),
+      activeGames: vi.fn().mockReturnValue(0),
     };
     const server = new EventEmitter();
     service = new WorkerLobbyService(
@@ -742,7 +1145,7 @@ describe("WorkerLobbyService hosted lobbies", () => {
   }
 
   function sentPayloads(ws: { send: ReturnType<typeof vi.fn> }): any[] {
-    return ws.send.mock.calls.map((c) => JSON.parse(c[0]));
+    return ws.send.mock.calls.map((c) => decodeSentLobbyMessage(c[0]));
   }
 
   it("reports listed lobbies to master as hosted, with creatorID and without host-only config", () => {
@@ -751,6 +1154,7 @@ describe("WorkerLobbyService hosted lobbies", () => {
       nameReveals: ["c1"],
       nameRevealPublicIds: ["p2"],
       hostCheats: { infiniteGold: true },
+      pool: { id: "pool-1", siblings: ["aaaa1111", "bbbb2222"] },
     });
     game.setListed(true);
     gm.listedLobbies.mockReturnValue([game]);
@@ -768,27 +1172,30 @@ describe("WorkerLobbyService hosted lobbies", () => {
     expect(reported.gameConfig.nameReveals).toBeUndefined();
     expect(reported.gameConfig.nameRevealPublicIds).toBeUndefined();
     expect(reported.gameConfig.hostCheats).toBeUndefined();
+    // A listed pool advertises its entry point, not the sibling ids.
+    expect(reported.gameConfig.pool).toBeUndefined();
+    expect(reported.autoStartAt).toBe(game.autoStartAt());
   });
 
   it("excludes matchmaking games (Public but no publicGameType) from the report", () => {
-    const ranked = new GameServer(
-      "ranked-g1",
-      mockLogger,
-      Date.now(),
-      { gameType: GameType.Public, allowedPublicIds: ["p1", "p2"] } as any,
-      undefined,
-      Date.now() + 7000,
-      undefined, // matchmaking games are created without a publicGameType
-    );
-    const ffa = new GameServer(
-      "ffa-g1",
-      mockLogger,
-      Date.now(),
-      { gameType: GameType.Public } as any,
-      undefined,
-      undefined,
-      "ffa",
-    );
+    const ranked = new GameServer({
+      id: "ranked-g1",
+      log: mockLogger,
+      createdAt: Date.now(),
+      gameConfig: testGameConfig({
+        gameType: GameType.Public,
+        allowedPublicIds: ["p1", "p2"],
+      }),
+      startsAt: Date.now() + 7000,
+      // matchmaking games are created without a publicGameType
+    });
+    const ffa = new GameServer({
+      id: "ffa-g1",
+      log: mockLogger,
+      createdAt: Date.now(),
+      gameConfig: { gameType: GameType.Public } as any,
+      publicGameType: "ffa",
+    });
     gm.publicLobbies.mockReturnValue([ranked, ffa]);
 
     emitBroadcast({ ffa: [], team: [], special: [], hosted: [] });
@@ -797,6 +1204,55 @@ describe("WorkerLobbyService hosted lobbies", () => {
       .map((c: any[]) => c[0])
       .find((m: any) => m.type === "lobbyList");
     expect(lobbyList.lobbies.map((l: any) => l.gameID)).toEqual(["ffa-g1"]);
+  });
+
+  it("does not count spectators in reported lobby numClients", () => {
+    const game = makeGame("hosted-spec", CREATOR);
+    game.setListed(true);
+    game.joinClient(
+      harnessClient({ clientID: "p1" as any, persistentID: "p1" }),
+    );
+    game.joinClient(
+      harnessClient({
+        clientID: "s1" as any,
+        persistentID: "s1",
+        spectator: true,
+      }),
+    );
+    gm.listedLobbies.mockReturnValue([game]);
+    emitBroadcast({ ffa: [], team: [], special: [], hosted: [] });
+    const list = sendToMaster.mock.calls.find(
+      (c: any) => c[0].type === "lobbyList",
+    )![0];
+    expect(
+      list.lobbies.find((l: any) => l.gameID === "hosted-spec").numClients,
+    ).toBe(1);
+  });
+
+  it("reports the game manager's live game count to the master", () => {
+    gm.activeGames.mockReturnValue(7);
+    // Drop the stub so the real sendToMaster runs: assert on the message that
+    // actually leaves the worker. Anything that is not ours is forwarded
+    // untouched, since vitest's fork pool talks to its parent on this channel.
+    delete (service as any).sendToMaster;
+    const realSend = process.send;
+    const sent: any[] = [];
+    process.send = ((msg: any, ...rest: any[]) => {
+      if (msg?.type === "lobbyList" || msg?.type === "workerReady") {
+        sent.push(msg);
+        return true;
+      }
+      return (realSend as any)?.apply(process, [msg, ...rest]) ?? true;
+    }) as any;
+    try {
+      emitBroadcast({ ffa: [], team: [], special: [], hosted: [] });
+    } finally {
+      process.send = realSend;
+    }
+
+    const lobbyList = sent.find((m) => m.type === "lobbyList");
+    expect(lobbyList).toBeDefined();
+    expect(lobbyList.liveGames).toBe(7);
   });
 
   it("strips creatorID from broadcasts and primed snapshots sent to clients", () => {
@@ -818,6 +1274,19 @@ describe("WorkerLobbyService hosted lobbies", () => {
     const primed = sentPayloads(lateWs)[0];
     expect(primed.type).toBe("full");
     expect(primed.games.hosted[0].creatorID).toBeUndefined();
+  });
+
+  it("carries a hosted lobby's auto-start deadline to clients", () => {
+    const ws = connectClient();
+    emitBroadcast({
+      ffa: [],
+      team: [],
+      special: [],
+      hosted: [hostedLobby("g1", "hash", { autoStartAt: 123_456 })],
+    });
+
+    const full = sentPayloads(ws).find((p) => p.type === "full");
+    expect(full.games.hosted[0].autoStartAt).toBe(123_456);
   });
 
   it("re-sends a full when a hosted lobby's config changes without a gameID change", () => {

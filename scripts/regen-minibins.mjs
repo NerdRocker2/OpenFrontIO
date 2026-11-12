@@ -18,7 +18,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "..");
 
 const MIN_ISLAND_SIZE = 30; // matches Go's minIslandSize
-const MIN_LAKE_SIZE = 200; // matches Go's minLakeSize (unused here, removeSmall=false for mini)
 
 const mapName = process.argv[2];
 if (!mapName) {

@@ -1,7 +1,7 @@
+import { GameMapType } from "@openfront/engine-api/game/GameTypes";
+import { assetUrl } from "@openfront/shared/AssetUrls";
 import { html, LitElement, nothing, type TemplateResult } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import { assetUrl } from "../../../core/AssetUrls";
-import { GameMapType } from "../../../core/game/Game";
 import {
   type ClanGame,
   type ClanGameFilter,
@@ -11,6 +11,7 @@ import { ClientEnv } from "../../ClientEnv";
 import { terrainMapFileLoader } from "../../TerrainMapFileLoader";
 import {
   copyToClipboard,
+  currentPagePath,
   getMapName,
   renderDuration,
   showToast,
@@ -40,8 +41,8 @@ const FILTER_TABS: { key: FilterKey; labelKey: string }[] = [
   { key: "all", labelKey: "clan_modal.history_filter_all" },
   { key: "ffa", labelKey: "clan_modal.history_type_ffa" },
   { key: "team", labelKey: "clan_modal.history_type_team" },
-  { key: "hvn", labelKey: "clan_modal.history_filter_hvn" },
-  { key: "ranked", labelKey: "clan_modal.history_filter_ranked" },
+  { key: "hvn", labelKey: "clan_modal.stats_hvn" },
+  { key: "ranked", labelKey: "clan_modal.stats_ranked" },
 ];
 
 // Cache survives a tab switch within the modal: keep the full
@@ -88,7 +89,7 @@ export class ClanGameHistoryView extends LitElement {
       this.nextCursor = this.cachedState.nextCursor;
       this.filter = this.cachedState.filter;
     } else if (this.clanTag) {
-      this.reload();
+      void this.reload();
     }
   }
 
@@ -116,7 +117,7 @@ export class ClanGameHistoryView extends LitElement {
   private setFilter(filter: FilterKey) {
     if (filter === this.filter) return;
     this.filter = filter;
-    this.reload();
+    void this.reload();
   }
 
   private async load({ append }: { append: boolean }) {
@@ -197,7 +198,7 @@ export class ClanGameHistoryView extends LitElement {
   private async watchReplay(gameId: string) {
     try {
       const encoded = encodeURIComponent(gameId);
-      const url = `/${ClientEnv.workerPath(gameId)}/game/${encoded}`;
+      const url = currentPagePath(ClientEnv.gamePath(gameId));
       history.pushState({ join: gameId }, "", url);
       window.dispatchEvent(
         new CustomEvent("join-changed", { detail: { gameId: encoded } }),
@@ -221,14 +222,16 @@ export class ClanGameHistoryView extends LitElement {
   }
 
   private async copyGameLink(gameId: string) {
-    const encodedGameId = encodeURIComponent(gameId);
-    const url = `${window.location.origin}/${ClientEnv.workerPath(gameId)}/game/${encodedGameId}`;
+    // shareOrigin(), not window.location.origin: this is copied to be sent to
+    // someone else, and the desktop shell's own origin (`app://openfront`)
+    // resolves nowhere outside that Electron app. See deriveShareOrigin.
+    const url = `${ClientEnv.shareOrigin()}${ClientEnv.gamePath(gameId)}`;
 
     try {
-      await void copyToClipboard(url);
+      await copyToClipboard(url);
       showToast(translateText("common.copied"), "green");
     } catch {
-      showToast(translateText("error_modal.failed_copy"), "red");
+      showToast(translateText("common.failed_copy"), "red");
     }
   }
 
@@ -269,9 +272,11 @@ export class ClanGameHistoryView extends LitElement {
               role="tab"
               aria-selected=${active}
               @click=${() => this.setFilter(tab.key)}
-              class="grow ${basis} px-3 py-1.5 text-xs font-bold uppercase tracking-wider whitespace-nowrap rounded-lg transition-colors ${active
-                ? "bg-malibu-blue/20 text-aquarius border border-malibu-blue/30"
-                : "text-white/50 hover:text-white hover:bg-white/5 border border-transparent"}"
+              class="grow ${basis} px-3 py-1.5 text-xs font-bold uppercase tracking-wider whitespace-nowrap rounded-lg transition-colors ${
+                active
+                  ? "bg-malibu-blue/20 text-aquarius border border-malibu-blue/30"
+                  : "text-white/50 hover:text-white hover:bg-white/5 border border-transparent"
+              }"
             >
               ${translateText(tab.labelKey)}
             </button>
@@ -330,7 +335,7 @@ export class ClanGameHistoryView extends LitElement {
           (group) => html`
             <div class="space-y-3">
               <div
-                class="sticky top-0 z-10 flex items-center gap-3 px-1 py-1.5"
+                class="sticky top-0 z-10 flex items-center gap-3 px-1 py-1.5 pointer-events-none"
               >
                 <span class="h-px flex-1 bg-white/10"></span>
                 <h3
@@ -413,42 +418,48 @@ export class ClanGameHistoryView extends LitElement {
       <div
         class="relative bg-white/5 border border-white/10 rounded-xl overflow-hidden"
       >
-        ${mapWebpPath
-          ? html`<div
-              class="relative w-full aspect-[30/11] overflow-hidden bg-surface"
-            >
-              <img
-                src=${mapWebpPath}
-                alt=${mapDisplayName ?? ""}
-                draggable="false"
-                loading="lazy"
-                decoding="async"
-                class="w-full h-full object-cover"
-              />
-              <div
-                class="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent"
-              ></div>
-              ${mapDisplayName
-                ? html`<div
-                    class="absolute bottom-2 left-3 text-xs font-bold text-white uppercase tracking-wider drop-shadow"
-                  >
-                    ${mapDisplayName}
-                  </div>`
-                : ""}
-              <div class="absolute top-2 left-2">
-                ${this.renderResultBadge(game, winners)}
-              </div>
-              <div
-                class="absolute bottom-2 right-2 text-xs font-medium text-white bg-black/60 backdrop-blur-sm px-2 py-1 rounded-md whitespace-nowrap"
+        ${
+          mapWebpPath
+            ? html`<div
+                class="relative w-full aspect-[30/11] overflow-hidden bg-surface"
               >
-                ${formatAbsoluteTime(game.start)}
-              </div>
-            </div>`
-          : ""}
+                <img
+                  src=${mapWebpPath}
+                  alt=${mapDisplayName ?? ""}
+                  draggable="false"
+                  loading="lazy"
+                  decoding="async"
+                  class="w-full h-full object-cover"
+                />
+                <div
+                  class="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent"
+                ></div>
+                ${
+                  mapDisplayName
+                    ? html`<div
+                        class="absolute bottom-2 left-3 text-xs font-bold text-white uppercase tracking-wider drop-shadow"
+                      >
+                        ${mapDisplayName}
+                      </div>`
+                    : ""
+                }
+                <div class="absolute top-2 left-2">
+                  ${this.renderResultBadge(game, winners)}
+                </div>
+                <div
+                  class="absolute bottom-2 right-2 text-xs font-medium text-white bg-black/60 backdrop-blur-sm px-2 py-1 rounded-md whitespace-nowrap"
+                >
+                  ${formatAbsoluteTime(game.start)}
+                </div>
+              </div>`
+            : ""
+        }
         <div
-          class=${mapWebpPath
-            ? "absolute top-2 right-2 z-[1]"
-            : "flex items-center justify-end px-4 py-3 border-b border-white/5"}
+          class=${
+            mapWebpPath
+              ? "absolute top-2 right-2 z-[1]"
+              : "flex items-center justify-end px-4 py-3 border-b border-white/5"
+          }
         >
           <div class="flex items-center gap-2 shrink-0">
             <button
@@ -512,12 +523,14 @@ export class ClanGameHistoryView extends LitElement {
             translateText("clan_modal.history_game_type"),
             formatGameType(game),
           )}
-          ${mapWebpPath
-            ? ""
-            : this.renderField(
-                translateText("clan_modal.history_map"),
-                mapDisplayName ?? "—",
-              )}
+          ${
+            mapWebpPath
+              ? ""
+              : this.renderField(
+                  translateText("clan_modal.history_map"),
+                  mapDisplayName ?? "—",
+                )
+          }
           ${this.renderPlayersField(game)}
           ${this.renderField(
             translateText("clan_modal.history_duration"),
@@ -593,22 +606,26 @@ export class ClanGameHistoryView extends LitElement {
   ): TemplateResult | string {
     if (game.clanPlayers.length === 0) return "";
     return html`
-      ${winners.length > 0
-        ? this.renderPlayerSection(
-            translateText("clan_modal.history_clan_winners"),
-            winners,
-            "text-green-400",
-            "winners",
-          )
-        : ""}
-      ${losers.length > 0
-        ? this.renderPlayerSection(
-            translateText("clan_modal.history_clan_members"),
-            losers,
-            "text-white/40",
-            "losers",
-          )
-        : ""}
+      ${
+        winners.length > 0
+          ? this.renderPlayerSection(
+              translateText("clan_modal.history_clan_winners"),
+              winners,
+              "text-green-400",
+              "winners",
+            )
+          : ""
+      }
+      ${
+        losers.length > 0
+          ? this.renderPlayerSection(
+              translateText("clan_modal.history_clan_members"),
+              losers,
+              "text-white/40",
+              "losers",
+            )
+          : ""
+      }
     `;
   }
 

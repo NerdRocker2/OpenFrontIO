@@ -1,5 +1,6 @@
 {
   "categories": ["europe"],
+  "forced_modifiers": ["isWaterNukes:75"],
   "id": "Alps",
   "map": {
     "height": 1836,
@@ -16,7 +17,6 @@
     "num_land_tiles": 918000,
     "width": 1000
   },
-  "multiplayer_frequency": 4,
   "name": "Alps",
   "nations": [
     {

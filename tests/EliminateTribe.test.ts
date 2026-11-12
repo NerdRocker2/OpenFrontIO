@@ -1,7 +1,9 @@
-import { EliminateTribeExecution } from "../src/core/execution/EliminateTribeExecution";
-import { Game, GameType, Player, PlayerType } from "../src/core/game/Game";
-import { GameConfigSchema, IntentSchema } from "../src/core/Schemas";
+import { GameType, PlayerType } from "@openfront/engine-api/game/GameTypes";
+import { GameConfigSchema, IntentSchema } from "@openfront/engine-api/Schemas";
+import { EliminateTribeExecution } from "@openfront/engine/execution/EliminateTribeExecution";
+import { Game, Player } from "@openfront/engine/game/Game";
 import { playerInfo, setup } from "./util/Setup";
+import { expectSnapshotRoundTrip } from "./util/Snapshot";
 
 let game: Game;
 let human: Player;
@@ -108,4 +110,17 @@ describe("eliminate_tribe schemas", () => {
     expect(shape.safeParse(0).success).toBe(false);
     expect(shape.safeParse(undefined).success).toBe(true);
   });
+});
+
+test("pending tribe elimination survives save and resume", async () => {
+  const saved = await setup("plains", { gameType: GameType.Singleplayer }, [
+    playerInfo("human", PlayerType.Human),
+    playerInfo("target", PlayerType.Bot),
+  ]);
+  saved.player("target").conquer(saved.ref(0, 0));
+  saved.addExecution(
+    new EliminateTribeExecution(saved.player("human"), "target"),
+  );
+  const restored = await expectSnapshotRoundTrip(saved, "plains", 2);
+  expect(restored.player("target").isAlive()).toBe(false);
 });

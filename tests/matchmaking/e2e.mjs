@@ -101,8 +101,8 @@ const dumpConsoles = () => {
   );
 };
 
-// The dev game server runs NUM_WORKERS=2; the worker path is derived from
-// the gameId, so just probe both.
+// The dev game server runs 2 workers (ServerEnv's dev-default cluster map);
+// the worker path is derived from the gameId, so just probe both.
 const fetchGameInfo = async (gameId) => {
   for (const worker of ["w0", "w1"]) {
     const res = await fetch(
@@ -182,8 +182,7 @@ try {
     throw err;
   }
 
-  // The game must carry the mode's config and admit exactly the matched
-  // players (allowedPublicIds).
+  // The game must carry the mode's config.
   const info = await fetchGameInfo(gameId);
   if (MODE === "2v2") {
     c.check(
@@ -200,10 +199,6 @@ try {
         info?.gameConfig?.maxPlayers === 2,
     );
   }
-  c.check(
-    `assignment allowlist has ${PLAYER_COUNT} publicIds`,
-    info?.gameConfig?.allowedPublicIds?.length === PLAYER_COUNT,
-  );
 
   try {
     await waitFor(

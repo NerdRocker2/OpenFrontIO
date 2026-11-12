@@ -1,4 +1,4 @@
-import { Pack } from "../../core/CosmeticSchemas";
+import { CosmeticPack, Pack } from "@openfront/shared/CosmeticSchemas";
 import { ResolvedCosmetic, translateCosmetic } from "../Cosmetics";
 import { translateText } from "../Utils";
 
@@ -16,8 +16,11 @@ export function cosmeticDisplayName(resolved: ResolvedCosmetic): string {
   if (resolved.type === "pattern" || resolved.type === "skin") {
     return translateCosmetic("territory_patterns.pattern", cosmetic.name);
   }
-  if (resolved.type === "pack") {
-    return (cosmetic as Pack).displayName;
+  if (resolved.type === "pack" || resolved.type === "cosmeticPack") {
+    const name = (cosmetic as Pack | CosmeticPack).displayName ?? "";
+    return name.replace(/(^|[\s-])\p{L}/gu, (match) =>
+      match.toLocaleUpperCase(),
+    );
   }
   if (resolved.type === "subscription") {
     return translateCosmetic("subscriptions", cosmetic.name);
@@ -49,6 +52,28 @@ export function cosmeticSelectionLabel(resolved: ResolvedCosmetic): string {
   });
 }
 
+/**
+ * What kind of cosmetic this is, as shown to players ("Skin", "Flag",
+ * "Boat Trail Effect", …). Patterns are "Skins" throughout the store.
+ */
+export function cosmeticTypeLabel(resolved: ResolvedCosmetic): string {
+  switch (resolved.type) {
+    case "pattern":
+    case "skin":
+      return translateText("cosmetics.type_skin");
+    case "flag":
+      return translateText("cosmetics.type_flag");
+    case "crown":
+      return translateText("cosmetics.type_crown");
+    case "effect":
+      return translateText("cosmetics.type_effect", {
+        type: translateText(`effects.type.${resolved.effectType}`),
+      });
+    default:
+      return "";
+  }
+}
+
 export function cosmeticRarity(resolved: ResolvedCosmetic): string {
   return resolved.cosmetic?.rarity ?? "common";
 }
@@ -66,4 +91,36 @@ export function cosmeticRarityLabel(resolved: ResolvedCosmetic): string {
     default:
       return translateText("cosmetics.common");
   }
+}
+
+const RARITY_BADGE_CLASSES: Record<string, string> = {
+  common: "bg-white/10 text-white/80 border-white/20",
+  uncommon: "bg-green-500/15 text-green-300 border-green-400/40",
+  rare: "bg-blue-500/15 text-blue-300 border-blue-400/40",
+  epic: "bg-purple-500/15 text-purple-300 border-purple-400/40",
+  legendary: "bg-orange-500/15 text-orange-300 border-orange-400/40",
+};
+
+/** Tailwind classes for a rarity pill, tinted by tier (matches CosmeticInfo's text colors). */
+export function cosmeticRarityBadgeClass(resolved: ResolvedCosmetic): string {
+  return (
+    RARITY_BADGE_CLASSES[cosmeticRarity(resolved)] ??
+    RARITY_BADGE_CLASSES.common
+  );
+}
+
+/**
+ * The translation key for a cosmetic's generative-AI line, or undefined when it shows none.
+ *
+ * A declaration the artist made always shows, yes or no. A cosmetic nobody was asked about says
+ * so only where it credits an artist: the line describes the artist's work, and "unknown" under a
+ * subscription, a pack or a built-in pattern would be noise.
+ */
+export function cosmeticAiLabelKey(
+  aiDisclosed: boolean | undefined,
+  artist: string | undefined,
+): string | undefined {
+  if (aiDisclosed === true) return "cosmetics.ai_label";
+  if (aiDisclosed === false) return "cosmetics.ai_none_label";
+  return artist ? "cosmetics.ai_unknown_label" : undefined;
 }

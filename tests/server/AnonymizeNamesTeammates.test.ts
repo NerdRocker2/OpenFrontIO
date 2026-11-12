@@ -1,16 +1,13 @@
-import { GameType } from "../../src/core/game/Game";
+import { GameType } from "@openfront/engine-api/game/GameTypes";
+import { GameStartInfo } from "@openfront/engine-api/Schemas";
 import { Client } from "../../src/server/Client";
 import { GameServer } from "../../src/server/GameServer";
-
-function makeMockWs() {
-  return {
-    on: () => {},
-    removeAllListeners: () => {},
-    send: vi.fn(),
-    close: vi.fn(),
-    readyState: 1,
-  };
-}
+import { NameVisibility } from "../../src/server/NameVisibility";
+import {
+  makeClient as harnessClient,
+  mockLogger,
+} from "../util/GameServerHarness";
+import { testGameConfig } from "../util/Wire";
 
 // clanTag and friends are populated on purpose. An earlier version of this file
 // left them null/empty, which made the "team-assignment inputs stay blank"
@@ -23,48 +20,43 @@ function makeClient(
   clanTag: string | null = "CLAN",
   friends: string[] = [],
 ) {
-  return new Client(
+  return harnessClient({
     clientID,
-    `${clientID}-pid`,
-    null,
-    null,
-    undefined,
-    "127.0.0.1",
+    persistentID: `${clientID}-pid`,
     username,
     clanTag,
-    makeMockWs() as any,
-    { verified: true },
     publicId,
     friends,
-  );
+    cosmetics: { verified: true },
+  });
 }
 
 // alice+bob are one pinned team, carol+dave the other. Bob is friends with carol,
 // an OPPONENT — so a friends leak to alice would expose a third party.
 function makeGame(matchmakingTeams?: string[][]) {
-  const logger: any = {
-    child: vi.fn().mockReturnThis(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  };
-  const game = new GameServer(
-    "g1",
-    logger,
-    Date.now(),
-    { gameType: GameType.Private, anonymizeNames: true } as any,
-    "creator-pid",
-    undefined,
-    undefined,
+  const logger = mockLogger();
+  const game = new GameServer({
+    id: "g1",
+    log: logger,
+    createdAt: Date.now(),
+    gameConfig: testGameConfig({
+      gameType: GameType.Private,
+      anonymizeNames: true,
+    }),
+    creatorPersistentID: "creator-pid",
     matchmakingTeams,
-  );
-  [
+  });
+  roster().forEach((c) => game.joinClient(c));
+  return game;
+}
+
+function roster(): Client[] {
+  return [
     makeClient("alice", "AliceReal", "alice-pub", "AAA"),
     makeClient("bob", "BobReal", "bob-pub", "BBB", ["carol-pub"]),
     makeClient("carol", "CarolReal", "carol-pub", "CCC"),
     makeClient("dave", "DaveReal", "dave-pub", "DDD"),
-  ].forEach((c) => game.joinClient(c));
-  return game;
+  ];
 }
 
 const TEAMS = [
@@ -76,6 +68,89 @@ const byId = (info: any, id: string) =>
   info.clients.find((c: any) => c.clientID === id);
 const player = (info: any, id: string) =>
   info.players.find((p: any) => p.clientID === id);
+
+describe("lobby info carries the pinned team slot", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  it("sends each client its pinned team index", () => {
+    // Without this the lobby preview cannot see the pins at all, so it
+    // re-derives teams the server will overrule at start — showing partners
+    // apart, or everyone alone.
+    const info = makeGame(TEAMS).gameInfo("alice");
+    expect(byId(info, "alice").teamIndex).toBe(0);
+    expect(byId(info, "bob").teamIndex).toBe(0);
+    expect(byId(info, "carol").teamIndex).toBe(1);
+    expect(byId(info, "dave").teamIndex).toBe(1);
+  });
+
+  it("sends it on anonymized entries too — the grouping is not the identity", () => {
+    // carol/dave are hidden from alice, but their pairing is what the preview
+    // must render; the names stay fake.
+    const info = makeGame(TEAMS).gameInfo("alice");
+    expect(REAL).not.toContain(byId(info, "carol").username);
+    expect(byId(info, "carol").teamIndex).toBe(1);
+  });
+
+  it("omits it entirely when the game is not matchmade", () => {
+    const info = makeGame().gameInfo("alice");
+    for (const id of ["alice", "bob", "carol", "dave"]) {
+      expect(byId(info, id).teamIndex).toBeUndefined();
+    }
+  });
+});
+
+describe("anonymizeNames: a team shares one view of everyone else", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  it("gives teammates the SAME fake name for a given opponent", () => {
+    // The point of the team: they can call a target. Seeding the rotation per
+    // viewer meant alice and bob saw the same opponent under different names,
+    // so neither could tell the other who to attack.
+    const game = makeGame(TEAMS);
+    const alice = game.gameInfo("alice");
+    const bob = game.gameInfo("bob");
+    for (const opponent of ["carol", "dave"]) {
+      expect(byId(alice, opponent).username).toBe(byId(bob, opponent).username);
+      expect(REAL).not.toContain(byId(alice, opponent).username);
+    }
+  });
+
+  it("still shows the OTHER team a different set of names", () => {
+    // Anti-teaming holds across the boundary: sharing inside a team must not
+    // become one mapping for the whole lobby.
+    //
+    // dave gets a team of his own so BOTH viewers anonymize him. Against the
+    // two-team fixture carol would be his teammate and see his real name, and
+    // the comparison would pass even if every team shared one seed.
+    const game = makeGame([
+      ["alice-pub", "bob-pub"],
+      ["carol-pub"],
+      ["dave-pub"],
+    ]);
+    const alice = game.gameInfo("alice");
+    const carol = game.gameInfo("carol");
+    expect(REAL).not.toContain(byId(alice, "dave").username);
+    expect(REAL).not.toContain(byId(carol, "dave").username);
+    expect(byId(alice, "dave").username).not.toBe(byId(carol, "dave").username);
+  });
+
+  it("keeps per-viewer names when the game is not matchmade", () => {
+    // No pins, no teams — nothing to share a seed with, so the original
+    // per-viewer rotation is unchanged.
+    const game = makeGame();
+    const alice = game.gameInfo("alice");
+    const bob = game.gameInfo("bob");
+    expect(byId(alice, "dave").username).not.toBe(byId(bob, "dave").username);
+  });
+});
 
 describe("anonymizeNames: pinned teammates see each other (lobby)", () => {
   beforeEach(() => vi.useFakeTimers());
@@ -142,11 +217,24 @@ describe("anonymizeNames: pinned teammates see each other (lobby)", () => {
   });
 });
 
-// startInfoFor reads wireGameStartInfo, which is only built when the game starts,
-// so it is stubbed here the same way AnonymizeNames.test.ts does it. clanTag and
-// friends are populated so the "blank for everyone" assertion is meaningful.
+// The start message is shaped from two start infos (the game's own and the
+// shared wire copy), only built when the game starts; they are stubbed here
+// as in AnonymizeNames.test.ts, and shaped by a NameVisibility over the same
+// roster and pins the game has. clanTag and friends are populated so the
+// "blank for everyone" assertion is meaningful.
 function withStartInfo(matchmakingTeams?: string[][]) {
   const game = makeGame(matchmakingTeams);
+  const names = new NameVisibility({
+    gameID: "g1",
+    config: () => game.gameConfig,
+    clients: () => new Map(roster().map((c) => [c.clientID, c])),
+    teamIndex: (c) => {
+      const i = (matchmakingTeams ?? []).findIndex(
+        (t) => c.publicId !== undefined && t.includes(c.publicId),
+      );
+      return i === -1 ? undefined : i;
+    },
+  });
   const players = [
     {
       clientID: "alice",
@@ -163,10 +251,17 @@ function withStartInfo(matchmakingTeams?: string[][]) {
     { clientID: "carol", username: "CarolReal", clanTag: "CCC", friends: [] },
     { clientID: "dave", username: "DaveReal", clanTag: "DDD", friends: [] },
   ];
-  const startInfo = { gameID: "g1", lobbyCreatedAt: 0, config: {}, players };
-  (game as any).gameStartInfo = startInfo;
-  (game as any).wireGameStartInfo = JSON.parse(JSON.stringify(startInfo));
-  return game;
+  const startInfo = {
+    gameID: "g1",
+    lobbyCreatedAt: 0,
+    config: {},
+    players,
+  } as unknown as GameStartInfo;
+  const wire = JSON.parse(JSON.stringify(startInfo)) as GameStartInfo;
+  return {
+    startInfoFor: (viewer: string) =>
+      names.startInfoFor(viewer, false, startInfo, wire),
+  };
 }
 
 describe("anonymizeNames: pinned teammates in the IN-GAME start payload", () => {
@@ -179,12 +274,12 @@ describe("anonymizeNames: pinned teammates in the IN-GAME start payload", () => 
   // startInfoFor is the payload that actually fixes "can't coordinate mid-game",
   // so the invariant is locked in here and not only in the lobby view.
   it("reveals a teammate's real username", () => {
-    const info = (withStartInfo(TEAMS) as any).startInfoFor("alice", false);
+    const info = withStartInfo(TEAMS).startInfoFor("alice");
     expect(player(info, "bob").username).toBe("BobReal");
   });
 
   it("keeps the opposing team anonymized", () => {
-    const info = (withStartInfo(TEAMS) as any).startInfoFor("alice", false);
+    const info = withStartInfo(TEAMS).startInfoFor("alice");
     for (const id of ["carol", "dave"]) {
       expect(REAL).not.toContain(player(info, id).username);
     }
@@ -194,7 +289,7 @@ describe("anonymizeNames: pinned teammates in the IN-GAME start payload", () => 
     // These feed assignTeams. A per-viewer difference here desyncs the clients,
     // which is why the in-game payload blanks them for everyone regardless of
     // who can see whose name.
-    const info = (withStartInfo(TEAMS) as any).startInfoFor("alice", false);
+    const info = withStartInfo(TEAMS).startInfoFor("alice");
     for (const id of ["alice", "bob", "carol", "dave"]) {
       expect(player(info, id).clanTag).toBeNull();
       expect(player(info, id).friends).toBeUndefined();

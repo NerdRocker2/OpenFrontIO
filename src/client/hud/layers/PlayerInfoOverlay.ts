@@ -1,31 +1,37 @@
-import { html, LitElement, TemplateResult } from "lit";
-import { customElement, property, state } from "lit/decorators.js";
-import { assetUrl } from "../../../core/AssetUrls";
-import { EventBus } from "../../../core/EventBus";
+import { TileRef } from "@openfront/engine-api/game/GameMap";
 import {
   PlayerProfile,
   PlayerType,
   Relation,
-  Unit,
   UnitType,
-} from "../../../core/game/Game";
-import { TileRef } from "../../../core/game/GameMap";
-import { AllianceView } from "../../../core/game/GameUpdates";
+} from "@openfront/engine-api/game/GameTypes";
+import { AllianceView } from "@openfront/engine-api/game/GameUpdates";
+import { UnitLike } from "@openfront/engine-api/game/ReadViews";
+import { renderNumber, renderTroops } from "@openfront/engine-lib/Format";
+import { assetUrl } from "@openfront/shared/AssetUrls";
+import { EventBus } from "@openfront/shared/EventBus";
+import { html, LitElement, TemplateResult } from "lit";
+import { customElement, property, state } from "lit/decorators.js";
 import { Controller } from "../../Controller";
 import { eliminatedLabel } from "../../EliminationMarkers";
 import {
   ContextMenuEvent,
   EliminationMarkerEvent,
+  DoBoatAttackEvent,
+  DoBreakAllianceEvent,
+  DoRequestAllianceEvent,
+  DoTargetPlayerEvent,
   MouseMoveEvent,
   TouchEvent,
 } from "../../InputHandler";
+import { Platform } from "../../Platform";
 import { themeProvider } from "../../theme/ThemeProvider";
 import { TransformHandler } from "../../TransformHandler";
+import { UserSettings } from "../../UserSettings";
 import {
+  formatKeyForDisplay,
   getTranslatedPlayerTeamLabel,
   renderDuration,
-  renderNumber,
-  renderTroops,
   translateText,
 } from "../../Utils";
 import { GameView, PlayerView, UnitView } from "../../view";
@@ -35,6 +41,8 @@ import {
   getPlayerIcons,
   IMAGE_ICON_KIND,
 } from "../PlayerIcons";
+import { ShowPlayerChatEvent } from "./ChatModal";
+import { ShowPlayerEmojiMenuEvent } from "./EmojiTable";
 import { ImmunityBarVisibleEvent } from "./ImmunityTimer";
 import { CloseRadialMenuEvent } from "./RadialMenu";
 import "./RelationSmiley";
@@ -43,6 +51,12 @@ const soldierIconAquarius = assetUrl("images/SoldierIconAquarius.svg");
 const allianceIcon = assetUrl("images/AllianceIcon.svg");
 const traitorIcon = assetUrl("images/TraitorIcon.svg");
 const warshipIcon = assetUrl("images/BattleshipIconWhite.svg");
+const emojiIcon = assetUrl("images/EmojiIconWhite.svg");
+const chatIcon = assetUrl("images/ChatIconWhite.svg");
+const requestAllianceIcon = assetUrl("images/AllianceIconWhite.svg");
+const breakAllianceIcon = assetUrl("images/TraitorIconWhite.svg");
+const targetIcon = assetUrl("images/TargetIconWhite.svg");
+const boatIcon = assetUrl("images/BoatIconWhite.svg");
 const cityIcon = assetUrl("images/CityIconWhite.svg");
 const factoryIcon = assetUrl("images/FactoryIconWhite.svg");
 const goldCoinIcon = assetUrl("images/GoldCoinIcon.svg");
@@ -64,7 +78,7 @@ function euclideanDistWorld(
 }
 
 function distSortUnitWorld(coord: { x: number; y: number }, game: GameView) {
-  return (a: Unit | UnitView, b: Unit | UnitView) => {
+  return (a: UnitLike, b: UnitLike) => {
     const distA = euclideanDistWorld(coord, a.tile(), game);
     const distB = euclideanDistWorld(coord, b.tile(), game);
     return distA - distB;
@@ -84,6 +98,20 @@ export class PlayerInfoOverlay extends LitElement implements Controller {
 
   @state()
   private player: PlayerView | null = null;
+  /** The tile the panel was shown for; the action buttons act on it. */
+  private tile: TileRef | null = null;
+  /** What I can do to the hovered player, for its action buttons. */
+  @state() private playerActions: {
+    player: PlayerView;
+    requestAlliance: boolean;
+    breakAlliance: boolean;
+    target: boolean;
+    boat: boolean;
+  } | null = null;
+  private playerActionsFor: PlayerView | null = null;
+  private playerActionsFetchedAt = 0;
+  /** Bumped per fetch and per action I take; older answers are dropped. */
+  private playerActionsVersion = 0;
 
   @state()
   private playerProfile: PlayerProfile | null = null;
@@ -100,6 +128,22 @@ export class PlayerInfoOverlay extends LitElement implements Controller {
   private immunityBarVisible = false;
 
   private _isActive = false;
+
+  private userSettings = new UserSettings();
+
+  // The shortcut buttons (chat and emoji on the left, player actions on the
+  // right, and the panel width they need) only show on wide screens with a
+  // mouse: narrower, the wider panel covers other HUD like the leaderboard,
+  // and touch devices have no keyboard shortcut to show.
+  // Not in a replay: there is nothing to do to a recorded player, and the
+  // replay viewer's myPlayer() is a ReplayPlayerView, which has no actions().
+  private showShortcutButtons(): boolean {
+    return (
+      window.innerWidth >= 1200 &&
+      !Platform.isTouch &&
+      !this.game.config().isReplay()
+    );
+  }
 
   private get barOffset(): number {
     return (this.spawnBarVisible ? 7 : 0) + (this.immunityBarVisible ? 7 : 0);
@@ -137,10 +181,50 @@ export class PlayerInfoOverlay extends LitElement implements Controller {
     this.eventBus.on(ImmunityBarVisibleEvent, (e) => {
       this.immunityBarVisible = e.visible;
     });
+    this.eventBus.on(DoRequestAllianceEvent, (e) =>
+      this.markActionTaken(e.tile, "requestAlliance"),
+    );
+    this.eventBus.on(DoBreakAllianceEvent, (e) =>
+      this.markActionTaken(e.tile, "breakAlliance"),
+    );
+    this.eventBus.on(DoTargetPlayerEvent, (e) =>
+      this.markActionTaken(e.tile, "target"),
+    );
     this._isActive = true;
   }
 
+  // Once I act on the shown player (button or keybind), drop that button
+  // right away: the game only sees the intent a turn later, so asking now
+  // would still offer it. The next refresh, a second later, shows the real
+  // state. A keybind (no tile) acts under the cursor, which is the shown
+  // player unless the pointer is on the panel.
+  private markActionTaken(
+    tile: TileRef | undefined,
+    action: "requestAlliance" | "breakAlliance" | "target",
+  ) {
+    const actions = this.playerActions;
+    if (!actions || actions.player !== this.player) return;
+    const onShownPlayer =
+      tile === undefined
+        ? this._isInfoVisible && !this.pointerOnPanel
+        : tile === this.tile;
+    if (!onShownPlayer) return;
+    this.playerActionsVersion++;
+    this.playerActionsFetchedAt = Date.now();
+    this.playerActions = { ...actions, [action]: false };
+  }
+
+  // While the pointer is on the panel (moving to its emoji button), keep the
+  // target: mouse moves still arrive from the window, and the tile under the
+  // panel would otherwise retarget or hide it.
+  private pointerOnPanel = false;
+  private onPanelEnter = () => (this.pointerOnPanel = true);
+  private onPanelLeave = () => (this.pointerOnPanel = false);
+
   private onMouseEvent(event: MouseMoveEvent) {
+    if (this.pointerOnPanel) {
+      return;
+    }
     const now = Date.now();
     if (now - this.lastMouseUpdate < 100) {
       return;
@@ -150,6 +234,7 @@ export class PlayerInfoOverlay extends LitElement implements Controller {
   }
 
   public hide() {
+    this.pointerOnPanel = false;
     this.setVisible(false);
     this.unit = null;
     this.player = null;
@@ -169,9 +254,11 @@ export class PlayerInfoOverlay extends LitElement implements Controller {
 
     if (owner && owner.isPlayer()) {
       this.player = owner as PlayerView;
-      this.player.profile().then((p) => {
+      this.tile = tile;
+      void this.player.profile().then((p) => {
         this.playerProfile = p;
       });
+      this.refreshPlayerActions(this.player, tile);
       this.setVisible(true);
     } else if (!this.game.isLand(tile)) {
       const units = this.game
@@ -186,7 +273,57 @@ export class PlayerInfoOverlay extends LitElement implements Controller {
     }
   }
 
+  // Asks what I can do to the hovered player when it changes, and at most
+  // once a second while it stays (alliances and boat reach change in play).
+  private refreshPlayerActions(player: PlayerView, tile: TileRef) {
+    const myPlayer = this.game.myPlayer();
+    if (!myPlayer || player === myPlayer || !this.showShortcutButtons()) {
+      return;
+    }
+    // No buttons while players spawn (the game would drop the actions), or
+    // once the shown tile has changed hands (the answer would be about its
+    // new owner).
+    if (this.game.inSpawnPhase() || this.game.owner(tile) !== player) {
+      this.playerActionsVersion++;
+      this.playerActionsFor = null;
+      this.playerActions = null;
+      return;
+    }
+    const now = Date.now();
+    if (
+      this.playerActionsFor === player &&
+      now - this.playerActionsFetchedAt < 1000
+    ) {
+      return;
+    }
+    this.playerActionsFor = player;
+    this.playerActionsFetchedAt = now;
+    const version = ++this.playerActionsVersion;
+    myPlayer
+      .actions(tile, [UnitType.TransportShip])
+      .then((actions) => {
+        if (version !== this.playerActionsVersion) return;
+        const can = actions.interaction;
+        this.playerActions = {
+          player,
+          requestAlliance: can?.canSendAllianceRequest ?? false,
+          breakAlliance: can?.canBreakAlliance ?? false,
+          target: can?.canTarget ?? false,
+          boat: actions.buildableUnits.some(
+            (u) => u.type === UnitType.TransportShip && u.canBuild !== false,
+          ),
+        };
+      })
+      .catch((error) => {
+        console.warn("Failed to check player actions:", error);
+      });
+  }
+
   tick() {
+    // Keep the action buttons current while the mouse rests on a player.
+    if (this._isInfoVisible && this.player && this.tile !== null) {
+      this.refreshPlayerActions(this.player, this.tile);
+    }
     this.requestUpdate();
   }
 
@@ -282,7 +419,7 @@ export class PlayerInfoOverlay extends LitElement implements Controller {
     hasFlag: boolean;
     hasBetrayal: boolean;
     hasAlliance: boolean;
-    hasTeam: boolean;
+    typeAndTeamLen: number;
   }): { fontSize: string; isAllianceWrapped: boolean } {
     const {
       nameLength,
@@ -290,30 +427,26 @@ export class PlayerInfoOverlay extends LitElement implements Controller {
       hasFlag,
       hasBetrayal,
       hasAlliance,
-      hasTeam,
+      typeAndTeamLen,
     } = params;
 
     // Approximate char-widths each element occupies at --text-lg.
     const DESKTOP_PRESSURE = {
-      playerType: 3.5,
       perIcon: 2.0,
       icon: 0.5,
       flag: 3.5,
       betrayal: 4.2,
       alliance: 6.7,
       allianceWrapped: 3.9,
-      team: 1.0,
     } as const;
 
     const MOBILE_PRESSURE = {
-      playerType: 3.5,
       perIcon: 2.2,
       icon: 0.5,
       flag: 4.2,
       betrayal: 4.6,
       alliance: 8.6,
       allianceWrapped: 4.8,
-      team: 1.0,
     } as const;
 
     const width = window.innerWidth;
@@ -321,13 +454,19 @@ export class PlayerInfoOverlay extends LitElement implements Controller {
 
     const PRESSURE = isDesktop ? DESKTOP_PRESSURE : MOBILE_PRESSURE;
 
+    // Convert text-xs (12px) mono chars to name font mono chars:
+    // Desktop (text-lg = 18px): ratio is 12/18 = 0.666 + gap(8px/10.8px = 0.74)
+    // Mobile (text-sm = 14px): ratio is 12/14 = 0.857 + gap(4px/8.4px = 0.47)
+    const typeAndTeamPressure = isDesktop
+      ? typeAndTeamLen * (12 / 18) + 8 / 10.8
+      : typeAndTeamLen * (12 / 14) + 4 / 8.4;
+
     const basePressure =
-      PRESSURE.playerType +
+      typeAndTeamPressure +
       iconCount * PRESSURE.perIcon +
       (iconCount ? PRESSURE.icon : 0) +
       (hasFlag ? PRESSURE.flag : 0) +
-      (hasBetrayal ? PRESSURE.betrayal : 0) +
-      (hasTeam ? PRESSURE.team : 0);
+      (hasBetrayal ? PRESSURE.betrayal : 0);
 
     let capacity: number;
 
@@ -345,7 +484,9 @@ export class PlayerInfoOverlay extends LitElement implements Controller {
       capacity = 41.0;
     } else {
       // >= 1024px: sm:w-[500px], font-size text-lg (18px, 10.8px/char).
-      // space = 336px / 10.8px = 31.1 chars.
+      // space = 336px / 10.8px = 31.1 chars. The shortcut buttons, when
+      // shown, bring their own panel width (34px left, 64px right), so they
+      // don't change this.
       capacity = 31.1;
     }
 
@@ -365,6 +506,36 @@ export class PlayerInfoOverlay extends LitElement implements Controller {
     const fontSize = `clamp(var(--text-${textSize}) * .65, var(--text-${textSize}) * ${scale.toFixed(3)}, var(--text-${textSize}))`;
 
     return { fontSize, isAllianceWrapped };
+  }
+
+  private renderShortcutButton(
+    icon: string,
+    title: string,
+    keybind: string | undefined,
+    onClick: () => void,
+  ) {
+    const key = keybind ? formatKeyForDisplay(keybind) : "";
+    // Icon only, with the key as a corner badge, to keep the panel narrow.
+    return html`<button
+      class="relative flex items-center justify-center size-6.5 border rounded-md border-gray-500 hover:bg-white/10 cursor-pointer"
+      title=${title}
+      @click=${(e: MouseEvent) => {
+        e.stopPropagation();
+        onClick();
+        this.hide();
+      }}
+    >
+      <img src=${icon} alt="" class="size-5 object-contain" />
+      ${
+        key
+          ? html`<span
+              class="pointer-events-none absolute -bottom-1 -right-1 px-0.5 rounded-sm bg-gray-800 text-[9px] leading-tight font-mono text-gray-300"
+              translate="no"
+              >${key}</span
+            >`
+          : ""
+      }
+    </button>`;
   }
 
   private renderPlayerInfo(player: PlayerView) {
@@ -395,7 +566,16 @@ export class PlayerInfoOverlay extends LitElement implements Controller {
         playerType = translateText("player_type.player");
         break;
     }
-    const playerTeam = getTranslatedPlayerTeamLabel(player.team());
+    const clanTag = this.game.teamClanTag(player.team());
+    const playerTeam = getTranslatedPlayerTeamLabel(player.team(), clanTag);
+
+    const typeLen = playerType.length;
+    const hasTeam = playerTeam !== "" && player.type() !== PlayerType.Bot;
+    const teamStr = clanTag ?? playerTeam;
+    const teamLen = hasTeam ? teamStr.length + 2 : 0; // +2 for brackets
+
+    // The column width is determined by the longest string in the flex-col
+    const typeAndTeamLen = Math.max(typeLen, teamLen);
 
     const { fontSize, isAllianceWrapped } = this.getNameFontSize({
       nameLength: this.displayNameOf(player).length,
@@ -403,7 +583,7 @@ export class PlayerInfoOverlay extends LitElement implements Controller {
       hasFlag: !!player.cosmetics.flag,
       hasBetrayal: traitorTicks > 0,
       hasAlliance: isAllied ?? false,
-      hasTeam: playerTeam !== "" && player.type() !== PlayerType.Bot,
+      typeAndTeamLen,
     });
 
     if (isAllied) {
@@ -413,9 +593,9 @@ export class PlayerInfoOverlay extends LitElement implements Controller {
       if (alliance !== undefined) {
         allianceHtml = isAllianceWrapped
           ? html`<div
-              class="${traitorTicks === 0
-                ? "ml-auto"
-                : ""} flex flex-col items-center gap-0 text-xs font-bold leading-none shrink-0"
+              class="${
+                traitorTicks === 0 ? "ml-auto" : ""
+              } flex flex-col items-center gap-0 text-xs font-bold leading-none shrink-0"
             >
               <img
                 src=${allianceIcon}
@@ -428,9 +608,9 @@ export class PlayerInfoOverlay extends LitElement implements Controller {
               >
             </div>`
           : html`<div
-              class="${traitorTicks === 0
-                ? "ml-auto"
-                : ""} flex items-center mr-0 gap-1 text-xs font-bold leading-tight shrink-0"
+              class="${
+                traitorTicks === 0 ? "ml-auto" : ""
+              } flex items-center mr-0 gap-1 text-xs font-bold leading-tight shrink-0"
             >
               <img
                 src=${allianceIcon}
@@ -455,8 +635,34 @@ export class PlayerInfoOverlay extends LitElement implements Controller {
       ></span>`;
     }
 
+    const keybinds = this.userSettings.keybinds(Platform.isMac);
+
     return html`
       <div class="flex items-start gap-1 lg:gap-2 p-1 lg:p-1.5">
+        ${
+          myPlayer && this.showShortcutButtons()
+            ? html`<div class="flex flex-col gap-1 self-center shrink-0">
+                ${
+                  player !== myPlayer
+                    ? this.renderShortcutButton(
+                        chatIcon,
+                        translateText("player_panel.chat"),
+                        keybinds.quickChat,
+                        () =>
+                          this.eventBus.emit(new ShowPlayerChatEvent(player)),
+                      )
+                    : ""
+                }
+                ${this.renderShortcutButton(
+                  emojiIcon,
+                  translateText("player_panel.emotes"),
+                  keybinds.emojiMenu,
+                  () =>
+                    this.eventBus.emit(new ShowPlayerEmojiMenuEvent(player)),
+                )}
+              </div>`
+            : ""
+        }
         <!-- Left: Gold & Troop bar -->
         <div class="flex flex-col gap-1 shrink-0 w-28 md:w-36">
           <div class="flex items-center gap-1">
@@ -468,17 +674,16 @@ export class PlayerInfoOverlay extends LitElement implements Controller {
               <span class="px-0.5">${renderNumber(player.gold())}</span>
             </div>
             <div
-              class="flex flex-1 flex-col items-center justify-center text-xs font-bold ${attackingTroops >
-              0
-                ? "text-aquarius"
-                : "text-white/40"} drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]"
+              class="flex flex-1 flex-col items-center justify-center text-xs font-bold ${
+                attackingTroops > 0 ? "text-aquarius" : "text-white/40"
+              } drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]"
               translate="no"
             >
               <span class="flex items-center gap-px leading-none text-xs"
                 ><img
-                  class="w-2.5 h-2.5 inline-block ${attackingTroops > 0
-                    ? ""
-                    : "brightness-0 invert opacity-40"}"
+                  class="w-2.5 h-2.5 inline-block ${
+                    attackingTroops > 0 ? "" : "brightness-0 invert opacity-40"
+                  }"
                   src=${attackingTroops > 0 ? soldierIconAquarius : soldierIcon}
                   alt=""
                   aria-hidden="true"
@@ -502,12 +707,14 @@ export class PlayerInfoOverlay extends LitElement implements Controller {
               isFriendly ?? false,
             )}"
           >
-            ${player.cosmetics.flag
-              ? html`<img
-                  class="h-6 object-contain shrink-0"
-                  src=${assetUrl(player.cosmetics.flag!)}
-                />`
-              : html``}
+            ${
+              player.cosmetics.flag
+                ? html`<img
+                    class="h-6 object-contain shrink-0"
+                    src=${assetUrl(player.cosmetics.flag!)}
+                  />`
+                : html``
+            }
             <div class="shrink min-w-0">
               <span
                 class="font-mono inline-block leading-[1.2] wrap-anywhere"
@@ -516,24 +723,31 @@ export class PlayerInfoOverlay extends LitElement implements Controller {
               >
             </div>
             ${this.getRelationSmiley(player, myPlayer)}
-            ${playerTeam !== "" && player.type() !== PlayerType.Bot
-              ? html`<div class="flex flex-col leading-tight">
-                  <span class="text-gray-400 text-xs font-normal"
+            ${
+              playerTeam !== "" && player.type() !== PlayerType.Bot
+                ? html`<div
+                    class="flex flex-col items-center leading-tight shrink-0"
+                  >
+                    <span
+                      class="text-gray-400 text-xs font-mono font-normal whitespace-nowrap"
+                      >${playerType}</span
+                    >
+                    <span
+                      class="text-xs font-mono font-normal text-gray-400 whitespace-nowrap"
+                      >[<span
+                        style="color: ${themeProvider
+                          .current()
+                          .teamColor(player.team()!)
+                          .toHex()}"
+                        >${clanTag ?? playerTeam}</span
+                      >]</span
+                    >
+                  </div>`
+                : html`<span
+                    class="text-gray-400 text-xs font-mono font-normal shrink-0 whitespace-nowrap"
                     >${playerType}</span
-                  >
-                  <span class="text-xs font-normal text-gray-400"
-                    >[<span
-                      style="color: ${themeProvider
-                        .current()
-                        .teamColor(player.team()!)
-                        .toHex()}"
-                      >${playerTeam}</span
-                    >]</span
-                  >
-                </div>`
-              : html`<span class="text-gray-400 text-xs font-normal"
-                  >${playerType}</span
-                >`}
+                  >`
+            }
             ${this.renderPlayerNameIcons(playerIcons)} ${betrayalHtml ?? ""}
             ${allianceHtml ?? ""}
           </div>
@@ -554,8 +768,74 @@ export class PlayerInfoOverlay extends LitElement implements Controller {
             ${this.displayUnitCount(player, UnitType.Warship, warshipIcon)}
           </div>
         </div>
+        ${
+          myPlayer && this.showShortcutButtons()
+            ? this.renderActionButtons(player, myPlayer, keybinds)
+            : ""
+        }
       </div>
     `;
+  }
+
+  // Right side: what I can do to the player, each with its keybind. Request
+  // and break alliance share a slot, as only one applies at a time. The
+  // column keeps its width when empty, so the panel doesn't shift.
+  private renderActionButtons(
+    player: PlayerView,
+    myPlayer: PlayerView,
+    keybinds: Record<string, string>,
+  ) {
+    const can =
+      player !== myPlayer && this.playerActions?.player === player
+        ? this.playerActions
+        : null;
+    const tile = this.tile ?? undefined;
+    const buttons: TemplateResult[] = [];
+    if (can?.requestAlliance) {
+      buttons.push(
+        this.renderShortcutButton(
+          requestAllianceIcon,
+          translateText("player_panel.send_alliance"),
+          keybinds.requestAlliance,
+          () =>
+            this.eventBus.emit(new DoRequestAllianceEvent(tile, player.id())),
+        ),
+      );
+    } else if (can?.breakAlliance) {
+      buttons.push(
+        this.renderShortcutButton(
+          breakAllianceIcon,
+          translateText("player_panel.break_alliance"),
+          keybinds.breakAlliance,
+          () => this.eventBus.emit(new DoBreakAllianceEvent(tile, player.id())),
+        ),
+      );
+    }
+    if (can?.target) {
+      buttons.push(
+        this.renderShortcutButton(
+          targetIcon,
+          translateText("player_panel.target"),
+          keybinds.targetPlayer,
+          () => this.eventBus.emit(new DoTargetPlayerEvent(tile, player.id())),
+        ),
+      );
+    }
+    if (can?.boat) {
+      buttons.push(
+        this.renderShortcutButton(
+          boatIcon,
+          translateText("user_setting.boat_attack"),
+          keybinds.boatAttack,
+          () => this.eventBus.emit(new DoBoatAttackEvent(tile)),
+        ),
+      );
+    }
+    return html`<div
+      class="grid grid-rows-2 grid-flow-col auto-cols-max justify-end gap-1 self-center shrink-0 w-14"
+    >
+      ${buttons}
+    </div>`;
   }
 
   private renderTroopBar(
@@ -584,8 +864,9 @@ export class PlayerInfoOverlay extends LitElement implements Controller {
           ></div>
           <div
             class="absolute inset-y-0 left-0 w-full origin-left bg-malibu-blue transition-transform duration-200 ease-out"
-            style="transform: translateX(${greenPercent}%) scaleX(${orangePercent /
-            100});"
+            style="transform: translateX(${greenPercent}%) scaleX(${
+              orangePercent / 100
+            });"
           ></div>
         </div>
         <div
@@ -624,42 +905,53 @@ export class PlayerInfoOverlay extends LitElement implements Controller {
         </div>
         <div class="mt-1">
           <div class="text-sm opacity-80">${unit.type()}</div>
-          ${unit.hasHealth()
-            ? html` <div class="text-sm">Health: ${unit.health()}</div> `
-            : ""}
-          ${unit.type() === UnitType.TransportShip
-            ? html`
-                <div class="text-sm">
-                  Troops: ${renderTroops(unit.troops())}
-                </div>
-              `
-            : ""}
+          ${
+            unit.hasHealth()
+              ? html` <div class="text-sm">Health: ${unit.health()}</div> `
+              : ""
+          }
+          ${
+            unit.type() === UnitType.TransportShip
+              ? html`
+                  <div class="text-sm">
+                    Troops: ${renderTroops(unit.troops())}
+                  </div>
+                `
+              : ""
+          }
         </div>
       </div>
     `;
   }
 
   render() {
-    if (!this._isActive) {
+    // The onboarding tutorial keeps the screen to its own guide.
+    if (!this._isActive || this.game.config().gameConfig().tutorial === true) {
       return html``;
     }
 
     const containerClasses = this._isInfoVisible
-      ? "opacity-100 visible"
+      ? "opacity-100 visible pointer-events-auto"
       : "opacity-0 invisible pointer-events-none";
 
+    // From lg it sits in the top HUD row (index.html), which shifts or narrows
+    // it to clear the open leaderboard.
     return html`
       <div
-        class="fixed top-0 left-0 right-0 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 z-[1001]"
+        class="max-lg:fixed max-lg:top-0 max-lg:left-0 max-lg:right-0 sm:max-lg:left-1/2 sm:max-lg:right-auto sm:max-lg:-translate-x-1/2 max-lg:z-[1001]"
         style="margin-top: ${this.barOffset}px;"
         @click=${() => this.hide()}
         @contextmenu=${(e: MouseEvent) => e.preventDefault()}
       >
         <div
-          class="bg-gray-800/92 backdrop-blur-sm shadow-xs min-[1200px]:rounded-lg sm:rounded-b-lg shadow-lg text-white text-lg lg:text-base w-full sm:w-[500px] overflow-hidden ${containerClasses}"
+          class="bg-gray-800/92 backdrop-blur-sm shadow-xs min-[1200px]:rounded-lg sm:rounded-b-lg shadow-lg text-white text-lg lg:text-base w-full ${
+            this.showShortcutButtons() ? "sm:w-[598px]" : "sm:w-[500px]"
+          } lg:max-w-full overflow-hidden ${containerClasses}"
+          @mouseenter=${this.onPanelEnter}
+          @mouseleave=${this.onPanelLeave}
         >
-          ${this.player !== null ? this.renderPlayerInfo(this.player) : ""}
-          ${this.unit !== null ? this.renderUnitInfo(this.unit) : ""}
+          ${this.player ? this.renderPlayerInfo(this.player) : ""}
+          ${this.unit ? this.renderUnitInfo(this.unit) : ""}
         </div>
       </div>
     `;

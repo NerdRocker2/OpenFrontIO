@@ -9,8 +9,8 @@
  *     structure levels → bars → bloom → trails → missiles → fx → conquest → names
  */
 
-import type { Config } from "../../../core/configuration/Config";
-import type { MapLayer } from "../../../core/game/TerrainMapLoader";
+import type { MapLayer } from "@openfront/engine-api/game/MapFiles";
+import type { Config } from "@openfront/engine-lib/configuration/Config";
 import { translateText } from "../../Utils";
 import type { SpiralRibbon } from "../frame/SpiralTrails";
 import type {
@@ -311,8 +311,9 @@ export class GPURenderer {
 
     // Per-player effect texture: EFFECT_PALETTE_BLOCKS stacked blocks of
     // MAX_TRAIL_COLORS rows (block 0 = transportShipTrail, block 1 = nukeTrail,
-    // block 2 = structures, block 3 = warship). Starts zeroed (color count 0
-    // everywhere = no effect → territory/player color).
+    // block 2 = structures, block 3 = warship, block 4 = train, block 5 =
+    // railroad). Starts zeroed (color count 0 everywhere = no effect →
+    // territory/player color).
     const effectRows = MAX_TRAIL_COLORS * EFFECT_PALETTE_BLOCKS;
     this.effectTex = createTexture2D(gl, {
       width: palW,
@@ -539,19 +540,20 @@ export class GPURenderer {
     // --- Night composite ---
     this.nightCompositePass = new NightCompositePass(gl, this.settings);
 
-    // --- Railroad (needs tileTex) ---
+    // --- Railroad (needs tileTex, paletteTex, effectTex) ---
     this.railroadPass = new RailroadPass(
       gl,
       mapW,
       mapH,
       this.res.tileTex,
       this.paletteTex,
+      this.effectTex,
       terrainBytes,
       this.settings,
     );
 
     // --- Range circle (ghost preview radius) ---
-    this.rangeCirclePass = new RangeCirclePass(gl);
+    this.rangeCirclePass = new RangeCirclePass(gl, this.settings);
 
     // --- SAM radius overlay (dashed green circles during build mode) ---
     this.samRadiusPass = new SAMRadiusPass(gl, mapW, this.settings);
@@ -627,6 +629,7 @@ export class GPURenderer {
     this.affiliationPalette = new AffiliationPalette(gl, this.settings);
     const affTex = this.affiliationPalette.getTexture();
     this.borderStampPass.setAffiliationTex(affTex);
+    this.territoryPass.setAffiliationTex(affTex);
     this.unitPass.setAffiliationTex(affTex);
     this.structurePass.setAffiliationTex(affTex);
     this.trailPass.setAffiliationTex(affTex);
@@ -766,7 +769,37 @@ export class GPURenderer {
     patternData: Uint8Array,
   ): void {
     this.updatePalette(paletteData);
+    this.uploadPatterns(patternMeta, patternData);
 
+    this.namePass.addPlayers(players, this.paletteData);
+    for (const p of players) {
+      if (p.team !== null) this.playerTeams.set(p.smallID, p.team);
+    }
+    // Renderer was constructed with players: [] (real list arrives via this
+    // method), so team mode must be re-evaluated whenever new players arrive
+    // — otherwise team games never enable the skin-tint branch.
+    this.territoryPass.setTeamMode(this.playerTeams.size > 0);
+  }
+
+  /**
+   * Re-upload already-registered players' palette, patterns, flags and crowns
+   * after the cosmetics visibility settings change.
+   */
+  updatePlayerCosmetics(
+    players: PlayerStatic[],
+    paletteData: Float32Array,
+    patternMeta: Float32Array,
+    patternData: Uint8Array,
+  ): void {
+    this.updatePalette(paletteData);
+    this.uploadPatterns(patternMeta, patternData);
+    this.namePass.updatePlayerCosmetics(players);
+  }
+
+  private uploadPatterns(
+    patternMeta: Float32Array,
+    patternData: Uint8Array,
+  ): void {
     const gl = this.gl;
     const palW = getPaletteSize();
 
@@ -795,15 +828,6 @@ export class GPURenderer {
       gl.UNSIGNED_BYTE,
       patternData,
     );
-
-    this.namePass.addPlayers(players, this.paletteData);
-    for (const p of players) {
-      if (p.team !== null) this.playerTeams.set(p.smallID, p.team);
-    }
-    // Renderer was constructed with players: [] (real list arrives via this
-    // method), so team mode must be re-evaluated whenever new players arrive
-    // — otherwise team games never enable the skin-tint branch.
-    this.territoryPass.setTeamMode(this.playerTeams.size > 0);
   }
 
   /**
@@ -845,13 +869,17 @@ export class GPURenderer {
   }
 
   /**
-   * Map a player to a pre-registered skin layer. URLs not registered via
-   * `initSkinAtlas` are silently dropped. If the image is still decoding the
-   * layer renders transparent (zero-init) until decode completes.
+   * Map a player to a pre-registered skin layer, or clear it with null. URLs
+   * not registered via `initSkinAtlas` are silently dropped. If the image is
+   * still decoding the layer renders transparent (zero-init) until decode
+   * completes.
    */
-  setPlayerSkin(smallID: number, url: string): void {
-    const layer = this.skinAtlas.getLayer(url);
-    if (layer < 0) return;
+  setPlayerSkin(smallID: number, url: string | null): void {
+    let layer = -1;
+    if (url !== null) {
+      layer = this.skinAtlas.getLayer(url);
+      if (layer < 0) return;
+    }
     this.skinLayerCpu[smallID] = layer + 1;
     this.uploadSkinLayerTex();
   }
@@ -881,6 +909,7 @@ export class GPURenderer {
     this.frameTick++;
     this.unitPass.setFrameTick(this.frameTick);
     this.unitPass.updateUnits(units, gameTick);
+    this.samRadiusPass.setTick(gameTick);
     this.barPass.updateBars(units, this.lastStructures, gameTick);
     this.pointLightPass.updateLights(units);
     this.heatManager.decayHeat();
@@ -1079,7 +1108,7 @@ export class GPURenderer {
 
   updateSpawnOverlay(inSpawnPhase: boolean, centers: SpawnCenter[]): void {
     this.inSpawnPhase = inSpawnPhase;
-    this.spawnOverlayPass.update(inSpawnPhase, centers);
+    this.spawnOverlayPass.update(centers);
   }
 
   updateSmallPlayerGlow(set: Uint8Array | null): void {
@@ -1095,6 +1124,7 @@ export class GPURenderer {
     this.territoryPass.setHighlightOwner(ownerID);
     this.namePass.setHighlightOwner(ownerID);
     this.structurePass.setHighlightOwner(ownerID);
+    this.railroadPass.setHighlightOwner(ownerID);
   }
   setMouseWorldPos(x: number, y: number): void {
     this.namePass.setMouseWorldPos(x, y);
@@ -1135,10 +1165,6 @@ export class GPURenderer {
     this.unitPass.setAltView(active);
     this.structurePass.setAltView(active);
     this.trailPass.setAltView(active);
-  }
-
-  setShowPatterns(active: boolean): void {
-    this.territoryPass.setShowPatterns(active);
   }
 
   setGridView(active: boolean): void {
@@ -1325,8 +1351,10 @@ export class GPURenderer {
     if (pe.terrain) this.terrainPass.draw(cam);
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-    // Map layers sit between terrain and territory.
+    // Map layers sit between terrain and territory. Alt view hides the land
+    // ones so the terrain underneath shows.
     for (const layerPass of this.mapLayerPasses.values()) {
+      if (this.altView && layerPass.placement === 0) continue;
       layerPass.draw(cam);
     }
     if (pe.territory) this.territoryPass.draw(cam);
@@ -1426,6 +1454,11 @@ export class GPURenderer {
     this.mapLayerPasses.get(layerId)?.setVisible(visible);
   }
 
+  /** Set the alpha multiplier for a single layer (0–1). */
+  setLayerAlpha(layerId: string, alpha: number): void {
+    this.mapLayerPasses.get(layerId)?.setAlpha(alpha);
+  }
+
   /**
    * Mark tiles as destroyed for a nukeable layer.  Called when a nuke
    * detonates; batches all tile updates into a single GPU upload.
@@ -1446,7 +1479,12 @@ export class GPURenderer {
   // Lifecycle
   // ---------------------------------------------------------------------------
 
-  dispose(): void {
+  /**
+   * @param releaseContext Also drop the WebGL context itself. Must be false
+   *   when disposing *because* the context was lost — see the call in
+   *   MapRenderer.handleContextLost.
+   */
+  dispose({ releaseContext = true }: { releaseContext?: boolean } = {}): void {
     this.stopLoop();
     for (const p of this.mapLayerPasses.values()) p.dispose();
     this.mapLayerPasses.clear();
@@ -1501,6 +1539,8 @@ export class GPURenderer {
     // Deleting GL resources isn't enough — the context itself counts against
     // the browser's WebGL context limit until it's GC'd, which is unreliable
     // on mobile. Explicitly drop it so repeated game starts don't overflow.
-    this.gl.getExtension("WEBGL_lose_context")?.loseContext();
+    if (releaseContext) {
+      this.gl.getExtension("WEBGL_lose_context")?.loseContext();
+    }
   }
 }

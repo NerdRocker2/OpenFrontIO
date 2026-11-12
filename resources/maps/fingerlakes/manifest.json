@@ -1,5 +1,5 @@
 {
-  "categories": ["new", "north_america"],
+  "categories": ["north_america"],
   "id": "FingerLakes",
   "map": {
     "height": 1376,
@@ -16,7 +16,6 @@
     "num_land_tiles": 451352,
     "width": 734
   },
-  "multiplayer_frequency": 4,
   "name": "Finger Lakes",
   "nations": [
     {

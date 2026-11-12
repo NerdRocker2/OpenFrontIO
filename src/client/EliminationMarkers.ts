@@ -1,5 +1,5 @@
-import { EventBus } from "../core/EventBus";
-import { Cell } from "../core/game/Game";
+import { Cell } from "@openfront/engine-api/game/GameTypes";
+import { EventBus } from "@openfront/shared/EventBus";
 import { EliminationMarkerEvent } from "./InputHandler";
 
 export const ELIMINATED_SUFFIX = " (Eliminated)";

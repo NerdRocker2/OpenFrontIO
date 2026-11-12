@@ -1,5 +1,6 @@
 {
   "categories": ["fictional"],
+  "forced_modifiers": ["isWaterNukes:50"],
   "id": "FourIslands",
   "map": {
     "height": 1500,
@@ -16,7 +17,6 @@
     "num_land_tiles": 127769,
     "width": 750
   },
-  "multiplayer_frequency": 4,
   "name": "Four Islands",
   "nations": [
     {

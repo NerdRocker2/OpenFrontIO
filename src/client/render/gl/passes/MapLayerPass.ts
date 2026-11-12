@@ -1,7 +1,7 @@
 /**
  * MapLayerPass — renders a single map-layer image between terrain and territory.
  *
- * Each layer is a full-size PNG (same dimensions as image.png) placed above
+ * Each layer is a full-size image (same dimensions as the map grid) placed above
  * the terrain tiles but below player territory.  The fragment shader discards
  * pixels whose land/water type does not match the layer's "placement" and
  * (for nukeable layers) pixels that have been destroyed by a nuke.
@@ -25,6 +25,7 @@ export class MapLayerPass {
   private uPlacement: WebGLUniformLocation;
   private uNukeable: WebGLUniformLocation;
   private uVisible: WebGLUniformLocation;
+  private uAlpha: WebGLUniformLocation;
   private uLayerTex: WebGLUniformLocation;
   private uTerrainBytes: WebGLUniformLocation;
   private uDestroyedMask: WebGLUniformLocation;
@@ -32,17 +33,18 @@ export class MapLayerPass {
   /** CPU-side copy of the destroyed mask for context-restore re-uploads. */
   private destroyedData: Uint8Array;
   private _visible = true;
+  private _alpha = 1.0;
 
   constructor(
     private gl: WebGL2RenderingContext,
     /** Terrain-bytes R8UI texture (shared across all layer passes). */
     private terrainBytesTex: WebGLTexture,
-    /** Layer RGBA image (ImageBitmap loaded from the layer PNG). */
+    /** Layer RGBA image (ImageBitmap decoded from the layer WebP). */
     image: ImageBitmap,
     private mapW: number,
     private mapH: number,
     /** 0 = land layer, 1 = water layer. */
-    private placement: 0 | 1,
+    readonly placement: 0 | 1,
     /** Whether the layer is destroyed by nukes. */
     private nukeable: boolean,
   ) {
@@ -50,11 +52,13 @@ export class MapLayerPass {
       gl,
       shaderSrc(layerVertSrc, { MAP_W: mapW, MAP_H: mapH }),
       shaderSrc(layerFragSrc, { MAP_W: mapW, MAP_H: mapH }),
+      "MapLayerPass",
     );
     this.uCamera = gl.getUniformLocation(this.program, "uCamera")!;
     this.uPlacement = gl.getUniformLocation(this.program, "uPlacement")!;
     this.uNukeable = gl.getUniformLocation(this.program, "uNukeable")!;
     this.uVisible = gl.getUniformLocation(this.program, "uVisible")!;
+    this.uAlpha = gl.getUniformLocation(this.program, "uAlpha")!;
     this.uLayerTex = gl.getUniformLocation(this.program, "uLayerTex")!;
     this.uTerrainBytes = gl.getUniformLocation(this.program, "uTerrainBytes")!;
     this.uDestroyedMask = gl.getUniformLocation(
@@ -97,6 +101,11 @@ export class MapLayerPass {
   /** Show/hide this layer (driven by graphics settings). */
   setVisible(visible: boolean): void {
     this._visible = visible;
+  }
+
+  /** Set the alpha multiplier for this layer (0–1). */
+  setAlpha(alpha: number): void {
+    this._alpha = Math.max(0, Math.min(1, alpha));
   }
 
   /**
@@ -253,6 +262,7 @@ export class MapLayerPass {
     gl.uniform1i(this.uPlacement, this.placement);
     gl.uniform1i(this.uNukeable, this.nukeable ? 1 : 0);
     gl.uniform1f(this.uVisible, this._visible ? 1.0 : 0.0);
+    gl.uniform1f(this.uAlpha, this._alpha);
 
     gl.bindVertexArray(this.vao);
     gl.drawArrays(gl.TRIANGLES, 0, 6);

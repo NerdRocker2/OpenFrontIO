@@ -16,7 +16,6 @@
     "num_land_tiles": 519188,
     "width": 1000
   },
-  "multiplayer_frequency": 8,
   "name": "Indian Subcontinent",
   "nations": [
     {
@@ -267,7 +266,7 @@
     {
       "coordinates": [740, 161],
       "flag": "Azad Kashmir",
-      "name": "Azad Kashmir"
+      "name": "Kashmir (Pak-administered)"
     },
     {
       "coordinates": [628, 12],

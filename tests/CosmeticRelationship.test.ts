@@ -1,7 +1,10 @@
-import { cosmeticRelationship } from "../src/client/Cosmetics";
-import { UserMeResponse } from "../src/core/ApiSchemas";
-
-const product = { productId: "prod_123", priceId: "price_123", price: "$4.99" };
+// @vitest-environment jsdom
+import { UserMeResponse } from "@openfront/shared/ApiSchemas";
+import { Crown } from "@openfront/shared/CosmeticSchemas";
+import {
+  cosmeticRelationship,
+  crownRelationship,
+} from "../src/client/Cosmetics";
 
 function makeUserMe(flares: string[]): UserMeResponse {
   return {
@@ -16,7 +19,6 @@ describe("cosmeticRelationship", () => {
         {
           wildcardFlare: "flag:*",
           requiredFlare: "flag:cool",
-          product,
           priceSoft: undefined,
           priceHard: undefined,
           affiliateCode: null,
@@ -33,7 +35,6 @@ describe("cosmeticRelationship", () => {
         {
           wildcardFlare: "flag:*",
           requiredFlare: "flag:cool",
-          product,
           priceSoft: undefined,
           priceHard: undefined,
           affiliateCode: null,
@@ -44,13 +45,12 @@ describe("cosmeticRelationship", () => {
     ).toBe("owned");
   });
 
-  it("returns blocked when no product and user does not own it", () => {
+  it("returns blocked when no currency price and user does not own it", () => {
     expect(
       cosmeticRelationship(
         {
           wildcardFlare: "flag:*",
           requiredFlare: "flag:cool",
-          product: null,
           priceSoft: undefined,
           priceHard: undefined,
           affiliateCode: null,
@@ -67,9 +67,8 @@ describe("cosmeticRelationship", () => {
         {
           wildcardFlare: "flag:*",
           requiredFlare: "flag:cool",
-          product,
           priceSoft: undefined,
-          priceHard: undefined,
+          priceHard: 50,
           affiliateCode: "storeA",
           itemAffiliateCode: "storeB",
         },
@@ -78,15 +77,14 @@ describe("cosmeticRelationship", () => {
     ).toBe("blocked");
   });
 
-  it("returns purchasable when product exists and affiliate matches", () => {
+  it("returns purchasable when currency price exists and affiliate matches", () => {
     expect(
       cosmeticRelationship(
         {
           wildcardFlare: "flag:*",
           requiredFlare: "flag:cool",
-          product,
           priceSoft: undefined,
-          priceHard: undefined,
+          priceHard: 50,
           affiliateCode: null,
           itemAffiliateCode: null,
         },
@@ -101,9 +99,8 @@ describe("cosmeticRelationship", () => {
         {
           wildcardFlare: "pattern:*",
           requiredFlare: "pattern:stripes:red",
-          product,
           priceSoft: undefined,
-          priceHard: undefined,
+          priceHard: 50,
           affiliateCode: "storeA",
           itemAffiliateCode: "storeA",
         },
@@ -112,13 +109,12 @@ describe("cosmeticRelationship", () => {
     ).toBe("purchasable");
   });
 
-  it("returns blocked when user is not logged in and no product", () => {
+  it("returns blocked when user is not logged in and no currency price", () => {
     expect(
       cosmeticRelationship(
         {
           wildcardFlare: "flag:*",
           requiredFlare: "flag:cool",
-          product: null,
           priceSoft: undefined,
           priceHard: undefined,
           affiliateCode: null,
@@ -129,15 +125,14 @@ describe("cosmeticRelationship", () => {
     ).toBe("blocked");
   });
 
-  it("returns purchasable when user is not logged in but product exists", () => {
+  it("returns purchasable when user is not logged in but currency price exists", () => {
     expect(
       cosmeticRelationship(
         {
           wildcardFlare: "flag:*",
           requiredFlare: "flag:cool",
-          product,
           priceSoft: undefined,
-          priceHard: undefined,
+          priceHard: 50,
           affiliateCode: null,
           itemAffiliateCode: null,
         },
@@ -146,13 +141,12 @@ describe("cosmeticRelationship", () => {
     ).toBe("purchasable");
   });
 
-  it("returns purchasable when item has currency price and no product", () => {
+  it("returns purchasable when item has soft currency price", () => {
     expect(
       cosmeticRelationship(
         {
           wildcardFlare: "flag:*",
           requiredFlare: "flag:cool",
-          product: null,
           priceSoft: 100,
           affiliateCode: null,
           itemAffiliateCode: null,
@@ -168,7 +162,6 @@ describe("cosmeticRelationship", () => {
         {
           wildcardFlare: "flag:*",
           requiredFlare: "flag:cool",
-          product: null,
           priceSoft: 100,
           priceHard: 50,
           affiliateCode: "storeA",
@@ -185,7 +178,6 @@ describe("cosmeticRelationship", () => {
         {
           wildcardFlare: "pattern:*",
           requiredFlare: "pattern:stripes:red",
-          product,
           priceSoft: undefined,
           priceHard: undefined,
           affiliateCode: null,
@@ -194,5 +186,43 @@ describe("cosmeticRelationship", () => {
         makeUserMe(["pattern:*"]),
       ),
     ).toBe("owned");
+  });
+
+  it("returns owned when user has wildcard flare for crowns", () => {
+    expect(
+      cosmeticRelationship(
+        {
+          wildcardFlare: "crown:*",
+          requiredFlare: "crown:gold",
+          priceSoft: undefined,
+          priceHard: undefined,
+          affiliateCode: null,
+          itemAffiliateCode: null,
+        },
+        makeUserMe(["crown:*"]),
+      ),
+    ).toBe("owned");
+  });
+});
+
+describe("crownRelationship", () => {
+  const crown = { name: "gold", url: "/crowns/gold.png" } as Crown;
+
+  it("returns owned when user has the crown:* wildcard flare", () => {
+    expect(crownRelationship(crown, makeUserMe(["crown:*"]), null)).toBe(
+      "owned",
+    );
+  });
+
+  it("returns owned when user has the specific crown flare", () => {
+    expect(crownRelationship(crown, makeUserMe(["crown:gold"]), null)).toBe(
+      "owned",
+    );
+  });
+
+  it("does not treat other type wildcards as owning a crown", () => {
+    expect(
+      crownRelationship(crown, makeUserMe(["pattern:*", "flag:*"]), null),
+    ).toBe("blocked");
   });
 });

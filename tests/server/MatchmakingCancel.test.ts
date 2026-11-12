@@ -1,47 +1,26 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { GameType, RankedType } from "../../src/core/game/Game";
+import { GameType, RankedType } from "@openfront/engine-api/game/GameTypes";
 import { Client } from "../../src/server/Client";
-import { GamePhase, GameServer } from "../../src/server/GameServer";
-
-function makeMockWs() {
-  return {
-    on: () => {},
-    removeAllListeners: () => {},
-    send: vi.fn(),
-    close: vi.fn(),
-    readyState: 1,
-  };
-}
+import { GamePhase } from "../../src/server/GameServer";
+import {
+  makeClient as harnessClient,
+  makeGame,
+  mockWsOf,
+} from "../util/GameServerHarness";
 
 function makeClient(clientID: string, persistentID: string): Client {
-  return new Client(
+  return harnessClient({
     clientID,
     persistentID,
-    null,
-    null,
-    undefined,
-    "127.0.0.1",
-    "TestUser",
-    null,
-    makeMockWs() as any,
-    undefined,
-    `pub-${persistentID}`,
-    [],
-  );
+    username: "TestUser",
+    publicId: `pub-${persistentID}`,
+  });
 }
 
 describe("GameServer - short-handed matchmade game cancellation", () => {
-  let mockLogger: any;
-
   beforeEach(() => {
     vi.useFakeTimers();
-    mockLogger = {
-      child: vi.fn().mockReturnThis(),
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
-    };
   });
 
   afterEach(() => {
@@ -51,14 +30,10 @@ describe("GameServer - short-handed matchmade game cancellation", () => {
   });
 
   function makeRankedGame(rankedType: RankedType, maxPlayers: number) {
-    return new GameServer(
-      "test-game",
-      mockLogger,
-      Date.now(),
-      { gameType: GameType.Public, rankedType, maxPlayers } as any,
-      undefined,
-      Date.now() + 15000,
-    );
+    return makeGame({
+      config: { gameType: GameType.Public, rankedType, maxPlayers },
+      startsAt: Date.now() + 15000,
+    });
   }
 
   it("cancels a 2v2 game missing a player: kicks the connected, ends the game", () => {
@@ -73,13 +48,11 @@ describe("GameServer - short-handed matchmade game cancellation", () => {
     expect(game.cancelShortHandedMatch()).toBe(true);
 
     for (const c of clients) {
-      expect(c.ws.send).toHaveBeenCalledWith(
-        JSON.stringify({
-          type: "error",
-          error: "kick_reason.match_cancelled",
-        }),
-      );
-      expect(c.ws.close).toHaveBeenCalled();
+      expect(mockWsOf(c).sent()).toContainEqual({
+        type: "error",
+        error: "kick_reason.match_cancelled",
+      });
+      expect(mockWsOf(c).close).toHaveBeenCalled();
     }
     expect(game.phase()).toBe(GamePhase.Finished);
   });
@@ -101,29 +74,59 @@ describe("GameServer - short-handed matchmade game cancellation", () => {
     expect(game.phase()).not.toBe(GamePhase.Finished);
   });
 
+  it("leaves a ranked FFA game left over from before the queue closed to start", () => {
+    const game = makeRankedGame(RankedType.FreeForAll, 6);
+    for (const id of ["1", "2", "3"]) {
+      expect(game.joinClient(makeClient(`c${id}`, `p${id}`))).toBe("joined");
+    }
+
+    expect(game.cancelShortHandedMatch()).toBe(false);
+    expect(game.phase()).not.toBe(GamePhase.Finished);
+  });
+
+  it("cancels a clan wars game missing a player", () => {
+    const game = makeRankedGame(RankedType.ClanWars, 6);
+    for (const id of ["1", "2", "3", "4", "5"]) {
+      expect(game.joinClient(makeClient(`c${id}`, `p${id}`))).toBe("joined");
+    }
+
+    expect(game.cancelShortHandedMatch()).toBe(true);
+    expect(game.phase()).toBe(GamePhase.Finished);
+  });
+
+  it("starts a clan wars game with full attendance", () => {
+    const game = makeRankedGame(RankedType.ClanWars, 6);
+    for (const id of ["1", "2", "3", "4", "5", "6"]) {
+      expect(game.joinClient(makeClient(`c${id}`, `p${id}`))).toBe("joined");
+    }
+
+    expect(game.cancelShortHandedMatch()).toBe(false);
+    expect(game.phase()).not.toBe(GamePhase.Finished);
+  });
+
   it("does not cancel unknown ranked types — new modes must opt in", () => {
-    const game = new GameServer(
-      "test-game",
-      mockLogger,
-      Date.now(),
-      { gameType: GameType.Public, rankedType: "3v3", maxPlayers: 6 } as any,
-      undefined,
-      Date.now() + 15000,
-    );
+    const game = makeGame({
+      config: {
+        gameType: GameType.Public,
+        rankedType: RankedType.TwoVTwo,
+        maxPlayers: 6,
+      },
+      startsAt: Date.now() + 15000,
+    });
     expect(game.joinClient(makeClient("c1", "p1"))).toBe("joined");
+    // Swapped in after the join: an unknown ranked type can never reach a real
+    // server (CreateGameInput validates it, and the binary wire only encodes
+    // declared enum members), so this pokes the guard directly.
+    (game.gameConfig as any).rankedType = "3v3";
 
     expect(game.cancelShortHandedMatch()).toBe(false);
   });
 
   it("does not cancel non-ranked games, even short-handed", () => {
-    const game = new GameServer(
-      "test-game",
-      mockLogger,
-      Date.now(),
-      { gameType: GameType.Public, maxPlayers: 4 } as any,
-      undefined,
-      Date.now() + 15000,
-    );
+    const game = makeGame({
+      config: { gameType: GameType.Public, maxPlayers: 4 },
+      startsAt: Date.now() + 15000,
+    });
     expect(game.joinClient(makeClient("c1", "p1"))).toBe("joined");
 
     expect(game.cancelShortHandedMatch()).toBe(false);

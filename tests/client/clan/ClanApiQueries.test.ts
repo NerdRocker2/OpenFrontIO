@@ -9,10 +9,12 @@ vi.mock("../../../src/client/Auth", () => ({
   getAuthHeader: vi.fn(async () => "Bearer test-token"),
 }));
 
+import type { UserMeResponse } from "@openfront/shared/ApiSchemas";
 import { getUserMe } from "../../../src/client/Api";
 import {
   checkClanTagOwnership,
   fetchClanDetail,
+  fetchClanDonations,
   fetchClanExists,
   fetchClanGames,
   fetchClanLeaderboard,
@@ -20,7 +22,6 @@ import {
   fetchClanRequests,
   fetchClans,
 } from "../../../src/client/ClanApi";
-import type { UserMeResponse } from "../../../src/core/ApiSchemas";
 
 const userWithClans = (tags: string[]): UserMeResponse =>
   ({
@@ -238,6 +239,38 @@ describe("fetchClanDetail", () => {
     const result = await fetchClanDetail("TEST");
     expect(result).toBe(false);
   });
+
+  it("passes through the clan balances as bigint strings", async () => {
+    mockFetch(() =>
+      okJson({
+        ...clanInfo,
+        softBalance: "9007199254740993",
+        hardBalance: "0",
+      }),
+    );
+    const result = await fetchClanDetail("TEST");
+    expect(result).not.toBe(false);
+    if (result !== false) {
+      // Exact, not rounded: a Number round-trip would lose the trailing 3.
+      expect(result.softBalance).toBe("9007199254740993");
+      expect(result.hardBalance).toBe("0");
+    }
+  });
+
+  it("parses a response with no balances (older API)", async () => {
+    mockFetch(() => okJson(clanInfo));
+    const result = await fetchClanDetail("TEST");
+    expect(result).not.toBe(false);
+    if (result !== false) {
+      expect(result.softBalance).toBeUndefined();
+      expect(result.hardBalance).toBeUndefined();
+    }
+  });
+
+  it("returns false when a balance arrives as a number", async () => {
+    mockFetch(() => okJson({ ...clanInfo, softBalance: 1000 }));
+    expect(await fetchClanDetail("TEST")).toBe(false);
+  });
 });
 
 describe("fetchClans", () => {
@@ -289,6 +322,109 @@ describe("fetchClans", () => {
     const calledUrl = fetchSpy.mock.calls[0]![0] as string;
     const url = new URL(calledUrl);
     expect(url.searchParams.has("search")).toBe(false);
+  });
+
+  function spyBrowse() {
+    const fetchSpy = vi.fn(
+      (_input: string | URL | Request, _init?: RequestInit) =>
+        Promise.resolve(okJson({ ...browseResponse, bucket: 7 })),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+    return () =>
+      new URL(
+        fetchSpy.mock.calls[fetchSpy.mock.calls.length - 1]![0] as string,
+      );
+  }
+
+  it("defaults to the seeded random sort, seeded by the public id", async () => {
+    vi.mocked(getUserMe).mockResolvedValue(userWithClans([]));
+    const lastUrl = spyBrowse();
+
+    const result = await fetchClans();
+
+    expect(lastUrl().searchParams.get("sortField")).toBe("random");
+    expect(lastUrl().searchParams.get("seed")).toBe("p1");
+    expect(lastUrl().searchParams.has("bucket")).toBe(false);
+    expect(result && result.bucket).toBe(7);
+  });
+
+  it("signed out, seeds from a stored random value that persists", async () => {
+    vi.mocked(getUserMe).mockResolvedValue(false);
+    localStorage.removeItem("clanBrowseSeed");
+    const lastUrl = spyBrowse();
+
+    await fetchClans();
+    const first = lastUrl().searchParams.get("seed");
+    await fetchClans();
+
+    expect(first).toMatch(/^[0-9a-f]{32}$/);
+    expect(lastUrl().searchParams.get("seed")).toBe(first);
+  });
+
+  it("keeps page 1's seed for the pages after it, even across a sign-in", async () => {
+    vi.mocked(getUserMe).mockResolvedValue(false);
+    localStorage.setItem("clanBrowseSeed", "anonseed");
+    const lastUrl = spyBrowse();
+
+    await fetchClans(undefined, 1);
+    vi.mocked(getUserMe).mockResolvedValue(userWithClans([]));
+    await fetchClans(undefined, 2);
+    expect(lastUrl().searchParams.get("seed")).toBe("anonseed");
+
+    // A fresh page 1 picks up the signed-in seed.
+    await fetchClans(undefined, 1);
+    expect(lastUrl().searchParams.get("seed")).toBe("p1");
+  });
+
+  it("passes a pinned bucket back", async () => {
+    const lastUrl = spyBrowse();
+    await fetchClans(undefined, 2, 20, "random", 491234);
+    expect(lastUrl().searchParams.get("bucket")).toBe("491234");
+  });
+
+  it("maps the other sorts to field and direction, without a seed", async () => {
+    const lastUrl = spyBrowse();
+    const expected = [
+      ["memberCount", "memberCount", "DESC"],
+      ["winScore", "winScore", "DESC"],
+      ["winScoreLow", "winScore", "ASC"],
+      ["createdAt", "createdAt", "ASC"],
+      ["softBalance", "softBalance", "DESC"],
+      ["name", "name", "ASC"],
+    ] as const;
+    for (const [sort, field, order] of expected) {
+      await fetchClans(undefined, 1, 20, sort, 5);
+      expect(lastUrl().searchParams.get("sortField")).toBe(field);
+      expect(lastUrl().searchParams.get("sortOrder")).toBe(order);
+      expect(lastUrl().searchParams.has("seed")).toBe(false);
+      expect(lastUrl().searchParams.has("bucket")).toBe(false);
+    }
+  });
+
+  it("sends the open filter only when one is picked", async () => {
+    const lastUrl = spyBrowse();
+    await fetchClans();
+    expect(lastUrl().searchParams.has("open")).toBe(false);
+    await fetchClans(undefined, 1, 20, "random", undefined, "all");
+    expect(lastUrl().searchParams.has("open")).toBe(false);
+    await fetchClans(undefined, 1, 20, "random", undefined, "open");
+    expect(lastUrl().searchParams.get("open")).toBe("true");
+    await fetchClans("abc", 1, 20, "name", undefined, "inviteOnly");
+    expect(lastUrl().searchParams.get("open")).toBe("false");
+    expect(lastUrl().searchParams.get("search")).toBe("abc");
+  });
+
+  it("search with the default sort leaves ordering to the server", async () => {
+    const lastUrl = spyBrowse();
+    await fetchClans("abc");
+    expect(lastUrl().searchParams.has("sortField")).toBe(false);
+    expect(lastUrl().searchParams.has("seed")).toBe(false);
+  });
+
+  it("search with an explicit sort sends it", async () => {
+    const lastUrl = spyBrowse();
+    await fetchClans("abc", 1, 20, "memberCount");
+    expect(lastUrl().searchParams.get("sortField")).toBe("memberCount");
   });
 
   it("returns false on failure", async () => {
@@ -371,6 +507,29 @@ describe("fetchClanMembers", () => {
     const result = await fetchClanMembers("TEST");
     expect(result).not.toBe(false);
     if (result) expect(result.pendingRequests).toBe(5);
+  });
+
+  it("parses each member's clan wars eloContributed, null or absent", async () => {
+    const [first] = membersResponse.results;
+    mockFetch(() =>
+      okJson({
+        ...membersResponse,
+        results: [
+          { ...first, publicId: "a", eloContributed: 40 },
+          { ...first, publicId: "b", eloContributed: null },
+          { ...first, publicId: "c" },
+        ],
+      }),
+    );
+    const result = await fetchClanMembers("TEST", 1, 20, "eloContributed");
+    expect(result).not.toBe(false);
+    if (result) {
+      expect(result.results.map((m) => m.eloContributed)).toEqual([
+        40,
+        null,
+        undefined,
+      ]);
+    }
   });
 
   it("returns false on non-ok response", async () => {
@@ -603,5 +762,108 @@ describe("fetchClanGames", () => {
       string
     >;
     expect(headers.Authorization).toBe("Bearer test-token");
+  });
+});
+
+describe("fetchClanDonations", () => {
+  const donationsResponse = {
+    results: [
+      {
+        id: "1834",
+        currencyType: "soft",
+        amount: "500",
+        reason: "clan_donation",
+        note: null,
+        createdBy: "Xk3pQ9",
+        createdByUsername: "evan.0042",
+        createdAt: "2026-08-26T02:10:31.512Z",
+      },
+    ],
+    total: 27,
+    page: 1,
+    limit: 10,
+  };
+
+  const spyFetch = () => {
+    const fetchSpy = vi.fn(
+      (_input: string | URL | Request, _init?: RequestInit) =>
+        Promise.resolve(okJson(donationsResponse)),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+    return fetchSpy;
+  };
+
+  it("returns parsed data on success", async () => {
+    mockFetch(() => okJson(donationsResponse));
+    const result = await fetchClanDonations("TEST");
+    expect(result).toEqual(donationsResponse);
+  });
+
+  it("sends page and limit defaults and omits currencyType when unset", async () => {
+    const fetchSpy = spyFetch();
+    await fetchClanDonations("TEST");
+    const url = new URL(fetchSpy.mock.calls[0]![0] as string);
+    expect(url.pathname).toBe("/clans/TEST/donations");
+    expect(url.searchParams.get("page")).toBe("1");
+    expect(url.searchParams.get("limit")).toBe("10");
+    // The endpoint 400s on an empty value, so the key must be absent.
+    expect(url.searchParams.has("currencyType")).toBe(false);
+  });
+
+  it("forwards page, limit and currencyType when provided", async () => {
+    const fetchSpy = spyFetch();
+    await fetchClanDonations("TEST", {
+      page: 3,
+      limit: 25,
+      currencyType: "hard",
+    });
+    const url = new URL(fetchSpy.mock.calls[0]![0] as string);
+    expect(url.searchParams.get("page")).toBe("3");
+    expect(url.searchParams.get("limit")).toBe("25");
+    expect(url.searchParams.get("currencyType")).toBe("hard");
+  });
+
+  it("URL-encodes the tag", async () => {
+    const fetchSpy = spyFetch();
+    await fetchClanDonations("a/b");
+    expect(fetchSpy.mock.calls[0]![0] as string).toContain(
+      "/clans/a%2Fb/donations?",
+    );
+  });
+
+  it("returns forbidden on HTTP 403", async () => {
+    mockFetch(() => failRes(403));
+    await expect(fetchClanDonations("TEST")).resolves.toEqual({
+      error: "forbidden",
+    });
+  });
+
+  it("returns failed on other non-OK statuses", async () => {
+    mockFetch(() => failRes(500));
+    await expect(fetchClanDonations("TEST")).resolves.toEqual({
+      error: "failed",
+    });
+  });
+
+  it("returns failed on a transport error", async () => {
+    mockFetch(() => Promise.reject(new Error("offline")));
+    await expect(fetchClanDonations("TEST")).resolves.toEqual({
+      error: "failed",
+    });
+  });
+
+  it("returns failed when the body does not match the schema", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // amount must be a string (bigint on the wire), not a number.
+    mockFetch(() =>
+      okJson({
+        ...donationsResponse,
+        results: [{ ...donationsResponse.results[0], amount: 500 }],
+      }),
+    );
+    await expect(fetchClanDonations("TEST")).resolves.toEqual({
+      error: "failed",
+    });
+    warn.mockRestore();
   });
 });

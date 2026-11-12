@@ -1,4 +1,4 @@
-import { LiveStream, StreamsFeed } from "../core/ApiSchemas";
+import { LiveStream, StreamsFeed } from "@openfront/shared/ApiSchemas";
 import { getStreams } from "./Api";
 
 // One poller for both homepage streaming features.
@@ -16,7 +16,7 @@ import { getStreams } from "./Api";
 const POLL_MS = 60_000; // matches the endpoint's edge cache; faster just re-fetches bytes
 const MAX_AGE_MS = 10 * 60_000; // matches the API's snapshot TTL
 
-export const EMPTY_FEED: StreamsFeed = {
+const EMPTY_FEED: StreamsFeed = {
   verifiedAt: "1970-01-01T00:00:00.000Z",
   featured: [],
   live: [],
@@ -146,7 +146,7 @@ class StreamsFeedPoller {
       // getStreams() swallows fetch and validation errors itself, but it can still throw
       // if the bundled fallback ever fails to parse. Scheduling below is outside this
       // try for that reason: one bad fetch must not end polling for the whole session.
-      console.error("streams-feed: fetch failed", e);
+      console.warn("streams-feed: fetch failed", e);
     } finally {
       // If a reset happened, the newer tick owns the flag — leave it alone.
       if (current()) this.tickInFlight = false;

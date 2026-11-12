@@ -1,6 +1,55 @@
+/** Fired once when a keypress detects a keyboard on a touch-primary device. */
+export const KEYBOARD_DETECTED_EVENT = "openfront:keyboard-detected";
+
 export const Platform = (() => {
-  const isBrowser =
+  // Evaluated on every call, never cached: a jsdom environment can be torn
+  // down while lit still has a microtask-scheduled render queued, so a flag
+  // captured at module load would outlive the globals it describes.
+  const isBrowser = () =>
     typeof window !== "undefined" && typeof navigator !== "undefined";
+
+  const NON_TEXT_INPUT_TYPES = new Set([
+    "button",
+    "checkbox",
+    "color",
+    "file",
+    "image",
+    "radio",
+    "range",
+    "reset",
+    "submit",
+  ]);
+
+  if (typeof window !== "undefined") {
+    window.addEventListener(
+      "keydown",
+      (e: KeyboardEvent) => {
+        const pathTarget =
+          typeof e.composedPath === "function" ? e.composedPath()[0] : null;
+        const target = pathTarget ?? e.target;
+        const t = (
+          target instanceof Element
+            ? target
+            : target instanceof Node
+              ? target.parentElement
+              : null
+        ) as HTMLElement | null;
+        const tag = t?.tagName;
+        const isTextInput =
+          tag === "TEXTAREA" ||
+          Boolean(t?.isContentEditable) ||
+          (tag === "INPUT" &&
+            !NON_TEXT_INPUT_TYPES.has(
+              (t as HTMLInputElement).type?.toLowerCase(),
+            ));
+        if (!isTextInput && !Platform.hasKeyboard) {
+          (window as any).__hasKeyboard = true;
+          window.dispatchEvent(new Event(KEYBOARD_DETECTED_EVENT));
+        }
+      },
+      { passive: true },
+    );
+  }
 
   const normalizePlatform = (platform: string): string => {
     const normalized = platform.toLowerCase();
@@ -28,7 +77,7 @@ export const Platform = (() => {
 
   // OS Extraction
   const extractOS = (): string => {
-    if (!isBrowser) return "Unknown";
+    if (!isBrowser()) return "Unknown";
 
     const uaData = (navigator as any).userAgentData;
     if (uaData?.platform) {
@@ -74,7 +123,7 @@ export const Platform = (() => {
 
     // Detect the user agent when the `nodeIntegration` option is set to false
     if (
-      isBrowser &&
+      isBrowser() &&
       typeof navigator.userAgent === "string" &&
       navigator.userAgent.indexOf("Electron") >= 0
     ) {
@@ -96,17 +145,33 @@ export const Platform = (() => {
     isElectron: performElectronCheck(),
 
     get isMobileWidth(): boolean {
-      return isBrowser ? window.innerWidth < 768 : false;
+      return isBrowser() ? window.innerWidth < 768 : false;
     },
 
     get isTabletWidth(): boolean {
-      return isBrowser
+      return isBrowser()
         ? window.innerWidth >= 768 && window.innerWidth < 1024
         : false;
     },
 
     get isDesktopWidth(): boolean {
-      return isBrowser ? window.innerWidth >= 1024 : false;
+      return isBrowser() ? window.innerWidth >= 1024 : false;
+    },
+
+    /** Touch devices (phones, tablets) report a coarse primary pointer. */
+    get isTouch(): boolean {
+      return (
+        isBrowser() &&
+        typeof window.matchMedia === "function" &&
+        window.matchMedia("(pointer: coarse)").matches
+      );
+    },
+
+    /** Whether a physical keyboard is present or has been detected via keypress. */
+    get hasKeyboard(): boolean {
+      return isBrowser()
+        ? !this.isTouch || !!(window as any).__hasKeyboard
+        : false;
     },
   };
 })();

@@ -1,8 +1,7 @@
-import IntlMessageFormat from "intl-messageformat";
-import { DoomsdayClockSpeed } from "../core/game/DoomsdayClock";
 import {
   Duos,
   GameMode,
+  GameType,
   HumansVsNations,
   maps,
   MessageType,
@@ -10,12 +9,24 @@ import {
   Quads,
   Team,
   Trios,
-} from "../core/game/Game";
-import { GameConfig } from "../core/Schemas";
+} from "@openfront/engine-api/game/GameTypes";
+import { GameConfig } from "@openfront/engine-api/Schemas";
+import { DoomsdayClockSpeed } from "@openfront/engine-lib/game/DoomsdayClock";
+import { stripVersionPrefix } from "@openfront/shared/ServerList";
+import IntlMessageFormat from "intl-messageformat";
+import { ClientEnv } from "./ClientEnv";
+import type { KeyboardLayoutMap } from "./KeyboardLayout";
 import type { LangSelector } from "./LangSelector";
-import { Platform } from "./Platform";
+import { pagePin } from "./PagePin";
 
 export const TUTORIAL_VIDEO_URL = "https://www.youtube.com/embed/7J5zwb_s_Cg";
+
+// The desktop shell cannot embed YouTube inside Electron, so it bundles the
+// same tutorial and serves it under a reserved prefix of its app:// scheme
+// (see openfront-desktop's protocol.ts, which pins this path with a test).
+// Only meaningful when Platform.isElectron; on the web this path does not
+// exist.
+export const DESKTOP_TUTORIAL_VIDEO_URL = "/__tutorial/tutorial.webm";
 
 export function normaliseMapKey(mapName: string): string {
   // Asset dirs / translation keys are the map id lowercased. For most maps
@@ -23,6 +34,23 @@ export function normaliseMapKey(mapName: string): string {
   // the tourney maps (e.g. "Tourney 2 Teams" lives in maps/tourney1/).
   const id = maps.find((m) => m.type === mapName)?.id;
   return (id ?? mapName).toLowerCase().replace(/[\s.]+/g, "");
+}
+
+/**
+ * The map key desktop rich presence carries.
+ *
+ * Steam's localization file composes `#Map_<key>` and resolves it in the
+ * *viewing* user's language, so presence has to send the normalised id -- the
+ * same key `map.<id>` uses in our own translations, which keeps the two from
+ * drifting apart -- rather than the display name, which would compose a token
+ * that does not exist. Steam hides the entire status line when a token fails
+ * to resolve, so getting this wrong is a total failure rather than a partial
+ * one. Absent stays absent.
+ */
+export function presenceMapKey(
+  gameMap: string | undefined,
+): string | undefined {
+  return gameMap === undefined ? undefined : normaliseMapKey(gameMap);
 }
 
 export function getMapName(mapName: string | undefined): string | null {
@@ -33,89 +61,72 @@ export function getMapName(mapName: string | undefined): string | null {
   return translateText(translationKey);
 }
 
+const TEAM_PRESET_SIZES = { [Duos]: 2, [Trios]: 3, [Quads]: 4 } as const;
+const TEAM_PRESET_BY_SIZE: Record<number, string> = {
+  2: Duos,
+  3: Trios,
+  4: Quads,
+};
+
+function presetTeamsLabel(
+  preset: string,
+  teamCount: number,
+  playersPerTeam: number,
+): string {
+  return translateText("mode_selector.teams_preset", {
+    teams: translateText("mode_selector.teams_of", {
+      teamCount,
+      playersPerTeam,
+    }),
+    preset: translateText(`detailed_view.layout_${preset.toLowerCase()}`),
+  });
+}
+
 /**
- * Returns a display label for the game mode (e.g. "FFA", "4 Teams", "Duos").
+ * Display label for a lobby's game mode, e.g. "Free for All",
+ * "Trios (10 teams of 3)" or "5 teams of 20". A team count that splits the
+ * lobby evenly into teams of 2-4 is named like the matching preset; an uneven
+ * split shows only the team count.
  */
 export function getGameModeLabel(gameConfig: GameConfig): string {
-  const { gameMode, playerTeams, maxPlayers } = gameConfig;
+  const { gameMode, gameType, nations, playerTeams, maxPlayers } = gameConfig;
 
   if (gameMode !== GameMode.Team) {
     return translateText("game_mode.ffa");
   }
 
-  // Humans vs Nations
   if (playerTeams === HumansVsNations) {
-    if (maxPlayers) {
-      return translateText("public_lobby.teams_hvn_detailed", {
-        num: maxPlayers,
+    // Only public HvN on default nations matches the nation count to the humans.
+    return maxPlayers && gameType === GameType.Public && nations === "default"
+      ? translateText("public_lobby.teams_hvn_detailed", { num: maxPlayers })
+      : translateText("public_lobby.teams_hvn");
+  }
+
+  if (playerTeams === Duos || playerTeams === Trios || playerTeams === Quads) {
+    const playersPerTeam = TEAM_PRESET_SIZES[playerTeams];
+    const teamCount = Math.floor((maxPlayers ?? 0) / playersPerTeam);
+    return teamCount > 0
+      ? presetTeamsLabel(playerTeams, teamCount, playersPerTeam)
+      : translateText(`host_modal.teams_${playerTeams}`);
+  }
+
+  if (playerTeams === undefined || playerTeams <= 0) {
+    return translateText("mode_selector.teams_title");
+  }
+  const players = maxPlayers ?? 0;
+  if (players <= 0 || players % playerTeams !== 0) {
+    return translateText("mode_selector.teams_count", {
+      teamCount: playerTeams,
+    });
+  }
+  const playersPerTeam = players / playerTeams;
+  const preset = TEAM_PRESET_BY_SIZE[playersPerTeam];
+  return preset !== undefined
+    ? presetTeamsLabel(preset, playerTeams, playersPerTeam)
+    : translateText("mode_selector.teams_of", {
+        teamCount: playerTeams,
+        playersPerTeam,
       });
-    }
-    return translateText("public_lobby.teams_hvn");
-  }
-
-  // Named team types (Duos, Trios, Quads)
-  if (typeof playerTeams === "string") {
-    const teamKey = `public_lobby.teams_${playerTeams}`;
-    const teamCount = getTeamCount(playerTeams, maxPlayers ?? 0);
-    const translated = translateText(teamKey, { team_count: teamCount });
-    if (translated !== teamKey) {
-      return translated;
-    }
-  }
-
-  // Numeric team count (e.g. "5 teams of 20")
-  const teamCount =
-    typeof playerTeams === "number"
-      ? playerTeams
-      : getTeamCount(playerTeams, maxPlayers ?? 0);
-  const teamSize =
-    teamCount > 0 ? Math.floor((maxPlayers ?? 0) / teamCount) : 0;
-
-  // If the computed team size matches a named format, use that label instead
-  const namedTeamType =
-    teamSize === 2
-      ? Duos
-      : teamSize === 3
-        ? Trios
-        : teamSize === 4
-          ? Quads
-          : null;
-  if (namedTeamType) {
-    const teamKey = `public_lobby.teams_${namedTeamType}`;
-    const translated = translateText(teamKey, { team_count: teamCount });
-    if (translated !== teamKey) {
-      return translated;
-    }
-  }
-
-  const teamsLabel = translateText("public_lobby.teams", { num: teamCount });
-  if (teamSize > 0) {
-    return `${teamsLabel} ${translateText("public_lobby.players_per_team", { num: teamSize })}`;
-  }
-  return teamsLabel;
-}
-
-function getTeamCount(
-  playerTeams: string | number | undefined,
-  maxPlayers: number,
-): number {
-  if (typeof playerTeams === "number") return playerTeams;
-  const teamSize = getTeamSize(playerTeams, maxPlayers);
-  return teamSize > 0 ? Math.floor(maxPlayers / teamSize) : 0;
-}
-
-function getTeamSize(
-  playerTeams: string | number | undefined,
-  maxPlayers: number,
-): number {
-  if (playerTeams === Duos) return 2;
-  if (playerTeams === Trios) return 3;
-  if (playerTeams === Quads) return 4;
-  if (playerTeams === HumansVsNations) return maxPlayers;
-  if (typeof playerTeams === "number" && playerTeams > 0) {
-    return Math.floor(maxPlayers / playerTeams);
-  }
-  return 0;
 }
 
 export interface ModifierInfo {
@@ -222,13 +233,13 @@ export function getActiveModifiers(
   }
   if (modifiers.isWaterNukes) {
     result.push({
-      labelKey: "public_game_modifier.water_nukes_label",
+      labelKey: "game_settings.water_nukes",
       badgeKey: "public_game_modifier.water_nukes",
     });
   }
   if (modifiers.isDoomsdayClock) {
     const info: ModifierInfo = {
-      labelKey: "public_game_modifier.doomsday_clock_label",
+      labelKey: "game_settings.doomsday_clock",
       badgeKey: "public_game_modifier.doomsday_clock",
     };
     // Name the preset when we know it; older payloads / non-rotation lobbies
@@ -277,10 +288,6 @@ export function renderDuration(totalSeconds: number): string {
   return parts.join(" ");
 }
 
-export function renderTroops(troops: number): string {
-  return renderNumber(troops / 10);
-}
-
 export async function copyToClipboard(
   text: string,
   onSuccess?: () => void,
@@ -298,38 +305,6 @@ export async function copyToClipboard(
   } catch (err) {
     console.warn("Failed to copy to clipboard", err);
     throw err;
-  }
-}
-
-export function renderNumber(
-  num: number | bigint,
-  fixedPoints?: number,
-): string {
-  num = Number(num);
-  num = Math.max(num, 0);
-
-  if (num >= 10_000_000_000) {
-    const value = Math.floor(num / 100000000) / 10;
-    return value.toFixed(fixedPoints ?? 1) + "B";
-  } else if (num >= 1_000_000_000) {
-    const value = Math.floor(num / 10000000) / 100;
-    return value.toFixed(fixedPoints ?? 2) + "B";
-  } else if (num >= 10_000_000) {
-    const value = Math.floor(num / 100000) / 10;
-    return value.toFixed(fixedPoints ?? 1) + "M";
-  } else if (num >= 1_000_000) {
-    const value = Math.floor(num / 10000) / 100;
-    return value.toFixed(fixedPoints ?? 2) + "M";
-  } else if (num >= 100000) {
-    return Math.floor(num / 1000) + "K";
-  } else if (num >= 10000) {
-    const value = Math.floor(num / 100) / 10;
-    return value.toFixed(fixedPoints ?? 1) + "K";
-  } else if (num >= 1000) {
-    const value = Math.floor(num / 10) / 100;
-    return value.toFixed(fixedPoints ?? 2) + "K";
-  } else {
-    return Math.floor(num).toString();
   }
 }
 
@@ -354,13 +329,84 @@ export function formatPercentage(value: number): string {
  * formatKeyForDisplay("ArrowUp") // returns "Arrowup"
  * formatKeyForDisplay("") // returns ""
  */
+export type KeybindEntry =
+  | {
+      key?: string;
+      value?: string | string[];
+    }
+  | string;
+
+function getKeybindShiftPrefix(): string {
+  const shiftPrefix = translateText("user_setting.keybind_shift_prefix");
+  return shiftPrefix === "user_setting.keybind_shift_prefix"
+    ? "Shift+"
+    : shiftPrefix;
+}
+
+/**
+ * Resolve a saved physical key code into the character shown for the user's
+ * active keyboard layout. Number-row actions intentionally keep numeric labels:
+ * layout maps contain unshifted symbols for those physical keys on AZERTY.
+ */
+export function resolveKeybindLabel(
+  entry: KeybindEntry | undefined,
+  defaultCode: string,
+  layoutMap: KeyboardLayoutMap | null,
+): string {
+  const savedValue = typeof entry === "string" ? entry : entry?.value;
+  if (savedValue === "Null") return "";
+
+  const hasValidSavedValue =
+    typeof savedValue === "string" ||
+    (Array.isArray(savedValue) && typeof savedValue[0] === "string");
+  const valueCode =
+    typeof savedValue === "string"
+      ? savedValue
+      : Array.isArray(savedValue) && typeof savedValue[0] === "string"
+        ? savedValue[0]
+        : defaultCode;
+  const savedKey =
+    typeof entry === "object" && typeof entry?.key === "string"
+      ? entry.key
+      : "";
+
+  let isShift = false;
+  let codeToResolve = valueCode;
+  if (valueCode.startsWith("Shift+")) {
+    isShift = true;
+    codeToResolve = valueCode.slice(6);
+  }
+
+  if (
+    layoutMap &&
+    layoutMap.has(codeToResolve) &&
+    !codeToResolve.startsWith("Digit") &&
+    !codeToResolve.startsWith("Numpad")
+  ) {
+    const char = layoutMap.get(codeToResolve)!.toUpperCase();
+    return isShift ? `${getKeybindShiftPrefix()}${char}` : char;
+  }
+
+  // Resolve number-row codes before the saved-key fallback: on AZERTY, the
+  // stored character for Digit2 can be "é", but the bound action is Digit2.
+  if (/^Digit\d$/.test(codeToResolve)) {
+    return formatKeyForDisplay(valueCode);
+  }
+
+  if (savedKey && hasValidSavedValue) {
+    return savedKey;
+  }
+
+  return formatKeyForDisplay(valueCode);
+}
+
 export function formatKeyForDisplay(value: string): string {
   // Handle empty string
   if (!value) return "";
 
   // Handle Shift+ prefix: format as "Shift+X"
   if (value.startsWith("Shift+")) {
-    return "Shift+" + formatKeyForDisplay(value.slice(6));
+    return getKeybindShiftPrefix() + formatKeyForDisplay(value.slice(6));
   }
 
   // Handle space character or "Space" key
@@ -399,12 +445,12 @@ export function createCanvas(): HTMLCanvasElement {
  */
 export function generateCryptoRandomUUID(): string {
   // Type guard to check if randomUUID is available
-  if (crypto !== undefined && "randomUUID" in crypto) {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return crypto.randomUUID();
   }
 
   // Fallback using crypto.getRandomValues
-  if (crypto !== undefined && "getRandomValues" in crypto) {
+  if (typeof crypto !== "undefined" && "getRandomValues" in crypto) {
     return (([1e7] as any) + -1e3 + -4e3 + -8e3 + -1e11).replace(
       /[018]/g,
       (c: number): string =>
@@ -446,10 +492,47 @@ function getCachedLangSelector(): LangSelector | null {
   const cached = self.langSelector as LangSelector | null | undefined;
   if (cached && cached.isConnected) return cached;
 
+  // A lit update is scheduled on a microtask, so a component can render once
+  // more after its environment has gone -- which in tests means `document` is
+  // no longer defined by the time this runs. Returning null makes
+  // translateText fall back to the key instead of throwing an unhandled
+  // rejection that fails the whole run.
+  if (typeof document === "undefined") {
+    self.langSelector = null;
+    return null;
+  }
+
   const found = document.querySelector("lang-selector") as LangSelector | null;
   self.langSelector = found ?? null;
   return found;
 }
+
+/** The locale selected in OpenFront's language picker, with a safe UI fallback. */
+export const getCurrentLanguage = (): string => {
+  const lang = getCachedLangSelector()?.currentLang ?? "en";
+  return lang === "debug" ? "en" : lang;
+};
+
+/** Language codes whose script reads right-to-left (resources/lang/metadata.json). */
+const RTL_LANGUAGES = new Set(["ar", "fa", "he"]);
+
+/**
+ * True when the given language renders right-to-left. Defaults to the
+ * currently selected UI language, so callers can simply write `isRTL()`.
+ */
+export const isRTL = (lang?: string): boolean => {
+  const code = (lang ?? getCachedLangSelector()?.currentLang ?? "en").split(
+    "-",
+  )[0];
+  return RTL_LANGUAGES.has(code);
+};
+
+/**
+ * Value for the HTML `dir` attribute matching the current UI language.
+ * Apply it to containers whose text comes from translateText() so Persian,
+ * Arabic and Hebrew render right-to-left with correct mixed-content ordering.
+ */
+export const textDirection = (): "rtl" | "ltr" => (isRTL() ? "rtl" : "ltr");
 
 export const translateText = (
   key: string,
@@ -514,16 +597,117 @@ export const translateText = (
   }
 };
 
-export function getTranslatedPlayerTeamLabel(team: Team | null): string {
+/**
+ * Whether `key` is translated in the player's own language, rather than only
+ * in the English that translateText falls back to.
+ */
+export const hasOwnTranslation = (key: string): boolean =>
+  getCachedLangSelector()?.translations?.[key] !== undefined;
+
+/**
+ * The raw message templates of every key under `prefix`, in the player's
+ * language over English, keyed without the prefix and not formatted. For a
+ * page that formats its own text from them: the clan map frame, which is
+ * served by the API and gets its strings over postMessage.
+ */
+export const translationTemplates = (
+  prefix: string,
+): Record<string, string> => {
+  const langSelector = getCachedLangSelector();
+  const out: Record<string, string> = {};
+  for (const source of [
+    langSelector?.defaultTranslations,
+    langSelector?.translations,
+  ]) {
+    for (const key in source ?? {}) {
+      if (key.startsWith(prefix)) out[key.slice(prefix.length)] = source![key];
+    }
+  }
+  return out;
+};
+
+export interface HasClanTag {
+  clanTag?: string | null | (() => string | null);
+}
+
+type TopClans = {
+  topTag: string | null;
+  topCount: number;
+  secondTag: string | null;
+  secondCount: number;
+  thirdCount: number;
+};
+
+function getTopClans(players: readonly HasClanTag[]): TopClans {
+  const counts = new Map<string, number>();
+  for (const p of players) {
+    const tag = typeof p.clanTag === "function" ? p.clanTag() : p.clanTag;
+    if (tag && tag.trim().length > 0) {
+      counts.set(tag, (counts.get(tag) ?? 0) + 1);
+    }
+  }
+  let topTag: string | null = null,
+    topCount = 0;
+  let secondTag: string | null = null,
+    secondCount = 0;
+  let thirdCount = 0;
+
+  for (const [tag, count] of counts) {
+    if (count > topCount) {
+      thirdCount = secondCount;
+      secondTag = topTag;
+      secondCount = topCount;
+      topTag = tag;
+      topCount = count;
+    } else if (count > secondCount) {
+      thirdCount = secondCount;
+      secondTag = tag;
+      secondCount = count;
+    } else if (count > thirdCount) {
+      thirdCount = count;
+    }
+  }
+  return { topTag, topCount, secondTag, secondCount, thirdCount };
+}
+
+export function resolveTeamClanTag(
+  players: Iterable<HasClanTag>,
+): string | null {
+  const list = Array.isArray(players) ? players : Array.from(players);
+  const n = list.length;
+  if (n === 0) return null;
+
+  const { topTag, topCount, secondTag, secondCount, thirdCount } =
+    getTopClans(list);
+
+  if (topTag && topCount > n / 2) {
+    return topTag;
+  }
+  if (
+    topTag &&
+    secondTag &&
+    secondCount > thirdCount &&
+    (topCount + secondCount) / n >= 0.7 &&
+    secondCount / n >= 0.3
+  ) {
+    return [topTag, secondTag].sort().join(" / ");
+  }
+  return null;
+}
+
+export function getTranslatedPlayerTeamLabel(
+  team: Team | null,
+  clanTag?: string | null,
+): string {
   if (!team) return "";
+  if (clanTag) {
+    return `[${clanTag}]`;
+  }
   const translationKey = `team_colors.${team.toLowerCase()}`;
   const translated = translateText(translationKey);
   return translated === translationKey ? team : translated;
 }
 
-/**
- * Severity colors mapping for message types
- */
 export const severityColors: Record<string, string> = {
   fail: "text-red-400",
   warn: "text-yellow-400",
@@ -534,9 +718,7 @@ export const severityColors: Record<string, string> = {
 };
 
 /**
- * Gets the CSS classes for styling message types based on their severity
- * @param type The message type to get styling for
- * @returns CSS class string for the message type
+ * Maps a message type to the Tailwind text-color class of its severity.
  */
 export function getMessageTypeClasses(type: MessageType): string {
   switch (type) {
@@ -571,14 +753,6 @@ export function getMessageTypeClasses(type: MessageType): string {
       console.warn(`Message type ${type} has no explicit color`);
       return severityColors["white"];
   }
-}
-
-export function getModifierKey(): string {
-  return Platform.isMac ? "⌘" : "Ctrl";
-}
-
-export function getAltKey(): string {
-  return Platform.isMac ? "⌥" : "Alt";
 }
 
 export function getGamesPlayed(): number {
@@ -730,6 +904,29 @@ export function showToast(
   );
 }
 
+const RELOAD_TOAST_KEY = "reloadToast";
+
+// Holds the translated text, not the key: on the far side of the reload the
+// language files may not have landed yet and translateText would echo the key.
+export function showToastAfterReload(message: string): void {
+  try {
+    sessionStorage.setItem(RELOAD_TOAST_KEY, message);
+  } catch {
+    // sessionStorage unavailable: the reload still happens, just silently.
+  }
+}
+
+export function flushReloadToast(): void {
+  let message: string | null;
+  try {
+    message = sessionStorage.getItem(RELOAD_TOAST_KEY);
+    sessionStorage.removeItem(RELOAD_TOAST_KEY);
+  } catch {
+    return;
+  }
+  if (message) showToast(message, "green");
+}
+
 export function getSecondsUntilServerTimestamp(
   targetServerTimestampMs: number,
   serverTimeOffsetMs: number,
@@ -742,4 +939,91 @@ export function getSecondsUntilServerTimestamp(
         1000,
     ),
   );
+}
+
+/**
+ * Reload to pick up a newly deployed version. The app shell is served with a
+ * shared-cache TTL (RenderHtml.ts), so a plain reload can hand back the same
+ * stale HTML — with the old gitCommit baked in — for minutes after a deploy,
+ * and a version check that reloads on mismatch would loop. A unique query
+ * string misses the shared cache, so the origin renders the current shell.
+ *
+ * On a deployment host (the document landed there for a cross-host game, or
+ * via a stale bookmark) a same-origin reload re-fetches that SAME
+ * deployment's shell — for a drained or outdated deployment that can never
+ * help, and the drain prompt would loop forever. The apex serves the active
+ * deployment's shell, so go there instead, keeping the path (letter routing
+ * re-resolves a /game/<id>) minus the origin-specific worker prefix.
+ */
+export function reloadForUpdate(): void {
+  const url = new URL(window.location.href);
+  const siteHost = ClientEnv.siteHost();
+  if (siteHost !== undefined && url.host !== siteHost) {
+    url.protocol = "https:";
+    url.host = siteHost;
+  }
+  // Both prefixes encode what this reload exists to leave behind, whichever
+  // host answers it. `/v/<commit>/` is immutable by design (multi-server
+  // v2): it pins the bundle, so reloading it as-is re-serves the very
+  // version being updated away from, forever, cache-buster or not. And
+  // `/w<n>/` was resolved against the old worker count, which a new version
+  // may have changed — letter routing picks the worker again on the way
+  // back in. apexPathFor drops exactly these two, in either order.
+  url.pathname = apexPathFor(url.pathname);
+  url.searchParams.set("v", Date.now().toString(36));
+  window.location.replace(url.toString());
+}
+
+/**
+ * The path to ask the apex for when re-entering through it. Both prefixes a
+ * path can carry are specific to where the page came from, and the apex
+ * re-resolves what they encoded: `/w<n>/` is one deployment's worker (letter
+ * routing picks the worker again), and `/v/<commit>/` pins the version whose
+ * staleness is the reason for going to the apex in the first place. Pure so
+ * the rule is testable without booting Main.
+ */
+export function apexPathFor(pathname: string): string {
+  const { path } = stripVersionPrefix(pathname);
+  return path.replace(/^\/w\d+\//, "/");
+}
+
+/**
+ * A same-origin path as THIS document should write it into its own history:
+ * re-prefixed with the page's `/v/<commit>/` when it has one, unchanged
+ * otherwise.
+ *
+ * History entries are not share links, and the two want opposite things. A
+ * share link is version-free on purpose — the recipient should be routed by
+ * whatever version the game's server runs when they open it. A history entry
+ * is this tab's own URL: pressing F5 on it must reload THE BUNDLE THIS PAGE
+ * IS RUNNING, and on a pinned page a version-free path would silently hand
+ * the player `latest` instead, mid-game.
+ *
+ * Reads the pin captured at boot rather than the live pathname: the join
+ * flow rewrites the address bar to the version-free share URL before this
+ * ever runs in a game, and a version-free history entry is precisely what
+ * this exists to avoid writing (PagePin.ts).
+ */
+export function currentPagePath(path: string): string {
+  const commit = pagePin();
+  return commit === null ? path : `/v/${commit}${path}`;
+}
+
+/**
+ * Where "leave to the menu" navigations should land. On a deployment host
+ * the local homepage may belong to a drained deployment whose public lobby
+ * list is empty; the apex always fronts the active one. Same-host,
+ * standalone deployments (no siteHost injected), dev, and desktop keep the
+ * plain root.
+ *
+ * The plain root is also the right answer on a `/v/<commit>/` page, and for
+ * the same reason: "/" is version-free, so a player leaving to the menu
+ * lands on `latest` rather than back on the build they were leaving.
+ */
+export function homeHref(): string {
+  const siteHost = ClientEnv.siteHost();
+  if (siteHost !== undefined && window.location.host !== siteHost) {
+    return `https://${siteHost}/`;
+  }
+  return "/";
 }

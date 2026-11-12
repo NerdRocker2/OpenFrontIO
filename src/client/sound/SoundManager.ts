@@ -1,607 +1,222 @@
+import { EventBus } from "@openfront/shared/EventBus";
 import { Howl } from "howler";
-import { EventBus } from "../../core/EventBus";
-import { UserSettings } from "../../core/game/UserSettings";
+import { AudioMixer, PlayableCategory } from "./AudioMixer";
+import { MusicLibraryPlayer } from "./MusicLibraryPlayer";
 import {
-  deleteMusicTrack,
-  fetchMusicTracks,
-  MUSIC_LIBRARY_CHANGED_EVENT,
-} from "../MusicApi";
-import { translateText } from "../Utils";
-import { fetchId3Metadata, metadataFromFilename } from "./Id3Reader";
-import {
-  AddMusicTrackEvent,
-  MusicNextTrackEvent,
-  MusicPrevTrackEvent,
-  MusicTogglePauseEvent,
+  AmbienceTrack,
+  ambienceUrls,
   PlaySoundEffectEvent,
-  SetBackgroundMusicVolumeEvent,
-  SetSoundEffectsVolumeEvent,
+  SetAmbienceEvent,
   SoundEffect,
-  soundEffectUrls,
 } from "./Sounds";
 
-export const MAX_CONCURRENT_SOUNDS = 8;
-export const MUSIC_DUCK_DB = -3;
+const AMBIENCE_FADE_MS = 500;
 
-const MUSIC_DUCK_GAIN = 10 ** (MUSIC_DUCK_DB / 20);
-const MUSIC_DUCK_ATTACK_SECONDS = 0.015;
-const MUSIC_DUCK_RELEASE_SECONDS = 0.12;
-const MUSIC_COMPRESSOR_MAKEUP_DB = 1.5;
-
-interface BackgroundTrack {
-  url: string;
-  filename: string;
-  deletable: boolean;
-  title: string;
-  artist: string;
-  replayGainTrackGainDb?: number;
-  replayGainTrackPeak?: number;
-}
-
+/**
+ * The audio a running game owns: the gameplay playlist and the structure
+ * ambience. Cue playback, channel volumes and the concurrency budgets all live
+ * in AudioMixer, which outlives any one game.
+ */
 export class SoundManager {
-  private backgroundMusic: BackgroundTrack[] = [];
-  private currentTrack = 0;
-  private soundEffects: Map<SoundEffect, Howl> = new Map();
-  private soundEffectsVolume = 1;
-  private backgroundMusicVolume = 0;
-  private activeSounds: { howl: Howl; id: number }[] = [];
-  private pendingPlay = false;
-  private musicPlaybackRequested = false;
-  private deletingTrack = false;
-  private disposed = false;
-  private eventBus: EventBus;
+  private readonly libraryMusic: MusicLibraryPlayer;
+  private ambienceTracks = new Map<AmbienceTrack, Howl>();
+  private currentAmbience: AmbienceTrack | null = null;
+  private fadingOut = new Set<Howl>();
+  private fadingIn = new Set<Howl>();
   private onPlaySoundEffect: (e: PlaySoundEffectEvent) => void;
-  private onSetBackgroundMusicVolume: (
-    e: SetBackgroundMusicVolumeEvent,
-  ) => void;
-  private onSetSoundEffectsVolume: (e: SetSoundEffectsVolumeEvent) => void;
-  private onMusicTogglePause: () => void;
-  private onMusicNextTrack: () => void;
-  private onMusicPrevTrack: () => void;
-  private readonly musicAudio = document.createElement("audio");
-  private musicContext: AudioContext | null = null;
-  private musicTrackGain: GainNode | null = null;
-  private musicDuckGain: GainNode | null = null;
-  private musicOutputGain: GainNode | null = null;
+  private onSetAmbience: (e: SetAmbienceEvent) => void;
+  private stopFollowingVolume: () => void;
 
   constructor(
-    eventBus: EventBus,
-    userSettings: UserSettings,
-    private readonly enableDeleteShortcut = false,
+    private readonly eventBus: EventBus,
+    private readonly mixer: AudioMixer,
+    enableDeleteShortcut = false,
   ) {
-    this.eventBus = eventBus;
-    this.initMusicPlayback();
-    this.setBackgroundMusicVolume(userSettings.backgroundMusicVolume());
-    this.setSoundEffectsVolume(userSettings.soundEffectsVolume());
-    this.onPlaySoundEffect = (e) => this.playSoundEffect(e.effect);
-    this.onSetBackgroundMusicVolume = (e) =>
-      this.setBackgroundMusicVolume(e.volume);
-    this.onSetSoundEffectsVolume = (e) => this.setSoundEffectsVolume(e.volume);
-    this.onMusicTogglePause = () => this.toggleMusicPause();
-    this.onMusicNextTrack = () => this.skipToNextTrack();
-    this.onMusicPrevTrack = () => this.skipToPrevTrack();
-    eventBus.on(PlaySoundEffectEvent, this.onPlaySoundEffect);
-    eventBus.on(SetBackgroundMusicVolumeEvent, this.onSetBackgroundMusicVolume);
-    eventBus.on(SetSoundEffectsVolumeEvent, this.onSetSoundEffectsVolume);
-    eventBus.on(MusicTogglePauseEvent, this.onMusicTogglePause);
-    eventBus.on(MusicNextTrackEvent, this.onMusicNextTrack);
-    eventBus.on(MusicPrevTrackEvent, this.onMusicPrevTrack);
-    eventBus.on(AddMusicTrackEvent, (e) =>
-      this.addTrack(e.url, e.playImmediately, e.filename, true),
+    this.libraryMusic = new MusicLibraryPlayer(
+      eventBus,
+      mixer,
+      enableDeleteShortcut,
     );
-    if (this.enableDeleteShortcut) {
-      window.addEventListener("keydown", this.onDeleteShortcut);
-    }
-    this.initMediaSession();
-    this.loadTracksFromServer();
+
+    this.onPlaySoundEffect = (e) => this.mixer.play(e.effect);
+    this.onSetAmbience = (e) => this.setAmbience(e.track, e.gain);
+    eventBus.on(PlaySoundEffectEvent, this.onPlaySoundEffect);
+    eventBus.on(SetAmbienceEvent, this.onSetAmbience);
+
+    // Ambience is crossfaded here rather than registered with the mixer, so
+    // the mixer cannot stomp a fade in progress. Re-target on every change.
+    this.stopFollowingVolume = this.mixer.onChange((category) => {
+      if (category === "ambience") this.retargetAmbience();
+    });
   }
 
-  public dispose(): void {
-    this.disposed = true;
-    window.removeEventListener("keydown", this.onDeleteShortcut);
+  dispose(): void {
     this.eventBus.off(PlaySoundEffectEvent, this.onPlaySoundEffect);
-    this.eventBus.off(
-      SetBackgroundMusicVolumeEvent,
-      this.onSetBackgroundMusicVolume,
-    );
-    this.eventBus.off(SetSoundEffectsVolumeEvent, this.onSetSoundEffectsVolume);
-    this.eventBus.off(MusicTogglePauseEvent, this.onMusicTogglePause);
-    this.eventBus.off(MusicNextTrackEvent, this.onMusicNextTrack);
-    this.eventBus.off(MusicPrevTrackEvent, this.onMusicPrevTrack);
-    this.musicAudio.pause();
-    this.musicAudio.removeEventListener("ended", this.playNext);
-    this.musicAudio.removeEventListener("play", this.onMusicPlay);
-    this.musicAudio.removeEventListener("pause", this.onMusicPause);
-    this.musicAudio.removeEventListener("error", this.onMusicError);
-    this.musicAudio.removeAttribute("src");
-    this.musicAudio.load();
-    void this.musicContext?.close();
-    this.soundEffects.forEach((sound) => {
-      this.safely("stop sound effect", () => sound.stop());
-      this.safely("unload sound effect", () => sound.unload());
+    this.eventBus.off(SetAmbienceEvent, this.onSetAmbience);
+    this.stopFollowingVolume();
+    this.libraryMusic.dispose();
+    this.ambienceTracks.forEach((sound) => {
+      this.safely("stop ambience track", () => sound.stop());
+      this.safely("unload ambience track", () => sound.unload());
     });
-    this.soundEffects.clear();
-    this.activeSounds = [];
+    this.ambienceTracks.clear();
+    this.fadingOut.clear();
+    this.fadingIn.clear();
+    this.currentAmbience = null;
   }
 
   private safely(action: string, fn: () => void): void {
     try {
       fn();
     } catch (err) {
-      console.error(`SoundManager: failed to ${action}`, err);
-    }
-  }
-
-  private initMusicPlayback(): void {
-    this.musicAudio.preload = "none";
-    this.musicAudio.addEventListener("ended", this.playNext);
-    this.musicAudio.addEventListener("play", this.onMusicPlay);
-    this.musicAudio.addEventListener("pause", this.onMusicPause);
-    this.musicAudio.addEventListener("error", this.onMusicError);
-
-    const AudioContextConstructor =
-      window.AudioContext ??
-      (
-        window as typeof window & {
-          webkitAudioContext?: typeof AudioContext;
-        }
-      ).webkitAudioContext;
-    if (!AudioContextConstructor) return;
-
-    try {
-      const context = new AudioContextConstructor();
-      const source = context.createMediaElementSource(this.musicAudio);
-      const trackGain = context.createGain();
-      const compressor = context.createDynamicsCompressor();
-      const makeupGain = context.createGain();
-      const limiter = context.createDynamicsCompressor();
-      const duckGain = context.createGain();
-      const outputGain = context.createGain();
-
-      // ReplayGain establishes track-to-track loudness. This deliberately mild
-      // compressor reins in within-track swings, while the final limiter catches
-      // amplified true peaks from unusually dynamic tracks.
-      compressor.threshold.value = -20;
-      compressor.knee.value = 10;
-      compressor.ratio.value = 3;
-      compressor.attack.value = 0.02;
-      compressor.release.value = 0.3;
-      makeupGain.gain.value = 10 ** (MUSIC_COMPRESSOR_MAKEUP_DB / 20);
-
-      limiter.threshold.value = -2;
-      limiter.knee.value = 0;
-      limiter.ratio.value = 20;
-      limiter.attack.value = 0.003;
-      limiter.release.value = 0.1;
-
-      source
-        .connect(trackGain)
-        .connect(compressor)
-        .connect(makeupGain)
-        .connect(limiter)
-        .connect(duckGain)
-        .connect(outputGain)
-        .connect(context.destination);
-
-      this.musicAudio.volume = 1;
-      this.musicContext = context;
-      this.musicTrackGain = trackGain;
-      this.musicDuckGain = duckGain;
-      this.musicOutputGain = outputGain;
-    } catch (err) {
-      console.warn("SoundManager: Web Audio music processing unavailable", err);
-    }
-  }
-
-  private initMediaSession(): void {
-    if (typeof navigator === "undefined" || !("mediaSession" in navigator)) {
-      console.warn("SoundManager: Media Session API not available");
-      return;
-    }
-    console.log("SoundManager: registering Media Session API handlers");
-    const actions: [MediaSessionAction, () => void][] = [
-      ["play", () => this.toggleMusicPause()],
-      ["pause", () => this.toggleMusicPause()],
-      ["nexttrack", () => this.skipToNextTrack()],
-      ["previoustrack", () => this.skipToPrevTrack()],
-    ];
-    for (const [action, handler] of actions) {
-      try {
-        navigator.mediaSession.setActionHandler(action, () => {
-          console.log(`SoundManager: Media Session action "${action}" fired`);
-          handler();
-        });
-        console.log(`SoundManager: registered handler for "${action}"`);
-      } catch (e) {
-        console.warn(
-          `SoundManager: failed to register handler for "${action}":`,
-          e,
-        );
-      }
-    }
-    console.log("SoundManager: Media Session setup complete");
-  }
-
-  private updateMediaSessionState(playing: boolean): void {
-    if (typeof navigator === "undefined" || !("mediaSession" in navigator)) {
-      return;
-    }
-    const meta = this.backgroundMusic[this.currentTrack];
-    if (meta) {
-      navigator.mediaSession.metadata = new MediaMetadata({
-        title: meta.title,
-        artist: meta.artist,
-        album: "OpenFront.io",
-      });
-    }
-    navigator.mediaSession.playbackState = playing ? "playing" : "paused";
-    console.log(
-      `SoundManager: mediaSession state → ${playing ? "playing" : "paused"}, ` +
-        `track ${this.currentTrack} "${meta?.title ?? "?"}"`,
-    );
-  }
-
-  private loadTracksFromServer(): void {
-    fetchMusicTracks()
-      .then((tracks) => {
-        if (this.disposed) return;
-        for (const track of tracks) {
-          this.addTrack(
-            track.url,
-            false,
-            track.filename,
-            track.source === "upload" && track.deletable,
-          );
-        }
-        if (this.pendingPlay && this.backgroundMusic.length > 0) {
-          this.pendingPlay = false;
-          this.playBackgroundMusic();
-        }
-      })
-      .catch((err) =>
-        console.error("SoundManager: failed to load music tracks", err),
-      );
-  }
-
-  public addTrack(
-    url: string,
-    playImmediately: boolean,
-    filename?: string,
-    deletable = false,
-  ): void {
-    this.safely("add track", () => {
-      const fallback = metadataFromFilename(filename ?? url);
-      const newIndex = this.backgroundMusic.length;
-      const track: BackgroundTrack = {
-        url,
-        filename: filename ?? url,
-        deletable,
-        ...fallback,
-      };
-      this.backgroundMusic.push(track);
-
-      fetchId3Metadata(url, { includeDuration: false }).then((id3) => {
-        if (!this.backgroundMusic.includes(track)) return;
-        track.title = id3.title ?? fallback.title;
-        track.artist = id3.artist ?? fallback.artist;
-        track.replayGainTrackGainDb = id3.replayGainTrackGainDb;
-        track.replayGainTrackPeak = id3.replayGainTrackPeak;
-        if (this.backgroundMusic[this.currentTrack] === track) {
-          this.applyCurrentTrackGain();
-          this.updateMediaSessionState(!this.musicAudio.paused);
-        }
-      });
-
-      if (playImmediately) {
-        this.musicAudio.pause();
-        this.currentTrack = newIndex;
-        this.prepareCurrentTrack();
-        this.playBackgroundMusic();
-      }
-    });
-  }
-
-  private prepareCurrentTrack(): void {
-    const track = this.backgroundMusic[this.currentTrack];
-    if (!track) return;
-    if (this.musicAudio.getAttribute("src") !== track.url) {
-      this.musicAudio.src = track.url;
-      this.musicAudio.load();
-    }
-    this.applyCurrentTrackGain();
-  }
-
-  private applyCurrentTrackGain(): void {
-    const gainDb =
-      this.backgroundMusic[this.currentTrack]?.replayGainTrackGainDb ?? 0;
-    const gain = 10 ** (gainDb / 20);
-    if (this.musicTrackGain && this.musicContext) {
-      this.musicTrackGain.gain.setValueAtTime(
-        gain,
-        this.musicContext.currentTime,
-      );
-    } else {
-      this.updateFallbackMusicVolume();
+      console.warn(`SoundManager: failed to ${action}`, err);
     }
   }
 
   public playBackgroundMusic(): void {
-    this.musicPlaybackRequested = true;
-    this.safely("play background music", () => {
-      if (this.backgroundMusic.length === 0) {
-        this.pendingPlay = true;
-        return;
-      }
-      this.prepareCurrentTrack();
-      if (this.musicAudio.paused) {
-        void this.musicContext?.resume().catch((err) => {
-          console.warn("SoundManager: music AudioContext resume failed", err);
-        });
-        const playResult = this.musicAudio.play();
-        void playResult?.catch((err) => {
-          console.error("SoundManager: failed to play background music", err);
-          this.updateMediaSessionState(false);
-        });
-      }
-    });
+    this.libraryMusic.playBackgroundMusic();
   }
 
   public stopBackgroundMusic(): void {
-    this.musicPlaybackRequested = false;
-    this.safely("stop background music", () => {
-      if (this.backgroundMusic.length > 0) {
-        this.musicAudio.pause();
-        try {
-          this.musicAudio.currentTime = 0;
-        } catch {
-          // Metadata may not have loaded yet.
-        }
-        this.updateMediaSessionState(false);
-      }
-    });
+    this.libraryMusic.stopBackgroundMusic();
   }
 
-  // Slider positions are linear (0–1) but perceived loudness is roughly
-  // logarithmic, so use an audio-taper curve.
-  private perceptualGain(position: number): number {
-    const clamped = Math.max(0, Math.min(1, position));
-    return clamped * clamped;
+  /** Kept for callers that still reach for it; the mixer owns cue playback. */
+  public playSoundEffect(name: SoundEffect): void {
+    this.mixer.play(name);
   }
 
-  public setBackgroundMusicVolume(volume: number): void {
-    this.backgroundMusicVolume = this.perceptualGain(volume);
-    this.safely("set background music volume", () => {
-      if (this.musicOutputGain && this.musicContext) {
-        this.musicOutputGain.gain.setValueAtTime(
-          this.backgroundMusicVolume,
-          this.musicContext.currentTime,
-        );
-      } else {
-        this.updateFallbackMusicVolume();
-      }
-      if (this.backgroundMusicVolume > 0) {
-        void this.musicContext?.resume().then(() => {
-          if (this.musicPlaybackRequested && this.musicAudio.paused) {
-            this.playBackgroundMusic();
-          }
-        });
-      }
-    });
-  }
+  // ------------------------------------------------------------- ambience
 
-  private playNext = (): void => {
-    if (this.backgroundMusic.length === 0) return;
-    this.currentTrack = (this.currentTrack + 1) % this.backgroundMusic.length;
-    this.prepareCurrentTrack();
-    this.playBackgroundMusic();
-  };
-
-  private onDeleteShortcut = (event: KeyboardEvent): void => {
-    const target = event.target as HTMLElement | null;
-    if (
-      !event.ctrlKey ||
-      event.code !== "Delete" ||
-      event.repeat ||
-      target?.tagName === "INPUT" ||
-      target?.tagName === "TEXTAREA" ||
-      target?.isContentEditable
-    ) {
+  public setAmbience(track: AmbienceTrack | null, gain: number = 1): void {
+    // Same track, so there is nothing to cross over: the gain is the whole
+    // update and the mixer's change listener retargets the running loop.
+    if (track === this.currentAmbience) {
+      this.mixer.setAmbienceEnvelope(gain);
       return;
     }
-    event.preventDefault();
-    void this.deleteCurrentTrack();
-  };
+    this.safely("set ambience", () => {
+      // The outgoing loop has to start fading from the level it is audibly at,
+      // so the new envelope lands *after* it. Leaving ambience range always
+      // arrives as (null, 0); pushing that gain in first would run the mixer's
+      // change listener back through retargetAmbience(), snap the outgoing
+      // loop to silence, and turn the fade below into a hard cut.
+      this.fadeOutCurrent();
+      this.mixer.setAmbienceEnvelope(gain);
+      this.currentAmbience = track;
+      if (track === null) return;
 
-  private showDeleteMessage(key: string, color: "green" | "red"): void {
-    window.dispatchEvent(
-      new CustomEvent("show-message", {
-        detail: { message: translateText(key), color, duration: 3000 },
-      }),
-    );
-  }
-
-  private async deleteCurrentTrack(): Promise<void> {
-    if (this.deletingTrack) return;
-    const track = this.backgroundMusic[this.currentTrack];
-    if (!track) return;
-    if (!track.deletable) {
-      this.showDeleteMessage("music_page.delete_bundled_error", "red");
-      return;
-    }
-
-    this.deletingTrack = true;
-    const keepPlaying = this.musicPlaybackRequested;
-    this.musicAudio.pause();
-    this.musicAudio.removeAttribute("src");
-    this.musicAudio.load();
-    // Release the streaming file handle before deletion, especially on Windows.
-    await new Promise((resolve) => setTimeout(resolve, 75));
-    if (this.disposed) {
-      this.deletingTrack = false;
-      return;
-    }
-
-    try {
-      await deleteMusicTrack(track.filename);
-      if (this.disposed) return;
-      const index = this.backgroundMusic.indexOf(track);
-      if (index === -1) return;
-      this.backgroundMusic.splice(index, 1);
-      window.dispatchEvent(new Event(MUSIC_LIBRARY_CHANGED_EVENT));
-      if (this.backgroundMusic.length > 0) {
-        this.currentTrack = Math.min(index, this.backgroundMusic.length - 1);
-        this.prepareCurrentTrack();
-        if (keepPlaying) this.playBackgroundMusic();
+      const target = this.mixer.volumeFor("ambience");
+      const howl = this.getOrLoadAmbience(track);
+      if (howl === null) return;
+      // Cancel a pending fade-out stop in case this track is coming straight
+      // back; if it is still audibly fading, keep the running instance rather
+      // than layering a second one on top.
+      howl.off("fade");
+      this.fadingOut.delete(howl);
+      if (!howl.playing()) howl.play();
+      // Howler's fade only completes while the volume is moving toward the
+      // target, so any fade whose start equals its end hangs and leaks its
+      // interval. Zero is the common case, but panning between two structures
+      // at a constant zoom can also re-enter with the loop already at target.
+      const from = howl.volume() as number;
+      if (target === 0 || from === target) {
+        this.fadingIn.delete(howl);
+        howl.volume(target);
       } else {
-        this.currentTrack = 0;
-        this.musicPlaybackRequested = false;
-        this.updateMediaSessionState(false);
-      }
-      this.showDeleteMessage("music_page.delete_done", "green");
-    } catch (err) {
-      if (this.disposed) return;
-      console.error("SoundManager: failed to delete music track", err);
-      this.prepareCurrentTrack();
-      if (keepPlaying) this.playBackgroundMusic();
-      this.showDeleteMessage("music_page.delete_error", "red");
-    } finally {
-      this.deletingTrack = false;
-    }
-  }
-
-  private onMusicPlay = (): void => this.updateMediaSessionState(true);
-  private onMusicPause = (): void => this.updateMediaSessionState(false);
-  private onMusicError = (): void => {
-    console.error(
-      `SoundManager: failed to load music track ${this.backgroundMusic[this.currentTrack]?.url ?? "unknown"}`,
-    );
-  };
-
-  public toggleMusicPause(): void {
-    this.safely("toggle music pause", () => {
-      if (!this.musicAudio.paused) {
-        this.musicPlaybackRequested = false;
-        this.musicAudio.pause();
-        this.updateMediaSessionState(false);
-      } else {
-        this.playBackgroundMusic();
+        this.fadeInTo(howl, from, target);
       }
     });
   }
 
-  public skipToNextTrack(): void {
-    this.safely("skip to next track", () => {
-      if (this.deletingTrack || this.backgroundMusic.length === 0) return;
-      this.musicAudio.pause();
-      this.currentTrack = (this.currentTrack + 1) % this.backgroundMusic.length;
-      this.prepareCurrentTrack();
-      this.playBackgroundMusic();
+  /**
+   * Ramps a loop up to `target` and remembers that it is moving, so a volume
+   * change arriving mid-ramp can re-aim it instead of cutting it short.
+   */
+  private fadeInTo(howl: Howl, from: number, target: number): void {
+    this.fadingIn.add(howl);
+    howl.fade(from, target, AMBIENCE_FADE_MS);
+    howl.once("fade", () => this.fadingIn.delete(howl));
+  }
+
+  /**
+   * Follows the ambience channel while a loop is already running: the zoom
+   * envelope moves every tick, and the slider can move at any time.
+   *
+   * Neither direction of an in-flight fade may be cut short by this. Howler's
+   * volume() setter calls _stopFade internally, so a plain write lands the
+   * loop on the new level instantly -- which is the abruptness the fades are
+   * here to avoid. A fade-out is left alone; it is on its way to silence
+   * whatever the envelope now says. A fade-in is re-aimed from wherever the
+   * ramp has actually reached, so it stays smooth and still ends up at the
+   * level the envelope is asking for.
+   */
+  private retargetAmbience(): void {
+    if (this.currentAmbience === null) return;
+    const howl = this.ambienceTracks.get(this.currentAmbience);
+    if (howl === undefined || this.fadingOut.has(howl)) return;
+    this.safely("retarget ambience", () => {
+      const target = this.mixer.volumeFor("ambience");
+      if (!this.fadingIn.has(howl)) {
+        howl.volume(target);
+        return;
+      }
+      const live = howl.volume() as number;
+      // Drop the old ramp's completion handler before starting another, or it
+      // would clear the fading-in flag out from under the new one.
+      howl.off("fade");
+      this.fadingIn.delete(howl);
+      // Same trap as everywhere else: a fade from a value to itself never
+      // completes in Howler. Landing on the target is all that is left to do.
+      if (live === target) {
+        howl.volume(target);
+        return;
+      }
+      this.fadeInTo(howl, live, target);
     });
   }
 
-  public skipToPrevTrack(): void {
-    this.safely("skip to previous track", () => {
-      if (this.deletingTrack || this.backgroundMusic.length === 0) return;
-      this.musicAudio.pause();
-      this.currentTrack =
-        (this.currentTrack - 1 + this.backgroundMusic.length) %
-        this.backgroundMusic.length;
-      this.prepareCurrentTrack();
-      this.playBackgroundMusic();
+  private fadeOutCurrent(): void {
+    if (this.currentAmbience === null) return;
+    const current = this.ambienceTracks.get(this.currentAmbience);
+    if (current === undefined) return;
+    // Whatever it was doing, it is leaving now.
+    this.fadingIn.delete(current);
+    const from = current.volume() as number;
+    if (from === 0) {
+      current.stop();
+      // Flagged even though there is no fade to protect. setAmbience pushes
+      // the new envelope in right after this, which runs the mixer's change
+      // listener back through retargetAmbience() while currentAmbience is
+      // still this outgoing track -- and with nothing to stop it, that stamps
+      // the stopped loop with the INCOMING track's level. A later revisit
+      // then reads that stale value as its starting volume, and if it happens
+      // to equal the target it plays at full level instead of fading in.
+      this.fadingOut.add(current);
+      return;
+    }
+    this.fadingOut.add(current);
+    current.fade(from, 0, AMBIENCE_FADE_MS);
+    current.once("fade", () => {
+      current.stop();
+      this.fadingOut.delete(current);
     });
   }
 
-  private getOrLoadSoundEffect(name: SoundEffect): Howl | null {
-    let sound = this.soundEffects.get(name);
-    if (sound) return sound;
-    const src = soundEffectUrls.get(name);
+  private getOrLoadAmbience(name: AmbienceTrack): Howl | null {
+    const cached = this.ambienceTracks.get(name);
+    if (cached) return cached;
+    const src = ambienceUrls.get(name);
     if (!src) return null;
     try {
-      sound = new Howl({ src: [src], volume: this.soundEffectsVolume });
-      this.soundEffects.set(name, sound);
+      const sound = new Howl({ src: [src], loop: true, volume: 0 });
+      this.ambienceTracks.set(name, sound);
       return sound;
     } catch (err) {
-      console.error(`SoundManager: failed to load sound ${name}`, err);
+      console.warn(`SoundManager: failed to load ambience ${name}`, err);
       return null;
     }
   }
-
-  private removeActiveSoundById(id: number): void {
-    this.activeSounds = this.activeSounds.filter((sound) => sound.id !== id);
-    this.updateMusicDucking();
-  }
-
-  private updateMusicDucking(): void {
-    const shouldDuck =
-      this.activeSounds.length > 0 && this.soundEffectsVolume > 0;
-    const target = shouldDuck ? MUSIC_DUCK_GAIN : 1;
-    if (this.musicDuckGain && this.musicContext) {
-      const now = this.musicContext.currentTime;
-      this.musicDuckGain.gain.cancelScheduledValues(now);
-      this.musicDuckGain.gain.setTargetAtTime(
-        target,
-        now,
-        shouldDuck ? MUSIC_DUCK_ATTACK_SECONDS : MUSIC_DUCK_RELEASE_SECONDS,
-      );
-    } else {
-      this.updateFallbackMusicVolume();
-    }
-  }
-
-  private updateFallbackMusicVolume(): void {
-    const trackGainDb =
-      this.backgroundMusic[this.currentTrack]?.replayGainTrackGainDb ?? 0;
-    const trackGain = 10 ** (trackGainDb / 20);
-    const duckGain =
-      this.activeSounds.length > 0 && this.soundEffectsVolume > 0
-        ? MUSIC_DUCK_GAIN
-        : 1;
-    this.musicAudio.volume = Math.min(
-      1,
-      this.backgroundMusicVolume * trackGain * duckGain,
-    );
-  }
-
-  public playSoundEffect(name: SoundEffect): void {
-    this.safely(`play sound ${name}`, () => {
-      const howl = this.getOrLoadSoundEffect(name);
-      if (!howl) return;
-
-      if (this.activeSounds.length >= MAX_CONCURRENT_SOUNDS) {
-        const oldest = this.activeSounds[0];
-        oldest.howl.stop(oldest.id);
-        this.removeActiveSoundById(oldest.id);
-      }
-
-      const id = howl.play();
-      this.activeSounds.push({ howl, id });
-      this.updateMusicDucking();
-      howl.once("end", () => this.removeActiveSoundById(id), id);
-      howl.once("stop", () => this.removeActiveSoundById(id), id);
-      howl.once("playerror", () => this.removeActiveSoundById(id), id);
-    });
-  }
-
-  public setSoundEffectsVolume(volume: number): void {
-    this.soundEffectsVolume = this.perceptualGain(volume);
-    this.safely("set sound effects volume", () => {
-      this.soundEffects.forEach((sound) => {
-        sound.volume(this.soundEffectsVolume);
-      });
-      this.updateMusicDucking();
-    });
-  }
-
-  public stopSoundEffect(name: SoundEffect): void {
-    this.safely(`stop sound ${name}`, () => {
-      const howl = this.soundEffects.get(name);
-      if (howl) {
-        howl.stop();
-        this.activeSounds = this.activeSounds.filter(
-          (sound) => sound.howl !== howl,
-        );
-        this.updateMusicDucking();
-      }
-    });
-  }
 }
+
+export type { PlayableCategory };

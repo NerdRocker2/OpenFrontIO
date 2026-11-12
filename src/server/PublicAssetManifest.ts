@@ -1,11 +1,11 @@
-import { createHash } from "crypto";
-import fs from "fs";
-import path from "path";
 import {
   type AssetManifest,
   encodeAssetPath,
   normalizeAssetPath,
-} from "../core/AssetUrls";
+} from "@openfront/shared/AssetPaths";
+import { createHash } from "crypto";
+import fs from "fs";
+import path from "path";
 
 const HASHED_PUBLIC_ASSET_GLOBS = [
   "changelog.md",
@@ -21,15 +21,6 @@ const HASHED_PUBLIC_ASSET_GLOBS = [
   "sounds/**/*",
   "sprites/**/*",
 ] as const;
-
-const ROOT_PUBLIC_FILES = new Set([
-  "LICENSE",
-  "ads.txt",
-  "privacy-policy.html",
-  "robots.txt",
-  "terms-of-service.html",
-  "version.txt",
-]);
 
 const manifestCache = new Map<string, AssetManifest>();
 
@@ -157,9 +148,13 @@ function renderWebManifestAsset({
       );
     }
 
+    // The browser resolves a manifest icon's src against the manifest's own
+    // URL, and in production that is the CDN's /game_assets prefix, so a
+    // root-relative /_assets/... src would 404 at the CDN origin. Write it
+    // relative to the emitted manifest instead, like the BMFont pages.
     return {
       ...icon,
-      src: referencedHashedUrl,
+      src: getEmittedAssetRelativePath("manifest.json", referencedHashedUrl),
     };
   });
   return `${JSON.stringify(manifest, null, 2)}\n`;
@@ -224,7 +219,7 @@ function getDerivedPublicAssetRenderer(
   );
 }
 
-export function isDerivedPublicAsset(relativePath: string): boolean {
+function isDerivedPublicAsset(relativePath: string): boolean {
   return (
     getDerivedPublicAssetRenderer(normalizeAssetPath(relativePath)) !==
     undefined
@@ -253,6 +248,13 @@ export function getResourcesDir(rootDir: string = process.cwd()): string {
   return path.join(rootDir, "resources");
 }
 
+// Everything under resources/public/ is served verbatim at the site root, with
+// stable URLs: the policy pages, robots.txt, the press kit (whose image URLs
+// outlets hotlink), and Apple Pay's domain-verification file.
+export function getPublicDir(resourcesDir: string): string {
+  return path.join(resourcesDir, "public");
+}
+
 export function getProprietaryDir(rootDir: string = process.cwd()): string {
   return path.join(rootDir, "proprietary");
 }
@@ -274,11 +276,7 @@ function resolveSourceFile(relativePath: string, sourceDirs: string[]): string {
   return path.join(resolveSourceDir(relativePath, sourceDirs), relativePath);
 }
 
-export function shouldKeepRootPublicFile(relativePath: string): boolean {
-  return ROOT_PUBLIC_FILES.has(normalizeAssetPath(relativePath));
-}
-
-export function listHashedPublicAssetPaths(sourceDirs: string[]): string[] {
+function listHashedPublicAssetPaths(sourceDirs: string[]): string[] {
   const files = new Set<string>();
   for (const sourceDir of sourceDirs) {
     if (!fs.existsSync(sourceDir)) continue;
@@ -296,18 +294,13 @@ export function listHashedPublicAssetPaths(sourceDirs: string[]): string[] {
   return [...files].sort();
 }
 
-export function listRootPublicFiles(resourcesDir: string): string[] {
+// A plain walk rather than a glob: dot-directories (.well-known) are served too.
+function listRootPublicFiles(publicDir: string): string[] {
+  if (!fs.existsSync(publicDir)) return [];
   return fs
-    .globSync("**/*", {
-      cwd: resourcesDir,
-      withFileTypes: true,
-      exclude: ["**/.*", ".*"],
-    })
-    .filter((dirent) => !dirent.isDirectory())
-    .map((dirent) =>
-      normalizeAssetPath(toRelativePosixPath(resourcesDir, dirent)),
-    )
-    .filter((file) => shouldKeepRootPublicFile(file))
+    .readdirSync(publicDir, { recursive: true, withFileTypes: true })
+    .filter((dirent) => dirent.isFile() && dirent.name !== ".DS_Store")
+    .map((dirent) => normalizeAssetPath(toRelativePosixPath(publicDir, dirent)))
     .sort();
 }
 
@@ -382,16 +375,85 @@ export function createHashedPublicAssetFiles(
   }
 }
 
-export function copyRootPublicFiles(
-  resourcesDir: string,
-  outDir: string,
-): void {
-  for (const relativePath of listRootPublicFiles(resourcesDir)) {
-    const sourcePath = path.join(resourcesDir, relativePath);
+export function copyRootPublicFiles(publicDir: string, outDir: string): void {
+  for (const relativePath of listRootPublicFiles(publicDir)) {
+    const sourcePath = path.join(publicDir, relativePath);
     const outputPath = path.join(outDir, relativePath);
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
     fs.copyFileSync(sourcePath, outputPath);
   }
+}
+
+// Path -> content type and content-addressed key (under game_assets/) for
+// every root file, plus a "<dir>/" entry for each directory with an
+// index.html, carrying that file's. The site Worker serves exactly what this
+// lists. update.sh uploads the hashed copies with the other hashed assets, so
+// a root file that did not change is not uploaded again, and the index itself
+// to sites/<site>/v/<short>/root-files.json.
+export type RootFile = { type: string; key: string };
+export type RootFilesIndex = Record<string, RootFile>;
+
+const ROOT_FILES_INDEX = "root-files.json";
+
+const ROOT_FILE_TYPES: Record<string, string> = {
+  "": "text/plain; charset=utf-8",
+  ".html": "text/html; charset=utf-8",
+  ".txt": "text/plain; charset=utf-8",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".svg": "image/svg+xml",
+  ".pdf": "application/pdf",
+  ".zip": "application/zip",
+};
+
+function rootFileContentType(relativePath: string): string {
+  const ext = path.posix.extname(relativePath).toLowerCase();
+  const type = ROOT_FILE_TYPES[ext];
+  if (type === undefined) {
+    throw new Error(
+      `No content type for root file ${relativePath}; add ${ext} to ROOT_FILE_TYPES`,
+    );
+  }
+  return type;
+}
+
+export function buildRootFilesIndex(publicDir: string): RootFilesIndex {
+  const index: RootFilesIndex = {};
+  for (const relativePath of listRootPublicFiles(publicDir)) {
+    const file: RootFile = {
+      type: rootFileContentType(relativePath),
+      key: normalizeAssetPath(
+        createHashedAssetUrl(
+          path.posix.join("root", relativePath),
+          createContentHash(path.join(publicDir, relativePath)),
+        ),
+      ),
+    };
+    index[relativePath] = file;
+    if (path.posix.basename(relativePath) === "index.html") {
+      const dir = path.posix.dirname(relativePath);
+      if (dir !== ".") index[`${dir}/`] = file;
+    }
+  }
+  return index;
+}
+
+// Writes the index and each root file's hashed copy at its key.
+export function writeRootFilesIndex(publicDir: string, outDir: string): void {
+  const index = buildRootFilesIndex(publicDir);
+  for (const [relativePath, { key }] of Object.entries(index)) {
+    if (relativePath.endsWith("/")) continue;
+    const outputPath = path.join(outDir, key);
+    fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+    fs.copyFileSync(path.join(publicDir, relativePath), outputPath);
+  }
+  fs.mkdirSync(outDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(outDir, ROOT_FILES_INDEX),
+    `${JSON.stringify(index, null, 2)}\n`,
+  );
 }
 
 export function writePublicAssetManifest(

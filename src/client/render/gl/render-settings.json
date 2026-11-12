@@ -234,7 +234,8 @@
     "statusOutlineWidth": 6,
     "hoverFadeAlpha": 0.5,
     "hoverGlowWidth": 5,
-    "hoverGlowAlpha": 0.75
+    "hoverGlowAlpha": 0.75,
+    "flagAlpha": 1
   },
   "fx": {
     "shockwaveRingWidth": 0.04,
@@ -248,7 +249,11 @@
     "debrisFadeOut": 0.8,
     "conquestLifetimeMs": 2500,
     "conquestFadeIn": 0.1,
-    "conquestFadeOut": 0.6
+    "conquestFadeOut": 0.6,
+    "nukeRadiusAtom": 70,
+    "nukeRadiusHydro": 160,
+    "nukeRadiusMirv": 70,
+    "debrisDensity": 1
   },
   "nukeTrajectory": {
     "lineWidth": 2.5,
@@ -298,6 +303,14 @@
     "duration": 800,
     "converge": 0.7
   },
+  "rangeCircle": {
+    "allianceColorR": 1,
+    "allianceColorG": 0.85,
+    "allianceColorB": 0.1,
+    "traitorColorR": 1,
+    "traitorColorG": 0.2,
+    "traitorColorB": 0.2
+  },
   "samRadius": {
     "strokeWidth": 1.5,
     "dashLen": 12,
@@ -329,7 +342,7 @@
     "selfMinRad": 10,
     "selfMaxRad": 30,
     "mateMinRad": 5,
-    "mateMaxRad": 14,
+    "mateMaxRad": 18,
     "animSpeed": 0.008,
     "gradientInnerEdge": 0.01,
     "gradientSolidEnd": 0.1,
@@ -344,6 +357,7 @@
   },
   "altView": {
     "gridFontSize": 24,
+    "fillAlpha": 0.15,
     "recolorStructures": true
   },
   "tileDrip": {
@@ -355,24 +369,24 @@
       "intensity": 1.2
     },
     "Port": {
-      "radius": 12,
-      "intensity": 1
+      "radius": 18,
+      "intensity": 1.2
     },
     "Factory": {
-      "radius": 12,
-      "intensity": 1
+      "radius": 18,
+      "intensity": 1.2
     },
     "Defense Post": {
-      "radius": 10,
-      "intensity": 0.9
+      "radius": 18,
+      "intensity": 1.2
     },
     "SAM Launcher": {
-      "radius": 10,
-      "intensity": 0.9
+      "radius": 18,
+      "intensity": 1.2
     },
     "Missile Silo": {
-      "radius": 10,
-      "intensity": 0.9
+      "radius": 18,
+      "intensity": 1.2
     },
     "Transport": {
       "radius": 6,

@@ -1,5 +1,5 @@
-import { UsernameSchema } from "../src/core/Schemas";
-import { anonymousUsername } from "../src/core/Util";
+import { UsernameSchema } from "@openfront/engine-api/Schemas";
+import { anonymousUsername } from "@openfront/shared/SharedUtil";
 
 describe("anonymousUsername", () => {
   it("always produces a wire-valid username", () => {

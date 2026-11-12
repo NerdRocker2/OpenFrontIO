@@ -1,7 +1,8 @@
 /**
  * SpawnOverlayPass — spawn phase tile highlights + breathing rings.
  *
- * Active only during spawn phase. Renders:
+ * Active during spawn phase (and, for the local ring alone, while the
+ * tutorial keeps it up afterwards). Renders:
  *   1. Colored highlights on unowned tiles within radius of each enemy human
  *      player's spawn center.
  *   2. Animated breathing rings around the local player and teammates.
@@ -95,6 +96,7 @@ export class SpawnOverlayPass {
       gl,
       overlayVertSrc,
       shaderSrc(spawnFragSrc, { ...TILE_DEFINES }),
+      "SpawnOverlayPass",
     );
 
     this.uCamera = gl.getUniformLocation(this.program, "uCamera")!;
@@ -161,9 +163,9 @@ export class SpawnOverlayPass {
     gl.bindVertexArray(null);
   }
 
-  /** Update spawn overlay state each tick. */
-  update(inSpawnPhase: boolean, centers: SpawnCenter[]): void {
-    this.active = inSpawnPhase && centers.length > 0;
+  /** Update spawn overlay state each tick. Empty centers turn the pass off. */
+  update(centers: SpawnCenter[]): void {
+    this.active = centers.length > 0;
     if (!this.active) {
       this.instanceCount = 0;
       return;
@@ -208,7 +210,8 @@ export class SpawnOverlayPass {
       }
     }
     for (const c of centers) {
-      if (!c.isSelf && !c.isTeammate && !c.isNation) write(c, KIND_ENEMY, enemyRadius);
+      if (!c.isSelf && !c.isTeammate && !c.isNation)
+        write(c, KIND_ENEMY, enemyRadius);
     }
     for (const c of centers) {
       if (c.isTeammate) write(c, KIND_TEAMMATE, mateRadius);

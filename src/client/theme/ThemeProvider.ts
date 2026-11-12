@@ -1,13 +1,17 @@
+import {
+  ColoredTeams,
+  PlayerType,
+  Team,
+} from "@openfront/engine-api/game/GameTypes";
+import { simpleHash } from "@openfront/engine-lib/Util";
 import { Colord, colord, LabaColor } from "colord";
-import { PlayerType, Team } from "../../core/game/Game";
-import { UserSettings } from "../../core/game/UserSettings";
-import { simpleHash } from "../../core/Util";
 import { PALETTE_NAMES } from "../render/gl/GraphicsOverrides";
 import {
   createThemeSettings,
   ThemeName,
   ThemeSettings,
 } from "../render/gl/RenderSettings";
+import { UserSettings } from "../UserSettings";
 import { PlayerView } from "../view";
 import { ColorAllocator } from "./ColorAllocator";
 
@@ -63,9 +67,7 @@ function generateTeamColors(baseColor: Colord): Colord[] {
  * Build the per-team variation palettes from theme settings. The Bot team
  * stays a single flat color; every other team gets generated variations.
  */
-export function buildTeamPalettes(
-  settings: ThemeSettings,
-): Map<Team, Colord[]> {
+function buildTeamPalettes(settings: ThemeSettings): Map<Team, Colord[]> {
   const palettes = new Map<Team, Colord[]>();
   for (const [team, hex] of Object.entries(settings.teamColors)) {
     const base = colord(hex);
@@ -81,23 +83,33 @@ export function buildTeamPalettes(
  */
 export class SettingsTheme implements Theme {
   private humanColorAllocator: ColorAllocator;
-  private botColorAllocator: ColorAllocator;
   private nationColorAllocator: ColorAllocator;
+  private classicBotColorAllocator: ColorAllocator;
   private teamPalettes: Map<Team, Colord[]>;
   private teamPlayerColors = new Map<string, Colord>();
+
+  /**
+   * When true, teamless tribes draw from the classic (pre-v34) bot pool
+   * instead of the flat Bot team color. Kept in sync with the
+   * classicBotColors graphics override by ThemeProvider.current().
+   */
+  useClassicBotColors = false;
 
   private _focusedBorderColor: Colord;
   private _spawnHighlightColor: Colord;
 
   constructor(private settings: ThemeSettings) {
     const humanColors = settings.humanColors.map(colord);
-    const botColors = settings.botColors.map(colord);
     const nationColors = settings.nationColors.map(colord);
+    const classicBotColors = settings.classicBotColors.map(colord);
     const fallbackColors = settings.fallbackColors.map(colord);
 
     this.humanColorAllocator = new ColorAllocator(humanColors, fallbackColors);
-    this.botColorAllocator = new ColorAllocator(botColors, botColors);
     this.nationColorAllocator = new ColorAllocator(nationColors, nationColors);
+    this.classicBotColorAllocator = new ColorAllocator(
+      classicBotColors,
+      classicBotColors,
+    );
     this.teamPalettes = buildTeamPalettes(settings);
 
     this._focusedBorderColor = colord(settings.focusedBorderColor);
@@ -137,8 +149,8 @@ export class SettingsTheme implements Theme {
 
   /**
    * Color for a player's territory: a per-player variation when the player is
-   * on a team, otherwise a distinct color allocated from the matching pool
-   * (human / bot / nation).
+   * on a team, the flat Bot team color for tribes, otherwise a distinct color
+   * allocated from the matching pool (human / nation).
    */
   territoryColor(player: PlayerView): Colord {
     const team = player.team();
@@ -149,7 +161,11 @@ export class SettingsTheme implements Theme {
       return this.humanColorAllocator.assignColor(player.id());
     }
     if (player.type() === PlayerType.Bot) {
-      return this.botColorAllocator.assignColor(player.id());
+      if (this.useClassicBotColors) {
+        return this.classicBotColorAllocator.assignColor(player.id());
+      }
+      // Tribes use the same palette in every mode: the flat Bot team color.
+      return this.teamColorForPlayer(ColoredTeams.Bot, player.id());
     }
     return this.nationColorAllocator.assignColor(player.id());
   }
@@ -256,7 +272,7 @@ export class SettingsTheme implements Theme {
 
 /**
  * Client-side source of truth for the active theme. Themes were moved out of
- * `src/core` (the simulation never reads colors); this singleton replaces the
+ * the engine (the simulation never reads colors); this singleton replaces the
  * old `Config.theme()` accessor.
  */
 class ThemeProvider {
@@ -265,9 +281,10 @@ class ThemeProvider {
 
   /** The active theme, selected from the palette graphics override. */
   current(): Theme {
-    return this.themes[
-      this.userSettings.graphicsOverrides().palette ?? "default"
-    ];
+    const overrides = this.userSettings.graphicsOverrides();
+    const theme = this.themes[overrides.palette ?? "default"];
+    theme.useClassicBotColors = overrides.classicBotColors ?? false;
+    return theme;
   }
 
   /**

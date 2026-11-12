@@ -1,7 +1,7 @@
-import { EliminationMarkerEvent } from "../../src/client/InputHandler";
+import { EventBus } from "@openfront/shared/EventBus";
 import "../../src/client/hud/layers/PlayerInfoOverlay";
 import type { PlayerInfoOverlay } from "../../src/client/hud/layers/PlayerInfoOverlay";
-import { EventBus } from "../../src/core/EventBus";
+import { EliminationMarkerEvent } from "../../src/client/InputHandler";
 
 describe("PlayerInfoOverlay eliminated names", () => {
   let eventBus: EventBus;

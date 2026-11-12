@@ -1,13 +1,37 @@
+import { normalizeAssetPath } from "@openfront/shared/AssetPaths";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { afterEach, describe, expect, test } from "vitest";
-import { normalizeAssetPath } from "../../src/core/AssetUrls";
 import {
   buildPublicAssetManifest,
+  buildRootFilesIndex,
   clearPublicAssetManifestCache,
+  copyRootPublicFiles,
   createHashedPublicAssetFiles,
+  getPublicDir,
+  writeRootFilesIndex,
 } from "../../src/server/PublicAssetManifest";
+
+// OFstats's emblem kit: a flat emblem per family for small sizes, and a
+// shaded one per tier, numeral included, for large ones.
+const FFA_TIER_FAMILIES = [
+  "iron",
+  "bronze",
+  "silver",
+  "gold",
+  "platinum",
+  "diamond",
+  "master",
+  "grandmaster",
+];
+const FFA_TIER_ART = [
+  ...FFA_TIER_FAMILIES.map((f) => `images/ffa-tiers/compact/${f}.svg`),
+  ...FFA_TIER_FAMILIES.slice(0, 7).flatMap((f) =>
+    ["iii", "ii", "i"].map((d) => `images/ffa-tiers/detailed/${f}-${d}.svg`),
+  ),
+  "images/ffa-tiers/detailed/grandmaster.svg",
+].sort();
 
 describe("PublicAssetManifest", () => {
   let tempDir: string | null = null;
@@ -130,11 +154,15 @@ describe("PublicAssetManifest", () => {
 
     expect(firstIconHref).not.toBe(secondIconHref);
     expect(firstManifestHref).not.toBe(secondManifestHref);
-    expect(firstOutput).toContain(firstIconHref);
-    expect(firstOutput).not.toContain(secondIconHref);
+    expect(firstOutput).toContain(
+      getExpectedRelativeEmittedPath(firstManifestHref, firstIconHref),
+    );
+    expect(firstOutput).not.toContain(
+      getExpectedRelativeEmittedPath(firstManifestHref, secondIconHref),
+    );
   });
 
-  test("rewrites root-relative web manifest icon paths to hashed URLs", async () => {
+  test("rewrites root-relative web manifest icon paths to hashed paths relative to the manifest", async () => {
     const { resourcesDir, outDir } = await createTempResources();
 
     await fs.mkdir(path.join(resourcesDir, "icons"), { recursive: true });
@@ -150,13 +178,54 @@ describe("PublicAssetManifest", () => {
     const assetManifest = buildPublicAssetManifest([resourcesDir]);
     createHashedPublicAssetFiles([resourcesDir], outDir, assetManifest);
 
-    const emittedManifest = await emitHashedAsset(
-      outDir,
-      assetManifest["manifest.json"],
+    const manifestHref = assetManifest["manifest.json"];
+    const iconHref = assetManifest["icons/app-icon.png"];
+    const emittedManifest = JSON.parse(
+      await emitHashedAsset(outDir, manifestHref),
+    ) as { icons: Array<{ src: string }> };
+
+    // The manifest is served under the CDN prefix (/game_assets/_assets/...),
+    // and the browser resolves icon srcs against the manifest URL, so a
+    // root-relative /_assets/... src would escape the prefix and 404.
+    const iconSrc = emittedManifest.icons[0].src;
+    expect(iconSrc).toBe(
+      getExpectedRelativeEmittedPath(manifestHref, iconHref),
+    );
+    expect(iconSrc).toMatch(/^icons\/app-icon\.[0-9a-f]{12}\.png$/);
+    expect(iconSrc).not.toMatch(/^\//);
+    expect(iconSrc).not.toContain("_assets/");
+    expect(iconSrc).not.toBe("/icons/app-icon.png");
+  });
+
+  test("rewrites nested web manifest icon paths relative to the manifest", async () => {
+    const { resourcesDir, outDir } = await createTempResources();
+
+    await fs.mkdir(path.join(resourcesDir, "icons", "pwa"), {
+      recursive: true,
+    });
+    await writeWebManifestFixture(resourcesDir, [
+      { src: "icons/pwa/maskable.png" },
+    ]);
+    await fs.writeFile(
+      path.join(resourcesDir, "icons", "pwa", "maskable.png"),
+      "icon-v1",
+      "utf8",
     );
 
-    expect(emittedManifest).toContain(assetManifest["icons/app-icon.png"]);
-    expect(emittedManifest).not.toContain('"/icons/app-icon.png"');
+    const assetManifest = buildPublicAssetManifest([resourcesDir]);
+    createHashedPublicAssetFiles([resourcesDir], outDir, assetManifest);
+
+    const manifestHref = assetManifest["manifest.json"];
+    const iconHref = assetManifest["icons/pwa/maskable.png"];
+    const emittedManifest = JSON.parse(
+      await emitHashedAsset(outDir, manifestHref),
+    ) as { icons: Array<{ src: string }> };
+
+    const iconSrc = emittedManifest.icons[0].src;
+    expect(iconSrc).toBe(
+      getExpectedRelativeEmittedPath(manifestHref, iconHref),
+    );
+    expect(iconSrc).toMatch(/^icons\/pwa\/maskable\.[0-9a-f]{12}\.png$/);
   });
 
   test("fails when web manifest references a missing local icon", async () => {
@@ -276,5 +345,147 @@ describe("PublicAssetManifest", () => {
       getExpectedRelativeEmittedPath(xmlHref, pngHref),
     );
     expect(emittedXml).not.toContain('file="pages/p0.png"');
+  });
+
+  test("copies resources/public/ verbatim to the site root, dot-directories included", async () => {
+    const { resourcesDir, outDir } = await createTempResources();
+    const publicDir = getPublicDir(resourcesDir);
+    await fs.mkdir(path.join(publicDir, "press", "images"), {
+      recursive: true,
+    });
+    await fs.mkdir(path.join(publicDir, ".well-known"), { recursive: true });
+    await fs.writeFile(path.join(publicDir, "press", "index.html"), "press");
+    await fs.writeFile(path.join(publicDir, "press", "images", "a.png"), "png");
+    await fs.writeFile(path.join(publicDir, ".well-known", "apple"), "apple");
+    await fs.writeFile(path.join(publicDir, ".DS_Store"), "junk");
+
+    copyRootPublicFiles(publicDir, outDir);
+
+    await expect(
+      fs.readFile(path.join(outDir, "press", "images", "a.png"), "utf8"),
+    ).resolves.toBe("png");
+    await expect(
+      fs.readFile(path.join(outDir, ".well-known", "apple"), "utf8"),
+    ).resolves.toBe("apple");
+    await expect(fs.access(path.join(outDir, ".DS_Store"))).rejects.toThrow();
+  });
+
+  test("indexes every root file's content type, with directory entries", async () => {
+    const { resourcesDir, outDir } = await createTempResources();
+    const publicDir = getPublicDir(resourcesDir);
+    await fs.mkdir(path.join(publicDir, "press"), { recursive: true });
+    await fs.mkdir(path.join(publicDir, ".well-known"), { recursive: true });
+    await fs.writeFile(path.join(publicDir, "privacy-policy.html"), "p");
+    await fs.writeFile(path.join(publicDir, "index.html"), "not a dir entry");
+    await fs.writeFile(path.join(publicDir, "press", "index.html"), "press");
+    await fs.writeFile(path.join(publicDir, "press", "Kit 1.png"), "png");
+    await fs.writeFile(path.join(publicDir, ".well-known", "apple"), "a");
+
+    writeRootFilesIndex(publicDir, outDir);
+
+    const html = "text/html; charset=utf-8";
+    const index = JSON.parse(
+      await fs.readFile(path.join(outDir, "root-files.json"), "utf8"),
+    );
+    const hashed = (type: string, key: RegExp) => ({
+      type,
+      key: expect.stringMatching(key),
+    });
+    expect(index).toEqual({
+      ".well-known/apple": hashed(
+        "text/plain; charset=utf-8",
+        /^_assets\/root\/\.well-known\/apple\.[0-9a-f]{12}$/,
+      ),
+      "index.html": hashed(html, /^_assets\/root\/index\.[0-9a-f]{12}\.html$/),
+      "press/": index["press/index.html"],
+      "press/Kit 1.png": hashed(
+        "image/png",
+        /^_assets\/root\/press\/Kit 1\.[0-9a-f]{12}\.png$/,
+      ),
+      "press/index.html": hashed(
+        html,
+        /^_assets\/root\/press\/index\.[0-9a-f]{12}\.html$/,
+      ),
+      "privacy-policy.html": hashed(
+        html,
+        /^_assets\/root\/privacy-policy\.[0-9a-f]{12}\.html$/,
+      ),
+    });
+    // update.sh uploads each file from its key.
+    await expect(
+      fs.readFile(path.join(outDir, index["press/Kit 1.png"].key), "utf8"),
+    ).resolves.toBe("png");
+  });
+
+  test("keys a root file by its content, so an unchanged file keeps its key", async () => {
+    const { resourcesDir } = await createTempResources();
+    const publicDir = getPublicDir(resourcesDir);
+    await fs.mkdir(publicDir, { recursive: true });
+    await fs.writeFile(path.join(publicDir, "robots.txt"), "a");
+    await fs.writeFile(path.join(publicDir, "ads.txt"), "a");
+    const first = buildRootFilesIndex(publicDir);
+    expect(buildRootFilesIndex(publicDir)).toEqual(first);
+
+    await fs.writeFile(path.join(publicDir, "robots.txt"), "b");
+    const second = buildRootFilesIndex(publicDir);
+    expect(second["robots.txt"].key).not.toBe(first["robots.txt"].key);
+    expect(second["ads.txt"]).toEqual(first["ads.txt"]);
+  });
+
+  test("refuses a root file it has no content type for", async () => {
+    const { resourcesDir } = await createTempResources();
+    const publicDir = getPublicDir(resourcesDir);
+    await fs.mkdir(path.join(publicDir, "press"), { recursive: true });
+    await fs.writeFile(path.join(publicDir, "press", "kit.xyz"), "?");
+    expect(() => buildRootFilesIndex(publicDir)).toThrow(/press\/kit\.xyz/);
+  });
+
+  test("indexes the real resources/public/, policy pages included", () => {
+    const index = buildRootFilesIndex(getPublicDir(path.resolve("resources")));
+    expect(index["privacy-policy.html"].type).toBe("text/html; charset=utf-8");
+    expect(index["terms-of-service.html"].type).toBe(
+      "text/html; charset=utf-8",
+    );
+    expect(
+      index[".well-known/apple-developer-merchantid-domain-association"].type,
+    ).toBe("text/plain; charset=utf-8");
+    expect(index["press/"]).toEqual(index["press/index.html"]);
+  });
+
+  test("hashes exactly OFstats's 30 FFA tier emblems", async () => {
+    // The real folder holds exactly the 30 emblems...
+    const tierDir = path.resolve("resources", "images", "ffa-tiers");
+    const onDisk = (await fs.readdir(tierDir, { recursive: true }))
+      .map((p) => `images/ffa-tiers/${p.split(path.sep).join("/")}`)
+      .filter((p) => p.endsWith(".svg"))
+      .sort();
+    expect(onDisk).toEqual(FFA_TIER_ART);
+    // ...and the manifest hashes every one of them. Built over a copy of that
+    // folder alone: hashing all of resources/ takes seconds.
+    const { resourcesDir } = await createTempResources();
+    await fs.cp(tierDir, path.join(resourcesDir, "images", "ffa-tiers"), {
+      recursive: true,
+    });
+    const manifest = buildPublicAssetManifest([resourcesDir]);
+    const tierArt = Object.keys(manifest)
+      .filter((p) => p.startsWith("images/ffa-tiers/"))
+      .sort();
+    expect(tierArt).toEqual(FFA_TIER_ART);
+    for (const asset of tierArt) {
+      const { dir, name } = path.posix.parse(asset);
+      expect(manifest[asset], asset).toMatch(
+        new RegExp(`^/_assets/${dir}/${name}\\.[0-9a-f]+\\.svg$`),
+      );
+    }
+  });
+
+  test("ships only inert FFA tier SVGs", async () => {
+    for (const asset of FFA_TIER_ART) {
+      const svg = await fs.readFile(path.resolve("resources", asset), "utf8");
+      expect(svg, asset).toMatch(/^<svg[\s>]/);
+      expect(svg, asset).not.toMatch(
+        /<script|\son[a-z]+\s*=|<foreignObject|(?:xlink:)?href\s*=\s*["'](?!#|data:image\/)/i,
+      );
+    }
   });
 });

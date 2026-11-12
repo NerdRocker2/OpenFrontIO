@@ -21,6 +21,17 @@ export class VoteRound<T> {
     return candidate.ips.size;
   }
 
+  // How many distinct values have been voted for.
+  size(): number {
+    return this.candidates.size;
+  }
+
+  // How many unique IPs have voted for the candidate `key`, departed ones
+  // included; 0 if none has.
+  backers(key: string): number {
+    return this.candidates.get(key)?.ips.size ?? 0;
+  }
+
   // Returns the winning value once some candidate holds a strict majority of
   // `totalUniqueIPs` (votes * 2 > total), else null. A tie (e.g. 1 of 2 IPs)
   // does not count as a majority: with exactly 2 electors, both must agree,
@@ -30,6 +41,26 @@ export class VoteRound<T> {
     for (const candidate of this.candidates.values()) {
       if (candidate.ips.size * 2 > totalUniqueIPs) {
         return { value: candidate.value, votes: candidate.ips.size };
+      }
+    }
+    return null;
+  }
+
+  // Re-tally against a shrunken electorate: like result(), but both the
+  // electorate and the counted votes are restricted to `activeIPs`. Votes
+  // from departed IPs must not count here — otherwise a player could vote
+  // for themselves and disconnect, and the re-tally triggered by their own
+  // departure would crown them (#4136 again, one step removed).
+  resultAmong(activeIPs: Set<string>): { value: T; votes: number } | null {
+    for (const candidate of this.candidates.values()) {
+      let votes = 0;
+      for (const ip of candidate.ips) {
+        if (activeIPs.has(ip)) {
+          votes++;
+        }
+      }
+      if (votes * 2 > activeIPs.size) {
+        return { value: candidate.value, votes };
       }
     }
     return null;

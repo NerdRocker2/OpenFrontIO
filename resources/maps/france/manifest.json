@@ -1,5 +1,5 @@
 {
-  "categories": ["new", "europe", "countries"],
+  "categories": ["europe", "countries"],
   "id": "France",
   "map": {
     "height": 2424,
@@ -16,7 +16,6 @@
     "num_land_tiles": 506105,
     "width": 1212
   },
-  "multiplayer_frequency": 8,
   "name": "France",
   "nations": [
     {

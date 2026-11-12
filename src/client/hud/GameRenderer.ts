@@ -1,6 +1,6 @@
-import { EventBus } from "../../core/EventBus";
-import { UserSettings } from "../../core/game/UserSettings";
+import { EventBus } from "@openfront/shared/EventBus";
 import { Controller } from "../Controller";
+import { AmbienceController } from "../controllers/AmbienceController";
 import { AttackingTroopsController } from "../controllers/AttackingTroopsController";
 import { BuildPreviewController } from "../controllers/BuildPreviewController";
 import { HoverHighlightController } from "../controllers/HoverHighlightController";
@@ -11,9 +11,15 @@ import { StructureHighlightController } from "../controllers/StructureHighlightC
 import { ViewModeController } from "../controllers/ViewModeController";
 import { WarshipSelectionController } from "../controllers/WarshipSelectionController";
 import { GameStartingModal } from "../GameStartingModal";
+import { migrateLegacyGraphicsSettings } from "../GraphicsPresets";
 import { MapRenderer } from "../render/gl";
 import { TransformHandler } from "../TransformHandler";
 import { UIState } from "../UIState";
+// The homepage loads it on demand, but the in-game instance (#game-settings)
+// is set up below, so it has to be defined by the time a game renders.
+import "../UserSettingModal";
+import type { UserSettingModal } from "../UserSettingModal";
+import { UserSettings } from "../UserSettings";
 import { GameView } from "../view";
 import { FrameProfiler } from "./FrameProfiler";
 import { ActionableEvents } from "./layers/ActionableEvents";
@@ -27,19 +33,20 @@ import { EmojiTable } from "./layers/EmojiTable";
 import { EventsDisplay } from "./layers/EventsDisplay";
 import { GameLeftSidebar } from "./layers/GameLeftSidebar";
 import { GameRightSidebar } from "./layers/GameRightSidebar";
-import { GraphicsSettingsModal } from "./layers/GraphicsSettingsModal";
 import { HeadsUpMessage } from "./layers/HeadsUpMessage";
 import { ImmunityTimer } from "./layers/ImmunityTimer";
 import { InGamePromo } from "./layers/InGamePromo";
 import { MainRadialMenu } from "./layers/MainRadialMenu";
 import { MultiTabModal } from "./layers/MultiTabModal";
 import { NewLobbyPrompt } from "./layers/NewLobbyPrompt";
+import { OnboardingOverlay } from "./layers/OnboardingOverlay";
 import { PerformanceOverlay } from "./layers/PerformanceOverlay";
 import { PlayerInfoOverlay } from "./layers/PlayerInfoOverlay";
 import { PlayerPanel } from "./layers/PlayerPanel";
 import { ReplayPanel } from "./layers/ReplayPanel";
 import { SettingsModal } from "./layers/SettingsModal";
 import { SpawnTimer } from "./layers/SpawnTimer";
+import { TutorialPanel } from "./layers/TutorialPanel";
 import { UnitDisplay } from "./layers/UnitDisplay";
 import { WinModal } from "./layers/WinModal";
 import { loadAllSprites } from "./SpriteLoader";
@@ -188,21 +195,39 @@ export function createRenderer(
   if (!(settingsModal instanceof SettingsModal)) {
     console.error("settings modal not found");
   }
-  settingsModal.userSettings = userSettings;
   settingsModal.eventBus = eventBus;
+  settingsModal.gameConfig = game.config().gameConfig();
+  settingsModal.mapNationCount = game.mapNationCount();
+  settingsModal.game = game;
 
-  const graphicsSettingsModal = document.querySelector(
-    "graphics-settings-modal",
-  ) as GraphicsSettingsModal;
-  if (!(graphicsSettingsModal instanceof GraphicsSettingsModal)) {
-    console.error("graphics settings modal not found");
+  // The in-game settings instance needs the bus so the Audio sliders reach
+  // SoundManager, which caches its volumes at construction, and UIState so the
+  // attack ratio slider shows the session value the HUD slider may have set.
+  // It also owns the advanced graphics options now, so it takes this game's
+  // map layers and the two renderer callbacks they apply through — the rest of
+  // those options reach the renderer through the settings-changed event
+  // ClientGameRunner listens for.
+  const gameSettingsModal = document.getElementById(
+    "game-settings",
+  ) as UserSettingModal | null;
+  if (gameSettingsModal === null) {
+    console.warn("In-game settings modal (#game-settings) not found");
+  } else {
+    gameSettingsModal.uiState = uiState;
+    gameSettingsModal.mapLayers = game.layers();
+    gameSettingsModal.onLayerVisibilityChange = (layerId, visible) => {
+      view.setLayerVisible(layerId, visible);
+    };
+    gameSettingsModal.onLayerAlphaChange = (layerId, alpha) => {
+      view.setLayerAlpha(layerId, alpha);
+    };
   }
-  graphicsSettingsModal.userSettings = userSettings;
-  graphicsSettingsModal.eventBus = eventBus;
-  graphicsSettingsModal.mapLayers = game.layers();
-  graphicsSettingsModal.onLayerVisibilityChange = (layerId, visible) => {
-    view.setLayerVisible(layerId, visible);
-  };
+
+  // Ran from the graphics modal's init() before that modal was folded into the
+  // settings modal's Graphics tab. Still game start, so a player who tuned
+  // their graphics before presets existed keeps that snapshot whether or not
+  // they ever open settings.
+  migrateLegacyGraphicsSettings(userSettings);
 
   const unitDisplay = document.querySelector("unit-display") as UnitDisplay;
   if (!(unitDisplay instanceof UnitDisplay)) {
@@ -217,6 +242,7 @@ export function createRenderer(
     console.error("player panel not found");
   }
   playerPanel.g = game;
+  playerPanel.transformHandler = transformHandler;
   playerPanel.initEventBus(eventBus);
   playerPanel.emojiTable = emojiTable;
   playerPanel.uiState = uiState;
@@ -228,6 +254,7 @@ export function createRenderer(
     console.error("chat modal not found");
   }
   chatModal.g = game;
+  chatModal.transformHandler = transformHandler;
   chatModal.initEventBus(eventBus);
 
   const multiTabModal = document.querySelector(
@@ -284,6 +311,28 @@ export function createRenderer(
   }
   inGamePromo.game = game;
 
+  const tutorialPanel = document.querySelector(
+    "tutorial-panel",
+  ) as TutorialPanel;
+  if (!(tutorialPanel instanceof TutorialPanel)) {
+    console.error("tutorial panel not found");
+  }
+  tutorialPanel.game = game;
+  tutorialPanel.eventBus = eventBus;
+  tutorialPanel.userSettings = userSettings;
+  tutorialPanel.uiState = uiState;
+
+  const onboardingOverlay = document.querySelector(
+    "onboarding-overlay",
+  ) as OnboardingOverlay;
+  if (!(onboardingOverlay instanceof OnboardingOverlay)) {
+    console.error("onboarding overlay not found");
+  }
+  onboardingOverlay.game = game;
+  onboardingOverlay.eventBus = eventBus;
+  onboardingOverlay.transformHandler = transformHandler;
+  onboardingOverlay.uiState = uiState;
+
   const layers: Controller[] = [
     new WarshipSelectionController(game, eventBus, transformHandler, view),
     new BuildPreviewController(
@@ -300,6 +349,7 @@ export function createRenderer(
     new ViewModeController(eventBus, view),
     new AttackingTroopsController(game, eventBus, userSettings, view),
     new SoundEffectController(game, eventBus),
+    new AmbienceController(game, eventBus, transformHandler),
     ...(mapLayerController ? [mapLayerController] : []),
     eventsDisplay,
     actionableEvents,
@@ -326,11 +376,12 @@ export function createRenderer(
     newLobbyPrompt,
     replayPanel,
     settingsModal,
-    graphicsSettingsModal,
     playerPanel,
     headsUpMessage,
     multiTabModal,
     inGamePromo,
+    tutorialPanel,
+    onboardingOverlay,
     alertFrame,
     performanceOverlay,
   ];
@@ -353,19 +404,25 @@ export class GameRenderer {
     private performanceOverlay: PerformanceOverlay,
   ) {}
 
+  private onResize = () => {
+    this.transformHandler.updateCanvasBoundingRect();
+  };
+
   initialize() {
     loadAllSprites().catch((err) =>
-      console.error("Failed to preload sprites:", err),
+      console.warn("Failed to preload sprites:", err),
     );
 
     this.layers.forEach((l) => l.init?.());
 
-    window.addEventListener("resize", () =>
-      this.transformHandler.updateCanvasBoundingRect(),
-    );
+    window.addEventListener("resize", this.onResize);
 
     //show whole map on startup
     this.transformHandler.centerAll(0.9);
+  }
+
+  dispose() {
+    window.removeEventListener("resize", this.onResize);
   }
 
   tick() {

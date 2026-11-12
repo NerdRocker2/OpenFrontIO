@@ -11,6 +11,9 @@ vi.mock("../../../src/client/Utils", () => ({
   // Cheap stub so we don't pull in the real i18n module.
   renderDuration: vi.fn((s: number) => `${s}s`),
   getMapName: vi.fn((m: string | undefined) => m ?? null),
+  // History entries keep the page's own /v/<commit>/ prefix; this jsdom page
+  // has none, so the real helper is the identity here.
+  currentPagePath: vi.fn((path: string) => path),
 }));
 
 vi.mock("../../../src/client/Auth", () => ({
@@ -30,7 +33,7 @@ vi.mock("../../../src/client/TerrainMapFileLoader", () => ({
 
 vi.mock("../../../src/client/ClientEnv", () => ({
   ClientEnv: {
-    workerPath: vi.fn(() => "w0"),
+    gamePath: vi.fn((id: string) => `/w0/game/${encodeURIComponent(id)}`),
   },
 }));
 
@@ -589,6 +592,9 @@ describe("ClanGameHistoryView", () => {
       const headers = el.querySelectorAll("h3");
       expect(headers).toHaveLength(1);
       expect(headers[0]?.textContent).toContain("clan_modal.history_today");
+      expect(headers[0]?.parentElement?.className).toContain(
+        "pointer-events-none",
+      );
     });
 
     it('labels yesterday under the "yesterday" key', async () => {

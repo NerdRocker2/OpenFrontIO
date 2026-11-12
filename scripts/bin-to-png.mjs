@@ -24,8 +24,8 @@ import { createWriteStream } from "fs";
 import { readFile } from "fs/promises";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
-import zlib from "zlib";
 import { promisify } from "util";
+import zlib from "zlib";
 
 const deflate = promisify(zlib.deflate);
 const __dirname = dirname(fileURLToPath(import.meta.url));

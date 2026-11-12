@@ -9,7 +9,7 @@ import { processMusicUpload } from "../../src/server/MusicRoute";
 
 describe("music loudness tagging", () => {
   test("measures audio with EBU R128 and updates ReplayGain 2.0 tags", async () => {
-    const fixture = fs.readFileSync("resources/sounds/effects/message.mp3");
+    const fixture = fs.readFileSync("tests/fixtures/audio/message.mp3");
     const source = NodeID3.update(
       {
         title: "Metadata survives",
@@ -54,7 +54,7 @@ describe("music loudness tagging", () => {
   });
 
   test("preserves legacy ID3v2.3 frame bytes while replacing ReplayGain", async () => {
-    const fixture = fs.readFileSync("resources/sounds/effects/message.mp3");
+    const fixture = fs.readFileSync("tests/fixtures/audio/message.mp3");
     const existingTag = NodeID3.create({
       title: "Existing title",
       userDefinedText: [
@@ -92,7 +92,7 @@ describe("music loudness tagging", () => {
   });
 
   test("runs decoding and tagging outside the server event loop", async () => {
-    const fixture = fs.readFileSync("resources/sounds/effects/message.mp3");
+    const fixture = fs.readFileSync("tests/fixtures/audio/message.mp3");
     const tagged = await processMusicUpload(fixture);
     const replayGain = NodeID3.read(tagged.audio).userDefinedText?.find(
       (entry) => entry.description.toUpperCase() === "REPLAYGAIN_TRACK_GAIN",

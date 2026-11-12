@@ -1,14 +1,15 @@
 import { afterEach, describe, expect, it } from "vitest";
-import type { ResolvedCosmetic } from "../../src/client/Cosmetics";
 import {
   cosmeticDisplayName,
   cosmeticRarity,
 } from "../../src/client/components/CosmeticPresentation";
-import "../../src/client/components/CosmeticPreview";
 import type { CosmeticPreview } from "../../src/client/components/CosmeticPreview";
+import "../../src/client/components/CosmeticPreview";
+import type { ResolvedCosmetic } from "../../src/client/Cosmetics";
 
 const translations = {
   "cosmetics.free": "+{numFree} BONUS!",
+  "cosmetics.pack_more_items": "+{count} more",
   "territory_patterns.pattern.default": "Default",
   "territory_patterns.pattern.stripes": "Ocean Stripes",
   "territory_patterns.pattern.forest": "Forest Skin",
@@ -16,6 +17,7 @@ const translations = {
   "crowns.golden": "Golden Crown",
   "effects.blue_wake": "Blue Wake",
   "subscriptions.gold": "Gold Membership",
+  "cosmetics.per_month": "/month",
 };
 
 const resolved = {
@@ -122,6 +124,25 @@ const resolved = {
     relationship: "purchasable",
     key: "pack:plutonium",
   },
+  cosmeticPack: {
+    type: "cosmeticPack",
+    cosmetic: {
+      name: "starter",
+      displayName: "Starter Pack",
+      description: "",
+      priceHard: 250,
+      rarity: "epic",
+      items: [
+        { type: "flag", name: "us" },
+        { type: "crown", name: "golden" },
+        { type: "effect", name: "blue_wake" },
+      ],
+    },
+    colorPalette: null,
+    relationship: "purchasable",
+    key: "cosmeticPack:starter",
+    packItems: [],
+  },
   subscription: {
     type: "subscription",
     cosmetic: {
@@ -133,6 +154,7 @@ const resolved = {
       hardCurrencySignupBonus: 100,
       unlimitedRanked: true,
       canCreatePublicLobbies: true,
+      requiresSteamLicence: false,
       product: null,
       rarity: "legendary",
     },
@@ -182,7 +204,7 @@ describe("CosmeticPreview", () => {
     await render(resolved.pattern);
 
     expect(
-      preview!.querySelector('[data-cosmetic-preview="pattern"] img'),
+      preview!.querySelector('[data-cosmetic-preview="pattern"] canvas'),
     ).toBeTruthy();
     expect(cosmeticDisplayName(preview!.resolved)).toBe("Ocean Stripes");
     expect(cosmeticRarity(preview!.resolved)).toBe("rare");
@@ -233,12 +255,15 @@ describe("CosmeticPreview", () => {
     })) as unknown as typeof Element.prototype.animate;
     await render(resolved.transitionEffect as ResolvedCosmetic);
 
-    const trail = preview!.querySelector("trail-swatch")!;
+    const scene = preview!.querySelector("effect-scene")!;
     expect(preview!.classList).toContain("block");
-    expect(trail.classList).toContain("block");
-    expect(trail.querySelector("div")?.getAttribute("style")).toContain(
-      "#ff0000",
-    );
+    expect(scene.classList).toContain("block");
+    // The transition cross-fades the trail through the palette.
+    expect(
+      scene
+        .querySelector("[data-trail] animate[attributeName='fill']")
+        ?.getAttribute("values"),
+    ).toContain("#ff0000");
   });
 
   it("uses the server-provided pack display name", async () => {
@@ -271,6 +296,43 @@ describe("CosmeticPreview", () => {
     expect(previewBox.textContent).toContain("+250 BONUS!");
   });
 
+  it("tiles a cosmetic pack's resolved items and sums up the overflow", async () => {
+    installTranslations();
+    const items = [
+      resolved.flag,
+      resolved.crown,
+      resolved.effect,
+      resolved.skin,
+      resolved.pattern,
+    ] as ResolvedCosmetic[];
+    await render({ ...resolved.cosmeticPack, packItems: items });
+
+    const box = preview!.querySelector(
+      '[data-cosmetic-preview="cosmeticPack"]',
+    )!;
+    expect(box.className).toContain("aspect-square");
+    const tiles = [...box.querySelectorAll("[data-cosmetic-pack-item]")];
+    // Four live previews at most — a big pack shouldn't paint every item.
+    expect(
+      tiles.map((tile) => tile.getAttribute("data-cosmetic-pack-item")),
+    ).toEqual(items.slice(0, 4).map((item) => item.key));
+    expect(tiles[0].querySelector("img")?.alt).toBe("United States");
+    expect(box.textContent).toContain("+1 more");
+    expect(cosmeticDisplayName(preview!.resolved)).toBe("Starter Pack");
+    expect(cosmeticRarity(preview!.resolved)).toBe("epic");
+  });
+
+  it("renders a cosmetic pack whose items all vanished without a badge", async () => {
+    installTranslations();
+    await render(resolved.cosmeticPack);
+
+    const box = preview!.querySelector(
+      '[data-cosmetic-preview="cosmeticPack"]',
+    )!;
+    expect(box.querySelectorAll("[data-cosmetic-pack-item]")).toHaveLength(0);
+    expect(box.textContent).not.toContain("more");
+  });
+
   it("lets a subscription preview grow past a square", async () => {
     installTranslations();
     await render(resolved.subscription);
@@ -282,5 +344,61 @@ describe("CosmeticPreview", () => {
     )!;
     expect(box.className).toContain("w-full");
     expect(box.className).not.toContain("aspect-square");
+  });
+
+  it("advertises the tier's plutonium bonus as monthly", async () => {
+    installTranslations();
+    await render(resolved.subscription);
+
+    const box = preview!.querySelector(
+      '[data-cosmetic-preview="subscription"]',
+    )!;
+    expect(box.textContent).toContain("/month");
+    expect(box.textContent).not.toMatch(/signup/i);
+  });
+
+  describe("subscription perks", () => {
+    const licenceTier = {
+      ...resolved.subscription,
+      cosmetic: {
+        ...resolved.subscription.cosmetic,
+        name: "steam_plus",
+        requiresSteamLicence: true,
+      },
+    } as ResolvedCosmetic;
+
+    function perks(): (string | null)[] {
+      return [...preview!.querySelectorAll("[data-subscription-perk]")].map(
+        (perk) => perk.getAttribute("data-subscription-perk"),
+      );
+    }
+
+    it("lists the verified name and public lobbies for a web tier", async () => {
+      installTranslations();
+      await render(resolved.subscription);
+      expect(perks()).toEqual(["verified_name", "public_lobbies"]);
+    });
+
+    it("lists neither for a tier the Steam licence already covers", async () => {
+      installTranslations();
+      await render(licenceTier);
+      expect(perks()).toEqual([]);
+    });
+
+    it("draws the plutonium figures larger at detail size", async () => {
+      installTranslations();
+      await render(resolved.subscription);
+      const iconSizes = () =>
+        [
+          ...preview!.querySelectorAll<HTMLElement & { size: number }>(
+            "plutonium-icon",
+          ),
+        ].map((icon) => icon.size);
+      expect(iconSizes()).toEqual([24, 24]);
+
+      preview!.size = "detail";
+      await preview!.updateComplete;
+      expect(iconSizes()).toEqual([36, 36]);
+    });
   });
 });

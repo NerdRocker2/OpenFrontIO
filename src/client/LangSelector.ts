@@ -1,6 +1,9 @@
+import { assetUrl } from "@openfront/shared/AssetUrls";
 import { LitElement, html } from "lit";
 import { customElement, state } from "lit/decorators.js";
-import { assetUrl } from "../core/AssetUrls";
+import { desktopSteamLocale } from "./DesktopShell";
+// The type-only use below is erased at runtime; keep this to register the modal.
+// oxlint-disable-next-line import/no-duplicates -- Required custom-element registration.
 import "./LanguageModal";
 import { LanguageModal } from "./LanguageModal";
 import { formatDebugTranslation } from "./Utils";
@@ -35,7 +38,7 @@ export class LangSelector extends LitElement {
   connectedCallback() {
     super.connectedCallback();
     this.setupDebugKey();
-    this.initializeLanguage();
+    void this.initializeLanguage();
     window.addEventListener(
       "language-selected",
       this.handleLanguageSelected as EventListener,
@@ -52,7 +55,7 @@ export class LangSelector extends LitElement {
 
   private handleLanguageSelected = (e: CustomEvent) => {
     if (e.detail && e.detail.lang) {
-      this.changeLanguage(e.detail.lang);
+      void this.changeLanguage(e.detail.lang);
     }
   };
 
@@ -84,8 +87,46 @@ export class LangSelector extends LitElement {
     return "en";
   }
 
+  /**
+   * The locale to default to when the player has never chosen one.
+   *
+   * On the Steam desktop build the shell reports the locale the player's Steam
+   * is set to, which is a better signal than navigator.language -- there the
+   * OS locale, which ignores Steam entirely.
+   *
+   * But only when Steam actually said something. Steam offers about thirty UI
+   * languages and we ship forty, and English is ALSO Steam's fallback for a
+   * language it cannot express: a player whose system is Estonian cannot have
+   * Estonian Steam, so theirs reports English. "The player wants English" and
+   * "Steam has no way to say what this player reads" are the same answer, so
+   * an answer that lands on English is treated as no answer and the OS locale
+   * decides -- which is what this did before Steam was consulted at all.
+   *
+   * Tested on the RESOLVED language rather than the raw tag, so a Steam
+   * language we ship no translation for (Thai, Romanian, Norwegian) counts as
+   * uninformative for the same reason and by the same path.
+   *
+   * The case this deliberately gets wrong: someone who genuinely wants English
+   * while their system is German now gets German. That is exactly what they
+   * got before the shell reported anything, so it is an old imperfection left
+   * standing rather than a new one -- and the in-game picker settles it for
+   * good, because a saved choice outranks both of these.
+   */
+  private defaultLocale(): string {
+    const osLocale = navigator.language;
+    const steamLocale = desktopSteamLocale();
+    if (steamLocale === null) return osLocale;
+    return this.getClosestSupportedLang(steamLocale) === "en"
+      ? osLocale
+      : steamLocale;
+  }
+
   private async initializeLanguage() {
-    const browserLocale = navigator.language;
+    // A saved choice is the last word on every platform. Everything else is
+    // just how the DEFAULT is picked -- see defaultLocale, and note it is
+    // consulted afresh each launch rather than persisted, so a player who
+    // changes their Steam language sees the game follow.
+    const browserLocale = this.defaultLocale();
     const savedLang = localStorage.getItem("lang");
     const userLang = this.getClosestSupportedLang(savedLang ?? browserLocale);
 
@@ -131,7 +172,7 @@ export class LangSelector extends LitElement {
       this.languageCache.set(lang, flat);
       return flat;
     } catch (err) {
-      console.error(`Failed to load language ${lang}:`, err);
+      console.warn(`Failed to load language ${lang}:`, err);
       return {};
     }
   }
@@ -192,7 +233,7 @@ export class LangSelector extends LitElement {
 
       this.languageList = finalList;
     } catch (err) {
-      console.error("Failed to load language list:", err);
+      console.warn("Failed to load language list:", err);
     }
   }
 
@@ -205,8 +246,10 @@ export class LangSelector extends LitElement {
 
   private applyTranslation() {
     const components = [
+      "banned-modal",
       "single-player-modal",
       "host-lobby-modal",
+      "map-picker",
       "join-lobby-modal",
       "emoji-table",
       "player-stats",
@@ -232,10 +275,17 @@ export class LangSelector extends LitElement {
       "cosmetic-card",
       "cosmetic-info",
       "cosmetic-preview",
+      "difficulty-info",
+      "map-details",
+      "atlas-map",
       "inventory-loadout-bar",
       "purchase-button",
       "custom-currency-card",
       "fluent-slider",
+      "nav-account-menu",
+      "level-badge",
+      "game-xp-panel",
+      "past-game-xp-card",
       "news-modal",
       "account-modal",
       "game-stats-modal",
@@ -249,6 +299,9 @@ export class LangSelector extends LitElement {
       "steam-wishlist",
       "steam-wishlist-button",
       "streaming-now",
+      "tutorial-panel",
+      // Re-sends its strings to the clan map frame.
+      "clan-map-view",
     ];
 
     document.title = this.translateText("main.title") ?? document.title;
@@ -384,18 +437,20 @@ function flattenTranslations(
   parentKey = "",
   result: Record<string, string> = {},
 ): Record<string, string> {
-  for (const key in obj) {
+  for (const key of Object.keys(obj)) {
     const value = obj[key];
     const fullKey = parentKey ? `${parentKey}.${key}` : key;
-
     if (typeof value === "string") {
       result[fullKey] = value;
-    } else if (value && typeof value === "object" && !Array.isArray(value)) {
+    } else if (
+      typeof value === "object" &&
+      value !== null &&
+      !Array.isArray(value)
+    ) {
       flattenTranslations(value, fullKey, result);
     } else {
       console.warn("Unknown type", typeof value, value);
     }
   }
-
   return result;
 }
