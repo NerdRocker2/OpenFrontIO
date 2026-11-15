@@ -18,8 +18,6 @@ import {
 import { ClientEnv } from "src/client/ClientEnv";
 import { renderNavVersion } from "src/client/GameVersion";
 import { responseHasLinkedIdentity } from "./AccountIdentity";
-import { adGatekeeper } from "./AdGatekeeper";
-import { loadAdmiral, onAdmiralMeasured } from "./Admiral";
 import { wasAdmitted } from "./AdmittedLobbies";
 import {
   getUserMe,
@@ -86,10 +84,7 @@ import {
 } from "./GameModeSelector";
 import { gamePortal } from "./GamePortal";
 import { GameStartingModal } from "./GameStartingModal";
-import { syncHashedEmail } from "./HashedEmail";
 import type { HelpModal } from "./HelpModal";
-import "./HomepagePromos";
-import type { HomepagePromos } from "./HomepagePromos";
 import type { HostLobbyModal as HostPrivateLobbyModal } from "./HostLobbyModal";
 import { showInGameAlert, showInGameConfirm } from "./InGameModal";
 import type { JoinLobbyModal } from "./JoinLobbyModal";
@@ -210,54 +205,11 @@ import "./styles/core/variables.css";
 import "./styles/layout/container.css";
 import "./styles/layout/header.css";
 
-type RampUserProfile = { format: "UUP1"; heid: { sha256: string } };
-
 declare global {
   interface Window {
     turnstile?: TurnstileApi;
     adsEnabled: boolean;
     gtag?: (...args: any[]) => void;
-    PageOS: {
-      session: {
-        newPageView: () => void;
-      };
-    };
-    ramp: {
-      que: Array<() => void>;
-      passiveMode: boolean;
-      spaAddAds: (ads: Array<{ type: string; selectorId?: string }>) => void;
-      destroyUnits: (adType: string | string[]) => Promise<void>;
-      settings?: {
-        slots?: any;
-      };
-      spaNewPage: (url?: string) => void;
-      // Hashed email (HEM): `up` is read once at init, setUserProfile after.
-      up?: RampUserProfile;
-      setUserProfile: (profile: RampUserProfile) => void;
-      spaAds: (config?: {
-        ads?: Array<{ type: string; selectorId?: string }>;
-        countPageview?: boolean;
-        path?: string;
-      }) => void;
-      // Video ad methods
-      onPlayerReady: (() => void) | null;
-      addUnits: (units: Array<{ type: string }>) => Promise<void>;
-      displayUnits: () => void;
-    };
-    Bolt: {
-      on: (unitType: string, event: string, callback: () => void) => void;
-      BOLT_AD_REQUEST_START: string;
-      BOLT_AD_IMPRESSION: string;
-      BOLT_AD_STARTED: string;
-      BOLT_FIRST_QUARTILE: string;
-      BOLT_MIDPOINT: string;
-      BOLT_THIRD_QUARTILE: string;
-      BOLT_AD_COMPLETE: string;
-      BOLT_AD_ERROR: string;
-      BOLT_AD_PAUSED: string;
-      BOLT_AD_CLICKED: string;
-      SHOW_HIDDEN_CONTAINER: string;
-    };
     currentPageId?: string;
     showPage?: (pageId: string) => void;
   }
@@ -829,29 +781,9 @@ class Client {
       } else {
         updateAccountNavButton(userMeResponse);
       }
-      const isAdFree =
-        userMeResponse !== false && userMeResponse.player?.adfree === true;
-      window.adsEnabled =
-        !isAdFree && !gamePortal.isOnGamePortal() && !isDesktopShell();
-      syncHashedEmail(userMeResponse, window.adsEnabled).catch((e) =>
-        console.warn("Hashed email sync failed", e),
-      );
-      // Ad-eligible users only: paid/adfree users must never load Admiral (its
-      // adblock popup fires autonomously once the payload runs). Start watching
-      // adblock state; once a blocker is ever detected the in-game ad is
-      // suppressed forever (persisted) — those users are highly ad-sensitive.
-      if (window.adsEnabled) {
-        loadAdmiral();
-        // Admiral's read is more reliable than our DOM bait, so use it as a
-        // fast initial signal. A blocker that whitelists this site still shows
-        // ads, so "blocked" means adblocking AND not whitelisted.
-        onAdmiralMeasured((res) => {
-          adGatekeeper.seed(
-            res.adblocking === true && res.whitelisted !== true,
-          );
-        });
-        adGatekeeper.start();
-      }
+      // This personal-use build never enables display ads. FeaturedStream
+      // also uses this flag to offer its hide-for-today control.
+      window.adsEnabled = false;
       // Before the dispatch: <username-input> reads this store when it picks
       // the lapse notice's wording, and the record has to be current by then.
       const grantStoreBefore = parseSteamGrantStore(
@@ -1348,7 +1280,6 @@ class Client {
       "change-username-modal",
       "subscription-modal",
       "lang-selector",
-      "homepage-promos",
     ].forEach((tag) => {
       const modal = document.querySelector(tag) as HTMLElement & {
         close?: () => void;
@@ -1410,11 +1341,6 @@ class Client {
     this.loadedHostModal()?.closeWithoutLeaving();
     this.loadedJoinModal()?.closeWithoutLeaving();
     this.closeMenu();
-    // close() keeps a lobby's bottom rail for the spawn phase, which the
-    // viewer never reaches.
-    (
-      document.querySelector("homepage-promos") as HomepagePromos | null
-    )?.destroyBottomRail?.();
     // Closing a modal the router opened clears the hash. Put the viewer's
     // back, so a reload opens the replay again.
     if (window.location.hash !== hash) {
@@ -2044,9 +1970,6 @@ class Client {
 
       hideMenuChrome();
 
-      if (window.PageOS?.session?.newPageView) {
-        window.PageOS.session.newPageView();
-      }
       gamePortal.loadingStop();
       void gamePortal.gameplayStart();
       setInGameSignal(true);
@@ -2137,13 +2060,7 @@ class Client {
       // ever called during the pre-start lobby wait; every exit from a
       // STARTED game goes through a full location.href navigation, and it is
       // that reload -- not handleLeaveLobby -- which restores the started-game
-      // teardown. Two pieces of it have no in-place restore path:
-      // gameModeSelector.stop() (line ~1139/1157) kills the public lobby
-      // socket, whose start() is only ever called from connectedCallback();
-      // and the same block hides every .ad element, which nothing ever
-      // un-hides. Leaving in place therefore stranded the player on a
-      // homepage with a frozen lobby list and no ad rails whenever the join
-      // did not complete -- modal closed, or lobby full/already started.
+      // teardown, including restarting the public lobby socket.
       //
       // Navigating to the lobby's own /game/<id> URL rather than "/" means
       // the invite survives the reload without needing to be stashed: the
