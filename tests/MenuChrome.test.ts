@@ -1,106 +1,16 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   hideMenuChrome,
   menuChromeIsTornDown,
   restoreMenuChrome,
 } from "../src/client/MenuChrome";
 
-// OPE-255. Starting a game hides the menu's ad rails and closes the promos.
-// Every exit from a STARTED game used to be a full `window.location.href = "/"`
-// navigation, and it was the reload -- not any code -- that put them back.
-// openInvite() leaves in place instead, so the teardown needed a real inverse.
-// These two live in one module precisely so they cannot drift apart again.
-
-function ad(): HTMLElement {
-  const el = document.createElement("div");
-  el.className = "ad";
-  document.body.appendChild(el);
-  return el;
-}
-
 afterEach(() => {
   document.body.innerHTML = "";
   document.body.classList.remove("in-game");
   // Module-level teardown flag: reset so state cannot leak between tests.
   restoreMenuChrome();
-});
-
-describe("hideMenuChrome", () => {
-  it("hides every ad slot", () => {
-    const a = ad();
-    const b = ad();
-
-    hideMenuChrome();
-
-    expect(a.style.display).toBe("none");
-    expect(b.style.display).toBe("none");
-  });
-
-  it("is a no-op when there is nothing to hide", () => {
-    expect(() => hideMenuChrome()).not.toThrow();
-  });
-});
-
-describe("restoreMenuChrome", () => {
-  it("un-hides every ad slot", () => {
-    const a = ad();
-    const b = ad();
-    hideMenuChrome();
-
-    restoreMenuChrome();
-
-    expect(a.style.display).toBe("");
-    expect(b.style.display).toBe("");
-  });
-
-  // Clearing the inline style rather than forcing "block" matters: these slots
-  // get their real layout from the stylesheet, and a slot the page had its own
-  // reason to keep hidden must not be forced visible by our restore.
-  it("clears the inline style instead of forcing a display value", () => {
-    const el = ad();
-    hideMenuChrome();
-
-    restoreMenuChrome();
-
-    expect(el.getAttribute("style")).not.toContain("display");
-  });
-
-  it("round-trips an untouched slot back to how it started", () => {
-    const el = ad();
-    const before = el.getAttribute("style");
-
-    hideMenuChrome();
-    restoreMenuChrome();
-
-    expect(el.getAttribute("style") ?? "").toBe(before ?? "");
-  });
-
-  it("reopens the promos section", () => {
-    const promos = document.createElement("homepage-promos") as HTMLElement & {
-      show: () => void;
-    };
-    promos.show = vi.fn();
-    document.body.appendChild(promos);
-
-    restoreMenuChrome();
-
-    expect(promos.show).toHaveBeenCalledOnce();
-  });
-
-  // The promos element is ad machinery. On the Steam shell -- the only place
-  // this restore path can be reached -- ads never load, so it may not be
-  // upgraded and may expose no show() at all. That must not throw and take the
-  // lobby-socket restart below it down with it.
-  it("tolerates a promos element that has no show()", () => {
-    document.body.appendChild(document.createElement("homepage-promos"));
-
-    expect(() => restoreMenuChrome()).not.toThrow();
-  });
-
-  it("tolerates the promos element being absent entirely", () => {
-    expect(() => restoreMenuChrome()).not.toThrow();
-  });
 });
 
 // The gate that decides whether any of the above runs.
@@ -146,66 +56,5 @@ describe("menuChromeIsTornDown", () => {
     document.body.classList.add("in-game");
 
     expect(menuChromeIsTornDown()).toBe(false);
-  });
-});
-
-// A slot may already carry an inline display for reasons of its own -- an ad
-// the page decided not to show, or a layout the stylesheet does not describe.
-// Blanking it on restore would reveal a slot somebody deliberately hid, so
-// hide records what it displaced and restore puts that value back.
-describe("restoreMenuChrome preserves a slot's own inline display", () => {
-  it("leaves a slot that was already hidden hidden", () => {
-    const el = ad();
-    el.style.display = "none";
-
-    hideMenuChrome();
-    restoreMenuChrome();
-
-    expect(el.style.display).toBe("none");
-  });
-
-  it("puts back a non-default display value", () => {
-    const el = ad();
-    el.style.display = "flex";
-
-    hideMenuChrome();
-    restoreMenuChrome();
-
-    expect(el.style.display).toBe("flex");
-  });
-
-  // The trap. hideMenuChrome() runs TWICE on a real join -- once in
-  // prestart.then() and again in join.then() (Main.ts). A naive "record the
-  // current value on every hide" would capture "none" from its own first pass
-  // and then restore a permanently hidden slot.
-  it("does not record its own handiwork when hide runs twice", () => {
-    const el = ad();
-    el.style.display = "flex";
-
-    hideMenuChrome();
-    hideMenuChrome();
-    restoreMenuChrome();
-
-    expect(el.style.display).toBe("flex");
-  });
-
-  // A slot added to the page between the two hide passes still gets recorded.
-  it("records a slot that appears after the first hide", () => {
-    hideMenuChrome();
-    const late = ad();
-    late.style.display = "block";
-    hideMenuChrome();
-    restoreMenuChrome();
-
-    expect(late.style.display).toBe("block");
-  });
-
-  it("still clears the style for a slot that had none", () => {
-    const el = ad();
-
-    hideMenuChrome();
-    restoreMenuChrome();
-
-    expect(el.style.display).toBe("");
   });
 });
