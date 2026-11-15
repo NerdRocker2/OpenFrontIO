@@ -51,3 +51,15 @@ describe("FetchGameMapLoader", () => {
     expect(fetchMock).toHaveBeenLastCalledWith("/maps/china/label.4x.webp");
   });
 });
+
+test("old and canonical chicken names resolve to the same cached terrain files", () => {
+  const loader = new FetchGameMapLoader("/maps");
+  const current = loader.getMapData(GameMapType.AintNobodyHereButUsChickens);
+  const legacy = loader.getMapData(
+    "Ain't Nobody Here But Us Chickens" as GameMapType,
+  );
+  expect(legacy).toBe(current);
+  expect(legacy.webpPath).toBe(
+    "/maps/aintnobodyherebutuschickens/thumbnail.webp",
+  );
+});

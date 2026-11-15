@@ -177,31 +177,6 @@ const AUDIO_RESET_KEYS: readonly string[] = [
   "settings.soundEffectsVolume",
 ];
 
-/**
- * Bumped to force every existing player back to the platform defaults once.
- *
- * Version 1 is the new audio delivery itself. The read-through in
- * audioVolume() below was meant to carry an existing player's two old sliders
- * across, but it only carries the channels those sliders covered: a player who
- * had ever dragged ONE of them stored a key, which satisfies the master
- * carve-out in defaultMasterVolume() -- so master resolves to audible -- while
- * the four channels the other slider never covered fall through to the new
- * defaults. That is a web player who opted into music years ago now hearing
- * the entire new cue layer at full level, having opted into none of it.
- *
- * A reset rather than a narrower rule because the stored state cannot say
- * which it is: "dragged the music slider and left effects alone" and "dragged
- * the music slider and never had the choice" are the same two keys. Clearing
- * everything lets the platform default answer instead, which on the web is
- * silence until the player asks otherwise.
- *
- * The cost is that choices already made in the new Audio tab go with it.
- * Deliberate, and the reason this is version-stamped rather than repeated:
- * whatever the player picks after the reset is theirs and survives.
- */
-const AUDIO_RESET_VERSION = 1;
-const AUDIO_RESET_VERSION_KEY = "settings.audio.resetVersion";
-
 /** Every key that means "this player has chosen an audio volume before". */
 const AUDIO_VOLUME_KEYS: readonly string[] = [
   "settings.backgroundMusicVolume",
@@ -1065,38 +1040,30 @@ export class UserSettings {
     );
   }
 
-  /**
-   * Runs resetAudio() once per player, on every platform, the first time a
-   * build carrying a new AUDIO_RESET_VERSION is loaded. See that constant for
-   * why the reset exists.
-   *
-   * Idempotent by the stamp, not by a flag in memory: the stamp is written
-   * whether or not there was anything to clear, so a fresh install spends the
-   * version without a reset it did not need and a returning player is reset
-   * exactly once however many times the page reloads.
-   *
-   * The stamp is written LAST. A throw anywhere in resetAudio -- localStorage
-   * full, or unavailable in a hardened browser -- then leaves the version
-   * unspent and the next load tries again, rather than recording a reset that
-   * did not happen.
-   *
-   * @returns whether this call performed the reset.
-   */
-  resetAudioOnce(): boolean {
-    const raw = this.getCached(AUDIO_RESET_VERSION_KEY);
-    // Number, not parseInt: parseInt stops at the first character it cannot
-    // use, so "1-corrupt" reads as 1 and skips a reset that has never run.
-    // A stamp is a whole non-negative number or it is not a stamp.
-    const stamped = raw === null ? Number.NaN : Number(raw);
-    // The fallback covers "never stamped" and anything this build cannot
-    // read; either way the reset has not happened here.
-    const applied = Number.isSafeInteger(stamped) && stamped >= 0 ? stamped : 0;
-    if (applied >= AUDIO_RESET_VERSION) return false;
-    this.resetAudio();
-    // No change event: nothing listens for the stamp, and resetAudio has
-    // already announced every value that actually moved.
-    this.setCached(AUDIO_RESET_VERSION_KEY, String(AUDIO_RESET_VERSION), false);
-    return true;
+  /** Preserve the old two-slider choices without enabling new cue channels. */
+  migrateLegacyAudio(): void {
+    const hasLegacy = [
+      "settings.backgroundMusicVolume",
+      "settings.soundEffectsVolume",
+    ].some((key) => this.getCached(key) !== null);
+    if (!hasLegacy) return;
+    for (const category of ["music", ...SPLIT_FROM_SOUND_EFFECTS] as const) {
+      if (this.getCached(`settings.audio.${category}`) !== null) continue;
+      // Both sliders defaulted to silence in the fork before the mixer merge.
+      this.setAudioVolume(
+        category,
+        this.getFloat(AUDIO_LEGACY_KEY[category]!, 0),
+      );
+    }
+  }
+
+  /** An explicit music Play action opts into audible master/music levels. */
+  enableMusic(): void {
+    for (const category of ["music", "master"] as const) {
+      if (this.audioVolume(category) === 0) {
+        this.setAudioVolume(category, AUDIO_DEFAULTS[category]);
+      }
+    }
   }
 
   setAlertsWhenUnfocused(value: boolean): void {

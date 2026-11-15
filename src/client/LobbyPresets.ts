@@ -1,9 +1,9 @@
 import {
   Difficulty,
-  GameMapType,
   GameMode,
   UnitType,
 } from "@openfront/engine-api/game/GameTypes";
+import { SavedGameMapSchema } from "@openfront/engine-api/game/MapNames";
 import { TeamCountConfigSchema } from "@openfront/engine-api/Schemas";
 import { DOOMSDAY_CLOCK_SPEEDS } from "@openfront/engine-lib/game/DoomsdayClock";
 import { z } from "zod";
@@ -13,7 +13,7 @@ export const LOBBY_PRESETS_KEY = "settings.lobbyPresets";
 export const MAX_PRESET_NAME_LENGTH = 50;
 
 export const LobbyPresetConfigSchema = z.object({
-  gameMap: z.enum(GameMapType),
+  gameMap: SavedGameMapSchema,
   useRandomMap: z.boolean().optional(),
   compactMap: z.boolean().optional(),
   difficulty: z.enum(Difficulty),

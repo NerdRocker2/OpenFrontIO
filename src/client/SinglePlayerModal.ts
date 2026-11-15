@@ -7,6 +7,7 @@ import {
   listedMaps,
   UnitType,
 } from "@openfront/engine-api/game/GameTypes";
+import { canonicalGameMapName } from "@openfront/engine-api/game/MapNames";
 import type { SnapshotHeader } from "@openfront/engine-api/game/SnapshotHeader";
 import { TeamCountConfig } from "@openfront/engine-api/Schemas";
 import { DoomsdayClockSpeed } from "@openfront/engine-lib/game/DoomsdayClock";
@@ -363,7 +364,11 @@ export class SinglePlayerModal extends BaseModal {
 
     const winsMap = new Map<GameMapType, Set<Difficulty>>();
     for (const entry of completions) {
-      const { mapName, difficulty } = entry ?? {};
+      const { difficulty } = entry ?? {};
+      const mapName =
+        typeof entry?.mapName === "string"
+          ? canonicalGameMapName(entry.mapName)
+          : entry?.mapName;
       const isValidMap =
         typeof mapName === "string" &&
         Object.values(GameMapType).includes(mapName as GameMapType);

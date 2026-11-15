@@ -44,6 +44,7 @@ Merged into local `main` from upstream tag `v0.36.2` at
      The chicken name also conflicts with the upstream hosted API's documented
      map-name constraints. Hosted archival/link previews require a deliberate
      compatibility decision; the merge does not change those external services.
+     The chicken-map issues were subsequently resolved in the follow-up below.
 
 ## Validation
 
@@ -61,3 +62,75 @@ Merged into local `main` from upstream tag `v0.36.2` at
   Windows' WSL launcher.
 - All Git conflict entries and conflict markers were resolved. Upstream's
   existing CSS/chunk-size build warnings remain.
+
+## Chicken map restoration follow-up
+
+- Changed the internal name to `AintNobodyHereButUsChickens` in the generator
+  metadata, generated registry, and resource manifest. Kept the display title
+  `Ain't Nobody Here But Us Chickens`, the featured category, and all 42 nations.
+  Terrain binaries and the thumbnail are unchanged.
+- Added old-name compatibility when reading presets, favorites, achievements,
+  archived analytics, replay records, and saved-game snapshots. Old names also
+  resolve to the existing terrain and preview paths. New configs and saves use
+  the canonical name. Replay version checks remain in effect.
+- Kept the live config enum schema and its ordering intact; alias conversion
+  occurs at saved-data boundaries. Snapshot and binary-wire regressions pass.
+- Type checking, lint, and the production build pass. Focused tests cover the
+  metadata, legacy-name migration, and loading/resuming/resaving a legacy-name
+  snapshot. The chicken map now passes the map consistency and manifest checks.
+- Three existing map-validation failures remain, all for Hillbilly Head: its
+  unregistered translation, unregistered folders, and legacy manifest fields.
+  No new low-confidence conflict resolutions were needed for this follow-up.
+  These three failures were subsequently resolved in the follow-up below.
+
+## Hillbilly Head restoration follow-up
+
+- Registered `HillbillyHead` / `Hillbilly Head` in the generated enum and map
+  list, with nine default nations and the existing North America category.
+  It is selectable in the map picker's All tab under North America.
+- Moved the legacy manifest's author and description into the supported
+  generator metadata and map picker fields, preserving the credit to Jeff
+  Lawlor and the description "My very first map". Removed the unsupported
+  manifest fields `metadata` and `generatedAt`; the old generation timestamp
+  was `2026-04-05T03:36:57.588Z`.
+- Preserved the existing terrain binaries and thumbnail. All three binary
+  lengths and land counts match the manifest. Tests load the actual files
+  through the game loader and start both normal (5000x5000) and compact
+  (2500x2500) games; all nine nations spawn on passable land.
+- All 486 focused map/loading/binary-wire checks pass, including the three
+  previously failing Hillbilly Head checks.
+- Final full suite: 743 test files passed and three skipped; 11,065 tests
+  passed, 34 skipped, and none failed. Type checking, lint, and the production
+  build also pass. Existing jsdom/media test and build warnings remain.
+- **Source limitation:** `map-generator/assets/maps/hillbillyhead/image.png`
+  is a 1x1 placeholder. The checked history for that path also only contains
+  this placeholder. Gameplay uses the intact generated files, but the original
+  full-resolution source image must be recovered before regenerating this map.
+  Do not run an unrestricted `npm run gen-maps` or target `hillbillyhead` with
+  the generator while that placeholder remains: it would overwrite usable
+  terrain. The registry was updated to match the source metadata without
+  running terrain generation.
+- Adding the enum entry follows the generator's alphabetical ordering and
+  changes later binary enum ordinals. Clients and servers must run the same
+  rebuilt version, as required by the binary protocol.
+
+## Music startup and playback controls follow-up
+
+- Confirmed the reported silence came with Master at zero. Upstream's startup
+  reset cleared existing audio choices; the playlist's Play path then returned
+  immediately at zero output, including when invoked by a hotkey or media key.
+- Replaced the destructive startup reset with migration of the fork's old
+  two-slider settings. Existing music levels and modern channel choices are
+  preserved; previously unchosen legacy effects stay silent.
+- Explicit music Play now enables zero Master/Music sliders at their defaults
+  and persists those levels. Nonzero levels and other settings are preserved.
+  Automatic startup still honors mute settings. After refreshing the rebuilt
+  client, press backslash or media Play once to recover from an already-applied
+  reset; the previous erased slider value cannot be reconstructed.
+- Media Session Play and Pause are now separate, idempotent actions. A click
+  retries requested playback blocked by the browser, and Play resumes a
+  suspended Web Audio graph even if the media element reports playing. Stop
+  cancels pending startup, and disposal removes the playback handlers.
+- Type checking, lint, production build, and 480 audio/settings/input tests
+  pass. Live listening verification was unavailable because the browser access
+  host was unavailable; tests simulate media events and the suspended context.

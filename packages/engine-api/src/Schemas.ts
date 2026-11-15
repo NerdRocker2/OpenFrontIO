@@ -16,6 +16,7 @@ import {
   Trios,
   UnitType,
 } from "./game/GameTypes";
+import { SavedGameMapSchema } from "./game/MapNames";
 import { PlayerStatsSchema } from "./StatsSchemas";
 
 export type GameID = string;
@@ -347,6 +348,11 @@ export const GameConfigSchema = z.object({
   // Stripped from gameStartInfo and from the advertised lobby config: sibling
   // ids are private lobby ids, which are join secrets.
   pool: PoolConfigSchema.optional(),
+});
+
+// Stored configs may predate a canonical map-name migration.
+export const SavedGameConfigSchema = GameConfigSchema.extend({
+  gameMap: SavedGameMapSchema,
 });
 
 // What a host sends in update_game_config. maxPlayers is the private-lobby

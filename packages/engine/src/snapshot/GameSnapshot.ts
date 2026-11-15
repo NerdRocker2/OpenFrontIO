@@ -4,7 +4,11 @@ import {
   TeamGameSpawnAreas,
 } from "@openfront/engine-api/game/GameTypes";
 import type { SnapshotHeader } from "@openfront/engine-api/game/SnapshotHeader";
-import { GameConfig, GameConfigSchema } from "@openfront/engine-api/Schemas";
+import {
+  GameConfig,
+  GameConfigSchema,
+  SavedGameConfigSchema,
+} from "@openfront/engine-api/Schemas";
 import {
   GameMapImpl,
   GameMapSnapshot,
@@ -250,7 +254,7 @@ export function readSnapshotHeader(bytes: Uint8Array): SnapshotHeader {
     gitCommit: root.gitCommit,
     gameID: root.gameID,
     tick: root.tick,
-    gameConfig: GameConfigSchema.parse(root.gameConfig),
+    gameConfig: SavedGameConfigSchema.parse(root.gameConfig),
     humans,
   };
 }
@@ -269,7 +273,7 @@ export interface RestoreDeps {
  */
 export function restoreGame(bytes: Uint8Array, deps: RestoreDeps): Game {
   const root = decodeRoot(bytes);
-  const gameConfig = GameConfigSchema.parse(root.gameConfig);
+  const gameConfig = SavedGameConfigSchema.parse(root.gameConfig);
   const config = deps.config(gameConfig);
 
   const state = readVersioned(GameSnapshot, root.game);

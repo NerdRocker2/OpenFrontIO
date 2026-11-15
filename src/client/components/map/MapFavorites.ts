@@ -1,4 +1,5 @@
 import { GameMapType } from "@openfront/engine-api/game/GameTypes";
+import { canonicalGameMapName } from "@openfront/engine-api/game/MapNames";
 import { TemplateResult, html } from "lit";
 
 const FAVORITES_KEY = "map-favorites";
@@ -11,9 +12,11 @@ export function getFavoriteMaps(): GameMapType[] {
     if (raw === null) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (m): m is GameMapType => typeof m === "string" && validMaps.has(m),
-    );
+    const normalized = parsed
+      .filter((m): m is string => typeof m === "string")
+      .map(canonicalGameMapName)
+      .filter((m): m is GameMapType => validMaps.has(m));
+    return [...new Set(normalized)];
   } catch (error) {
     console.warn("Failed to read favorite maps from localStorage:", error);
     return [];

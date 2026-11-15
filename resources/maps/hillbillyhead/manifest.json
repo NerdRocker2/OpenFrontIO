@@ -50,11 +50,6 @@
       "coordinates": [4436, 3423]
     }
   ],
-  "metadata": {
-    "author": "Jeff Lawlor",
-    "description": "My very first map"
-  },
-  "generatedAt": "2026-04-05T03:36:57.588Z",
   "map": {
     "width": 5000,
     "height": 5000,

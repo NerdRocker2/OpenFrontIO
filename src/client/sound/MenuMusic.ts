@@ -87,6 +87,10 @@ export function startMenuMusic(
   let theme: Howl | null = null;
   // Whether the home page is the thing on screen, so the theme may start.
   let armed = false;
+  let menuAvailable = options?.gameInProgress !== true;
+  let musicPage =
+    window.currentPageId === "page-music" ||
+    window.location.pathname === "/music";
   // Whether the player has interacted, so a play() can survive the autoplay
   // policy. Never cleared: activation is sticky for the life of the document.
   let gestured = false;
@@ -199,6 +203,7 @@ export function startMenuMusic(
   };
 
   const start = () => {
+    if (!armed || musicPage) return;
     if (theme !== null) return;
     // Nothing to hear on a channel the player has turned off, and on the Web
     // Audio path starting means holding the whole theme decoded. The mixer
@@ -247,6 +252,7 @@ export function startMenuMusic(
   // one arriving while the listeners are still up -- cannot stack a duplicate.
   const arm = () => {
     disarm();
+    if (!menuAvailable || musicPage) return;
     document.addEventListener("pointerdown", onGesture, { once: true });
     document.addEventListener("keydown", onGesture, { once: true });
     armed = true;
@@ -261,7 +267,7 @@ export function startMenuMusic(
     document.removeEventListener("keydown", onGesture);
   };
 
-  if (options?.gameInProgress !== true) arm();
+  arm();
 
   /**
    * Picks the theme up when the player turns music on, since start() declines
@@ -294,7 +300,7 @@ export function startMenuMusic(
     if (turnedOn && armed && gestured) start();
   });
 
-  document.addEventListener("game-starting", () => {
+  const stopTheme = (immediate = false) => {
     disarm();
     if (theme === null) return;
     const ending = theme;
@@ -308,7 +314,7 @@ export function startMenuMusic(
     // back up as the theme is leaving.
     mixer.unregister(ending);
     const from = ending.volume() as number;
-    if (from === 0) {
+    if (immediate || from === 0) {
       ending.stop();
       ending.unload();
       return;
@@ -318,7 +324,24 @@ export function startMenuMusic(
       ending.stop();
       ending.unload();
     });
+  };
+
+  document.addEventListener("game-starting", () => {
+    menuAvailable = false;
+    stopTheme();
   });
 
-  document.addEventListener("menu-restored", arm);
+  document.addEventListener("menu-restored", () => {
+    menuAvailable = true;
+    arm();
+  });
+
+  // The library owns its own preview player. Never let the menu theme play
+  // over it, including direct /music visits and in-page/back-button navigation.
+  window.addEventListener("showPage", (event) => {
+    const wasMusicPage = musicPage;
+    musicPage = (event as CustomEvent<string>).detail === "page-music";
+    if (musicPage) stopTheme(true);
+    else if (wasMusicPage) arm();
+  });
 }

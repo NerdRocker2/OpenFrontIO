@@ -33,14 +33,12 @@ vi.stubGlobal(
 // would be elided and createElement would return an inert element).
 import "../../src/client/SinglePlayerModal";
 
-function userMe(): UserMeResponse {
+function userMe(mapName: string = GameMapType.World): UserMeResponse {
   return {
     user: {},
     player: {
       achievements: {
-        singleplayerMap: [
-          { mapName: GameMapType.World, difficulty: Difficulty.Hard },
-        ],
+        singleplayerMap: [{ mapName, difficulty: Difficulty.Hard }],
       },
     },
   } as unknown as UserMeResponse;
@@ -67,5 +65,15 @@ describe("SinglePlayerModal and userMeResponse", () => {
     document.body.appendChild(modal);
 
     expect(modal.mapWins.size).toBe(0);
+  });
+
+  it("preserves wins recorded under the old chicken map name", () => {
+    broadcast.last = { response: userMe("Ain't Nobody Here But Us Chickens") };
+    const modal = document.createElement("single-player-modal") as any;
+    document.body.appendChild(modal);
+
+    expect(modal.mapWins.get(GameMapType.AintNobodyHereButUsChickens)).toEqual(
+      new Set([Difficulty.Hard]),
+    );
   });
 });

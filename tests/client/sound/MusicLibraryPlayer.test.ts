@@ -8,6 +8,7 @@ import {
 import {
   AddMusicTrackEvent,
   MusicNextTrackEvent,
+  MusicTogglePauseEvent,
 } from "../../../src/client/sound/Sounds";
 
 vi.mock("../../../src/client/Utils", () => ({
@@ -21,6 +22,8 @@ let cues: boolean;
 let changed: () => void;
 let unsubscribe: ReturnType<typeof vi.fn>;
 let fetchMock: ReturnType<typeof vi.fn>;
+let enableMusic: ReturnType<typeof vi.fn>;
+let mediaActions: Map<string, (() => void) | null>;
 
 function audio(): HTMLAudioElement {
   return (player as unknown as { musicAudio: HTMLAudioElement }).musicAudio;
@@ -38,12 +41,43 @@ beforeEach(() => {
   });
   vi.stubGlobal("fetch", fetchMock);
   vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
-  vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
-  vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+  vi.spyOn(HTMLMediaElement.prototype, "play").mockImplementation(function (
+    this: HTMLMediaElement,
+  ) {
+    Object.defineProperty(this, "paused", { configurable: true, value: false });
+    this.dispatchEvent(new Event("play"));
+    return Promise.resolve();
+  });
+  vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(function (
+    this: HTMLMediaElement,
+  ) {
+    Object.defineProperty(this, "paused", { configurable: true, value: true });
+    this.dispatchEvent(new Event("pause"));
+  });
+  mediaActions = new Map();
+  Object.defineProperty(navigator, "mediaSession", {
+    configurable: true,
+    value: {
+      setActionHandler: (action: string, handler: (() => void) | null) =>
+        mediaActions.set(action, handler),
+      playbackState: "none",
+    },
+  });
+  vi.stubGlobal(
+    "MediaMetadata",
+    class {
+      constructor(public data: MediaMetadataInit) {}
+    },
+  );
+  enableMusic = vi.fn(() => {
+    if (output === 0) output = 0.5;
+    changed();
+  });
   bus = new EventBus();
   const mixer = {
     musicOutputVolume: () => output,
     hasAudibleCues: () => cues,
+    enableMusic,
     onChange: (fn: () => void) => {
       changed = fn;
       return unsubscribe;
@@ -56,9 +90,85 @@ afterEach(() => {
   player.dispose();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  Reflect.deleteProperty(navigator, "mediaSession");
 });
 
 describe("music library integration", () => {
+  it("lets the backslash action start music after master was reset to zero", () => {
+    player.addTrack("/music/static/one.mp3", false);
+    output = 0;
+    changed();
+    player.playBackgroundMusic();
+    expect(audio().play).not.toHaveBeenCalled();
+    bus.emit(new MusicTogglePauseEvent());
+    expect(enableMusic).toHaveBeenCalledOnce();
+    expect(audio().play).toHaveBeenCalledOnce();
+    expect(navigator.mediaSession.playbackState).toBe("playing");
+    bus.emit(new MusicTogglePauseEvent());
+    expect(audio().paused).toBe(true);
+    changed();
+    window.dispatchEvent(new Event("pointerdown"));
+    expect(audio().play).toHaveBeenCalledOnce();
+  });
+
+  it("makes hardware Play and Pause idempotent instead of toggles", () => {
+    player.addTrack("/music/static/one.mp3", false);
+    output = 0;
+    changed();
+    mediaActions.get("play")!();
+    mediaActions.get("play")!();
+    expect(audio().play).toHaveBeenCalledOnce();
+    expect(audio().paused).toBe(false);
+    mediaActions.get("pause")!();
+    mediaActions.get("pause")!();
+    expect(audio().paused).toBe(true);
+    mediaActions.get("play")!();
+    expect(audio().play).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries blocked autoplay on a click, and does not retry after Pause", async () => {
+    player.addTrack("/music/static/one.mp3", false);
+    vi.mocked(audio().play).mockRejectedValueOnce(
+      new DOMException("Blocked", "NotAllowedError"),
+    );
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    player.playBackgroundMusic();
+    await vi.waitFor(() => expect(console.error).toHaveBeenCalled());
+    window.dispatchEvent(new Event("pointerdown"));
+    expect(audio().play).toHaveBeenCalledTimes(2);
+    expect(audio().paused).toBe(false);
+    mediaActions.get("pause")!();
+    window.dispatchEvent(new Event("pointerdown"));
+    expect(audio().play).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not start after Stop while the track list was still loading", async () => {
+    player.playBackgroundMusic();
+    player.stopBackgroundMusic();
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ tracks: [] }),
+      arrayBuffer: async () => new ArrayBuffer(0),
+    });
+    player.addTrack("/music/static/one.mp3", false);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    window.dispatchEvent(new Event("pointerdown"));
+    expect(audio().play).not.toHaveBeenCalled();
+  });
+
+  it("resumes a suspended Web Audio graph even if its media element is playing", () => {
+    player.addTrack("/music/static/one.mp3", true);
+    const resume = vi.fn().mockResolvedValue(undefined);
+    (player as unknown as { musicContext: unknown }).musicContext = {
+      state: "suspended",
+      resume,
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    bus.emit(new MusicTogglePauseEvent());
+    expect(resume).toHaveBeenCalledOnce();
+    expect(audio().paused).toBe(false);
+    expect(audio().play).toHaveBeenCalledOnce();
+  });
   it("follows the mixer's combined master, music, and focus gain", () => {
     player.addTrack("/music/static/one.mp3", false);
     output = 0.125;

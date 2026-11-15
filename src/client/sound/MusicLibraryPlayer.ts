@@ -35,7 +35,8 @@ export class MusicLibraryPlayer {
   private backgroundMusic: BackgroundTrack[] = [];
   private currentTrack = 0;
   private backgroundMusicVolume = 0;
-  private pendingPlay = false;
+  private playInFlight = false;
+  private playAttempt = 0;
   private musicPlaybackRequested = false;
   private deletingTrack = false;
   private disposed = false;
@@ -73,11 +74,29 @@ export class MusicLibraryPlayer {
       window.addEventListener("keydown", this.onDeleteShortcut);
     }
     this.initMediaSession();
+    window.addEventListener("pointerdown", this.retryRequestedPlayback);
     this.loadTracksFromServer();
   }
 
   public dispose(): void {
+    if (this.disposed) return;
     this.disposed = true;
+    this.musicPlaybackRequested = false;
+    this.playAttempt++;
+    window.removeEventListener("pointerdown", this.retryRequestedPlayback);
+    if ("mediaSession" in navigator) {
+      for (const action of [
+        "play",
+        "pause",
+        "nexttrack",
+        "previoustrack",
+      ] as const) {
+        this.safely("clear media handler", () =>
+          navigator.mediaSession.setActionHandler(action, null),
+        );
+      }
+      navigator.mediaSession.playbackState = "none";
+    }
     window.removeEventListener("keydown", this.onDeleteShortcut);
     this.stopFollowingMixer();
     this.eventBus.off(AddMusicTrackEvent, this.onAddTrack);
@@ -171,8 +190,8 @@ export class MusicLibraryPlayer {
     }
     console.log("SoundManager: registering Media Session API handlers");
     const actions: [MediaSessionAction, () => void][] = [
-      ["play", () => this.toggleMusicPause()],
-      ["pause", () => this.toggleMusicPause()],
+      ["play", () => this.resumeMusic()],
+      ["pause", () => this.pauseMusic()],
       ["nexttrack", () => this.skipToNextTrack()],
       ["previoustrack", () => this.skipToPrevTrack()],
     ];
@@ -224,8 +243,7 @@ export class MusicLibraryPlayer {
             track.source === "upload" && track.deletable,
           );
         }
-        if (this.pendingPlay && this.backgroundMusic.length > 0) {
-          this.pendingPlay = false;
+        if (this.musicPlaybackRequested && this.backgroundMusic.length > 0) {
           this.playBackgroundMusic();
         }
       })
@@ -276,6 +294,8 @@ export class MusicLibraryPlayer {
     const track = this.backgroundMusic[this.currentTrack];
     if (!track) return;
     if (this.musicAudio.getAttribute("src") !== track.url) {
+      this.playAttempt++;
+      this.playInFlight = false;
       this.musicAudio.src = track.url;
       this.musicAudio.load();
     }
@@ -297,32 +317,41 @@ export class MusicLibraryPlayer {
   }
 
   public playBackgroundMusic(): void {
+    if (this.disposed) return;
     this.musicPlaybackRequested = true;
     if (this.backgroundMusicVolume === 0) return;
     this.safely("play background music", () => {
       if (this.backgroundMusic.length === 0) {
-        this.pendingPlay = true;
         return;
       }
       this.prepareCurrentTrack();
-      if (this.musicAudio.paused) {
+      // A playing media element can still be silent behind a suspended graph.
+      if (this.musicContext?.state !== "running") {
         void this.musicContext?.resume().catch((err) => {
           console.warn("SoundManager: music AudioContext resume failed", err);
         });
+      }
+      if (this.musicAudio.paused && !this.playInFlight) {
+        const attempt = ++this.playAttempt;
+        this.playInFlight = true;
         const playResult = this.musicAudio.play();
-        void playResult?.catch((err) => {
-          console.error("SoundManager: failed to play background music", err);
-          this.updateMediaSessionState(false);
-        });
+        void Promise.resolve(playResult)
+          .catch((err) => {
+            if (attempt !== this.playAttempt || this.disposed) return;
+            console.error("SoundManager: failed to play background music", err);
+            this.updateMediaSessionState(false);
+          })
+          .finally(() => {
+            if (attempt === this.playAttempt) this.playInFlight = false;
+          });
       }
     });
   }
 
   public stopBackgroundMusic(): void {
-    this.musicPlaybackRequested = false;
+    this.pauseMusic();
     this.safely("stop background music", () => {
       if (this.backgroundMusic.length > 0) {
-        this.musicAudio.pause();
         try {
           this.musicAudio.currentTime = 0;
         } catch {
@@ -334,6 +363,7 @@ export class MusicLibraryPlayer {
   }
 
   private followMixer(): void {
+    const wasSilent = this.backgroundMusicVolume === 0;
     this.backgroundMusicVolume = this.mixer.musicOutputVolume();
     if (this.musicOutputGain && this.musicContext) {
       this.musicOutputGain.gain.setValueAtTime(
@@ -344,7 +374,7 @@ export class MusicLibraryPlayer {
     this.updateMusicDucking();
     if (
       this.musicPlaybackRequested &&
-      this.musicAudio.paused &&
+      wasSilent &&
       this.backgroundMusicVolume > 0
     ) {
       this.playBackgroundMusic();
@@ -352,7 +382,12 @@ export class MusicLibraryPlayer {
   }
 
   private playNext = (): void => {
-    if (this.backgroundMusic.length === 0) return;
+    if (
+      !this.musicPlaybackRequested ||
+      this.disposed ||
+      this.backgroundMusic.length === 0
+    )
+      return;
     this.currentTrack = (this.currentTrack + 1) % this.backgroundMusic.length;
     this.prepareCurrentTrack();
     this.playBackgroundMusic();
@@ -441,12 +476,14 @@ export class MusicLibraryPlayer {
 
   public toggleMusicPause(): void {
     this.safely("toggle music pause", () => {
-      if (!this.musicAudio.paused) {
-        this.musicPlaybackRequested = false;
-        this.musicAudio.pause();
-        this.updateMediaSessionState(false);
+      if (
+        (!this.musicAudio.paused || this.playInFlight) &&
+        this.backgroundMusicVolume > 0 &&
+        (!this.musicContext || this.musicContext.state === "running")
+      ) {
+        this.pauseMusic();
       } else {
-        this.playBackgroundMusic();
+        this.resumeMusic();
       }
     });
   }
@@ -460,6 +497,29 @@ export class MusicLibraryPlayer {
       this.playBackgroundMusic();
     });
   }
+
+  private resumeMusic(): void {
+    if (this.disposed) return;
+    // Volume changes notify followMixer synchronously. Start only once, after
+    // both channels are enabled and still inside the user's gesture.
+    this.musicPlaybackRequested = false;
+    this.mixer.enableMusic();
+    this.playBackgroundMusic();
+  }
+
+  private pauseMusic(): void {
+    this.musicPlaybackRequested = false;
+    this.playAttempt++;
+    this.playInFlight = false;
+    this.musicAudio.pause();
+    this.updateMediaSessionState(false);
+  }
+
+  private retryRequestedPlayback = (): void => {
+    if (this.musicPlaybackRequested && !this.deletingTrack) {
+      this.playBackgroundMusic();
+    }
+  };
 
   public skipToPrevTrack(): void {
     this.safely("skip to previous track", () => {

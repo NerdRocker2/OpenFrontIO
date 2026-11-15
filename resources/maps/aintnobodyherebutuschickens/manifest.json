@@ -16,7 +16,7 @@
     "num_land_tiles": 737061,
     "width": 1920
   },
-  "name": "Ain't Nobody Here But Us Chickens",
+  "name": "AintNobodyHereButUsChickens",
   "nations": [
     {
       "coordinates": [677, 270],
@@ -229,5 +229,6 @@
       "name": "Egg"
     }
   ],
-  "translation_key": "map.aintnobodyherebutuschickens"
+  "translation_key": "map.aintnobodyherebutuschickens",
+  "display_name": "Ain't Nobody Here But Us Chickens"
 }

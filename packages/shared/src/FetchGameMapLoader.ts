@@ -1,4 +1,5 @@
 import { GameMapType } from "@openfront/engine-api/game/GameTypes";
+import { canonicalGameMapName } from "@openfront/engine-api/game/MapNames";
 import { GameMapLoader, MapData } from "./GameMapLoader";
 
 export class FetchGameMapLoader implements GameMapLoader {
@@ -11,6 +12,7 @@ export class FetchGameMapLoader implements GameMapLoader {
   }
 
   public getMapData(map: GameMapType): MapData {
+    map = canonicalGameMapName(map) as GameMapType;
     const cachedMap = this.maps.get(map);
     if (cachedMap) {
       return cachedMap;

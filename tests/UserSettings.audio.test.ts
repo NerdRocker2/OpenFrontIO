@@ -411,103 +411,65 @@ describe("resetAudio", () => {
   });
 });
 
-describe("one-time audio reset", () => {
+describe("audio upgrade and explicit music playback", () => {
   beforeEach(() => {
     resetUserSettingsState();
     pretendWeb();
   });
-
   afterEach(pretendWeb);
 
-  it("clears the state that had a web player hearing cues they never chose", () => {
-    // The reported case: the old build's music slider was dragged once and
-    // effects was left alone, so the master carve-out reads "has chosen" and
-    // the four channels that slider never covered fall through to the new
-    // defaults. Audible, at full level, opted into by nobody.
+  it("keeps legacy music audible and leaves previously unchosen effects silent", () => {
     localStorage.setItem("settings.backgroundMusicVolume", "0.4");
-    const before = new UserSettings();
-    expect(before.audioVolume("master")).toBeCloseTo(0.9);
-    expect(before.audioVolume("effects")).toBeCloseTo(0.7);
-
-    expect(new UserSettings().resetAudioOnce()).toBe(true);
-
-    const after = new UserSettings();
-    expect(after.audioVolume("master")).toBe(0);
-    expect(localStorage.getItem("settings.backgroundMusicVolume")).toBeNull();
-  });
-
-  it("runs once and then leaves the player's own choices alone", () => {
     const s = new UserSettings();
-    expect(s.resetAudioOnce()).toBe(true);
-
-    s.setAudioVolume("master", 0.3);
-    s.setAudioVolume("ambience", 0.9);
-    s.setMuteOnBlur(true);
-
-    expect(new UserSettings().resetAudioOnce()).toBe(false);
-    const after = new UserSettings();
-    expect(after.audioVolume("master")).toBeCloseTo(0.3);
-    expect(after.audioVolume("ambience")).toBeCloseTo(0.9);
-    expect(after.muteOnBlur()).toBe(true);
+    s.migrateLegacyAudio();
+    expect(s.audioVolume("master")).toBeCloseTo(0.9);
+    expect(s.audioVolume("music")).toBeCloseTo(0.4);
+    for (const category of INHERITS_EFFECTS)
+      expect(s.audioVolume(category)).toBe(0);
+    expect(localStorage.getItem("settings.backgroundMusicVolume")).toBe("0.4");
   });
 
-  it("spends the version on a fresh install too, so it cannot fire later", () => {
-    // Nothing to clear here, but the stamp still has to be written: otherwise
-    // the reset would be waiting to go off after the player has set levels.
-    expect(new UserSettings().resetAudioOnce()).toBe(true);
-    expect(localStorage.getItem("settings.audio.resetVersion")).toBe("1");
-    expect(new UserSettings().resetAudioOnce()).toBe(false);
+  it("preserves legacy effects and modern per-channel choices across repeated initialization", () => {
+    localStorage.setItem("settings.soundEffectsVolume", "0.2");
+    const s = new UserSettings();
+    s.setAudioVolume("master", 0);
+    s.setAudioVolume("alerts", 0.6);
+    s.migrateLegacyAudio();
+    s.migrateLegacyAudio();
+    expect(s.audioVolume("master")).toBe(0);
+    expect(s.audioVolume("music")).toBe(0);
+    expect(s.audioVolume("effects")).toBe(0.2);
+    expect(s.audioVolume("alerts")).toBe(0.6);
   });
 
-  it("runs on the desktop shell as well, landing on the desktop default", () => {
-    pretendDesktopShell();
-    localStorage.setItem("settings.audio.master", "1");
-    expect(new UserSettings().resetAudioOnce()).toBe(true);
+  it("does not opt fresh web installs into automatic audio", () => {
+    const s = new UserSettings();
+    s.migrateLegacyAudio();
+    expect(s.audioVolume("master")).toBe(0);
+  });
+
+  it("lets explicit Play recover after the upstream reset muted master", () => {
+    localStorage.setItem("settings.audio.resetVersion", "1");
+    const s = new UserSettings();
+    expect(s.audioVolume("master")).toBe(0);
+    s.enableMusic();
     expect(new UserSettings().audioVolume("master")).toBeCloseTo(0.9);
+    expect(new UserSettings().audioVolume("music")).toBeCloseTo(0.5);
   });
 
-  it.each([
-    ["not-a-number"],
-    // parseInt would read this as 1 and skip a reset that has never run.
-    ["1-corrupt"],
-    ["1.5"],
-    ["-1"],
-    [""],
-    ["Infinity"],
-  ])("re-runs when the stamp reads %j, which is not a version", (stamp) => {
-    localStorage.setItem("settings.audio.resetVersion", stamp);
-    localStorage.setItem("settings.audio.master", "1");
-    expect(new UserSettings().resetAudioOnce()).toBe(true);
-    expect(localStorage.getItem("settings.audio.resetVersion")).toBe("1");
-    expect(localStorage.getItem("settings.audio.master")).toBeNull();
-  });
-
-  it("does not re-run when a later version has already stamped it", () => {
-    localStorage.setItem("settings.audio.resetVersion", "99");
-    localStorage.setItem("settings.audio.master", "1");
-    expect(new UserSettings().resetAudioOnce()).toBe(false);
-    expect(new UserSettings().audioVolume("master")).toBeCloseTo(1);
-  });
-
-  it("survives the tab's own reset button, which must not re-arm it", () => {
+  it("unmutes only zero master/music sliders and preserves other choices", () => {
     const s = new UserSettings();
-    s.resetAudioOnce();
-    s.setAudioVolume("master", 0.3);
-    s.resetAudio();
-    expect(localStorage.getItem("settings.audio.resetVersion")).toBe("1");
-    expect(new UserSettings().resetAudioOnce()).toBe(false);
-  });
-
-  it("announces the reset values, so a running mixer follows it", () => {
-    localStorage.setItem("settings.soundEffectsVolume", "0.9");
-    const seen: unknown[] = [];
-    const type = `${USER_SETTINGS_CHANGED_EVENT}:settings.audio.master`;
-    const listener = (e: Event) => seen.push((e as CustomEvent).detail);
-    globalThis.addEventListener(type, listener);
-
-    new UserSettings().resetAudioOnce();
-
-    globalThis.removeEventListener(type, listener);
-    expect(seen).toEqual(["0"]);
+    s.setAudioVolume("master", 0.2);
+    s.setAudioVolume("music", 0);
+    s.setAudioVolume("effects", 0);
+    s.setMuteOnBlur(true);
+    s.enableMusic();
+    expect(s.audioVolume("master")).toBeCloseTo(0.2);
+    expect(s.audioVolume("music")).toBeCloseTo(0.5);
+    expect(s.audioVolume("effects")).toBe(0);
+    expect(s.muteOnBlur()).toBe(true);
+    s.setAudioVolume("music", 0.3);
+    s.enableMusic();
+    expect(s.audioVolume("music")).toBeCloseTo(0.3);
   });
 });

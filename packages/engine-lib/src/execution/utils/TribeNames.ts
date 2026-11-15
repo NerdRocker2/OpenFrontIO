@@ -4,7 +4,7 @@ import {
   type MapInfo,
   maps,
 } from "@openfront/engine-api/game/Maps.gen";
-import tribeNameThemesData from "resources/tribeNameThemes.json";
+import tribeNameThemesData from "../../../../../resources/tribeNameThemes.json";
 
 export interface TribeNameData {
   prefixes: string[];

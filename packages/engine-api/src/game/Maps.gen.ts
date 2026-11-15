@@ -6,7 +6,7 @@ export enum GameMapType {
   Achiran = "Achiran", // map-generator/assets/maps/achiran/info.json
   Aegean = "Aegean", // map-generator/assets/maps/aegean/info.json
   Africa = "Africa", // map-generator/assets/maps/africa/info.json
-  AintNobodyHereButUsChickens = "Ain't Nobody Here But Us Chickens", // map-generator/assets/maps/aintnobodyherebutuschickens/info.json
+  AintNobodyHereButUsChickens = "AintNobodyHereButUsChickens", // map-generator/assets/maps/aintnobodyherebutuschickens/info.json
   Alps = "Alps", // map-generator/assets/maps/alps/info.json
   AmazonRiver = "Amazon River", // map-generator/assets/maps/amazonriver/info.json
   Antarctica = "Antarctica", // map-generator/assets/maps/antarctica/info.json
@@ -70,6 +70,7 @@ export enum GameMapType {
   Halkidiki = "Halkidiki", // map-generator/assets/maps/halkidiki/info.json
   Hawaii = "Hawaii", // map-generator/assets/maps/hawaii/info.json
   Hecatestrait = "Hecate Strait", // map-generator/assets/maps/hecatestrait/info.json
+  HillbillyHead = "Hillbilly Head", // map-generator/assets/maps/hillbillyhead/info.json
   HongKong = "Hong Kong", // map-generator/assets/maps/hongkong/info.json
   HornOfAfrica = "Horn Of Africa", // map-generator/assets/maps/hornofafrica/info.json
   Iceland = "Iceland", // map-generator/assets/maps/iceland/info.json
@@ -1544,6 +1545,15 @@ export const maps: readonly MapInfo[] = [
     themes: ["north_america"],
     author: "Liam Langford",
     location: { lat: 53.3, lon: -130.8 },
+  },
+  {
+    id: "HillbillyHead",
+    type: GameMapType.HillbillyHead,
+    translationKey: "map.hillbillyhead",
+    categories: ["north_america"],
+    defaultNationCount: 9,
+    author: "Jeff Lawlor",
+    descriptionKey: "map_description.hillbillyhead",
   },
   {
     id: "HongKong",

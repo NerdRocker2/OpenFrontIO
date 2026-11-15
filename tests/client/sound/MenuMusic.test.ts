@@ -96,10 +96,13 @@ const buildMixer = () => {
 // counts below would be measuring the wrong thing.
 const registered: Array<[string, EventListener]> = [];
 const realAdd = document.addEventListener.bind(document);
+const windowRegistered: Array<[string, EventListener]> = [];
+const realWindowAdd = window.addEventListener.bind(window);
 
 beforeEach(() => {
   howlInstances.length = 0;
   registered.length = 0;
+  windowRegistered.length = 0;
   vi.clearAllMocks();
   buildMixer();
   vi.spyOn(document, "addEventListener").mockImplementation(
@@ -108,12 +111,22 @@ beforeEach(() => {
       realAdd(type, fn, opts);
     },
   );
+  vi.spyOn(window, "addEventListener").mockImplementation(
+    (type: any, fn: any, opts?: any) => {
+      windowRegistered.push([type, fn]);
+      realWindowAdd(type, fn, opts);
+    },
+  );
 });
 
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   for (const [type, fn] of registered) document.removeEventListener(type, fn);
+  for (const [type, fn] of windowRegistered)
+    window.removeEventListener(type, fn);
+  history.replaceState(null, "", "/");
+  window.currentPageId = undefined;
 });
 
 const themes = () => howlInstances.filter((h) => h.src.includes("menu-theme"));
@@ -162,6 +175,50 @@ const lastVolume = (howl: any) => {
 };
 
 describe("menu music", () => {
+  it("stays silent on a direct /music visit, including gestures and volume changes", () => {
+    history.replaceState(null, "", "/music?allowdelete=true");
+    startMenuMusic(mixer);
+    document.dispatchEvent(new Event("pointerdown"));
+    document.dispatchEvent(new Event("keydown"));
+    musicAudible = false;
+    notifyChange("music");
+    musicAudible = true;
+    notifyChange("music");
+    document.dispatchEvent(new Event("menu-restored"));
+    document.dispatchEvent(new Event("pointerdown"));
+    expect(themes()).toHaveLength(0);
+  });
+
+  it("immediately stops the theme on entering the library and can restart after leaving", () => {
+    vi.useFakeTimers();
+    startMenuMusic(mixer);
+    document.dispatchEvent(new Event("pointerdown"));
+    const theme = themes()[0];
+    theme.begin();
+    theme.volume.mockReturnValue(0.2);
+    window.dispatchEvent(new CustomEvent("showPage", { detail: "page-music" }));
+    expect(theme.stop).toHaveBeenCalledOnce();
+    expect(theme.unload).toHaveBeenCalledOnce();
+    expect(theme.fade).not.toHaveBeenCalled();
+    expect(mixer.unregister).toHaveBeenCalledWith(theme);
+    vi.advanceTimersByTime(2500);
+    expect(mixer.register).not.toHaveBeenCalled();
+    document.dispatchEvent(new Event("keydown"));
+    expect(themes()).toHaveLength(1);
+
+    window.dispatchEvent(new CustomEvent("showPage", { detail: "page-play" }));
+    document.dispatchEvent(new Event("pointerdown"));
+    expect(themes()).toHaveLength(2);
+  });
+
+  it("does not re-arm during a game when navigating away from the library", () => {
+    window.currentPageId = "page-music";
+    startMenuMusic(mixer, { gameInProgress: true });
+    window.dispatchEvent(new CustomEvent("showPage", { detail: "page-play" }));
+    document.dispatchEvent(new Event("pointerdown"));
+    expect(themes()).toHaveLength(0);
+  });
+
   it("streams the theme rather than decoding it up front", () => {
     startMenuMusic(mixer);
     // Browsers block audio until a gesture, so the Howl is only built here.

@@ -1,4 +1,5 @@
 import { GameMapSize, GameMapType } from "@openfront/engine-api/game/GameTypes";
+import { SavedGameMapSchema } from "@openfront/engine-api/game/MapNames";
 import {
   ArchivedPlayerStatsSchema,
   PlayerStatsSchema,
@@ -873,7 +874,7 @@ export const ArchivedAnalyticsRecordSchema = AnalyticsRecordSchema.extend({
     config: GameConfigSchema.extend({
       gameMap: z.preprocess(
         (value) => (typeof value === "string" ? value.trim() : value),
-        GameConfigSchema.shape.gameMap,
+        SavedGameMapSchema,
       ),
       // predates configurable nation count
       nations: GameConfigSchema.shape.nations
@@ -885,6 +886,9 @@ export const ArchivedAnalyticsRecordSchema = AnalyticsRecordSchema.extend({
 });
 
 export const GameRecordSchema = AnalyticsRecordSchema.extend({
+  info: GameEndInfoSchema.extend({
+    config: GameConfigSchema.extend({ gameMap: SavedGameMapSchema }),
+  }),
   turns: TurnSchema.array(),
 });
 

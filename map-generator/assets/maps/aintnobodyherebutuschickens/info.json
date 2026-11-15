@@ -1,7 +1,7 @@
 {
   "$schema": "../../../info.schema.json",
   "id": "AintNobodyHereButUsChickens",
-  "name": "Ain't Nobody Here But Us Chickens",
+  "name": "AintNobodyHereButUsChickens",
   "translation_key": "map.aintnobodyherebutuschickens",
   "categories": ["featured", "continental"],
   "nations": [
@@ -215,5 +215,6 @@
       "flag": "za",
       "name": "Egg"
     }
-  ]
+  ],
+  "display_name": "Ain't Nobody Here But Us Chickens"
 }

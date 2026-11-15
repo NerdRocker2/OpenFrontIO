@@ -139,3 +139,24 @@ describe("ArchivedAnalyticsRecordSchema", () => {
     );
   });
 });
+
+test("normalizes the chicken map in archived analytics and replay records", () => {
+  const old = oldRecord();
+  old.info.config.gameMap = "Ain't Nobody Here But Us Chickens";
+  const analytics = ArchivedAnalyticsRecordSchema.parse(old);
+  expect(analytics.info.config.gameMap).toBe("AintNobodyHereButUsChickens");
+  const replay = GameRecordSchema.parse({
+    ...analytics,
+    info: {
+      ...analytics.info,
+      config: { ...analytics.info.config, gameMap: old.info.config.gameMap },
+      players: analytics.info.players.map((player) => ({
+        ...player,
+        username: "NormalName",
+      })),
+    },
+    turns: [],
+  });
+  expect(replay.info.config.gameMap).toBe("AintNobodyHereButUsChickens");
+  expect(old.info.config.gameMap).toBe("Ain't Nobody Here But Us Chickens");
+});

@@ -42,3 +42,12 @@ describe("presenceMapKey", () => {
     expect(presenceMapKey(undefined)).toBeUndefined();
   });
 });
+
+it("resolves the old chicken name for thumbnails and presence", () => {
+  expect(normaliseMapKey("Ain't Nobody Here But Us Chickens")).toBe(
+    "aintnobodyherebutuschickens",
+  );
+  expect(presenceMapKey("Ain't Nobody Here But Us Chickens")).toBe(
+    "aintnobodyherebutuschickens",
+  );
+});

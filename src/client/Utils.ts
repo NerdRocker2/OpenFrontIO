@@ -10,6 +10,7 @@ import {
   Team,
   Trios,
 } from "@openfront/engine-api/game/GameTypes";
+import { canonicalGameMapName } from "@openfront/engine-api/game/MapNames";
 import { GameConfig } from "@openfront/engine-api/Schemas";
 import { DoomsdayClockSpeed } from "@openfront/engine-lib/game/DoomsdayClock";
 import { stripVersionPrefix } from "@openfront/shared/ServerList";
@@ -29,6 +30,7 @@ export const TUTORIAL_VIDEO_URL = "https://www.youtube.com/embed/7J5zwb_s_Cg";
 export const DESKTOP_TUTORIAL_VIDEO_URL = "/__tutorial/tutorial.webm";
 
 export function normaliseMapKey(mapName: string): string {
+  mapName = canonicalGameMapName(mapName);
   // Asset dirs / translation keys are the map id lowercased. For most maps
   // stripping spaces from the display name gives the same string, but not for
   // the tourney maps (e.g. "Tourney 2 Teams" lives in maps/tourney1/).

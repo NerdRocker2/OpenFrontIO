@@ -1,5 +1,6 @@
 {
   "html.validate.scripts": false,
   "tailwindCSS.lint.suggestCanonicalClasses": "ignore",
-  "lit-plugin.rules.suggestCanonicalClasses": "off"
+  "lit-plugin.rules.suggestCanonicalClasses": "off",
+  "python.terminal.useEnvFile": true
 }

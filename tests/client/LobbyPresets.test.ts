@@ -60,6 +60,23 @@ import { HostLobbyModal } from "../../src/client/HostLobbyModal";
 import { SinglePlayerModal } from "../../src/client/SinglePlayerModal";
 
 describe("LobbyPresets logic and schema", () => {
+  it("preserves presets using the old chicken map name", () => {
+    const presets = parseLobbyPresetsJson(
+      JSON.stringify([
+        {
+          name: "Chickens",
+          config: {
+            ...sampleConfig,
+            gameMap: "Ain't Nobody Here But Us Chickens",
+          },
+        },
+      ]),
+    );
+    expect(presets).toHaveLength(1);
+    expect(presets[0].config.gameMap).toBe(
+      GameMapType.AintNobodyHereButUsChickens,
+    );
+  });
   const sampleConfig: LobbyPresetConfig = {
     gameMap: GameMapType.World,
     useRandomMap: false,

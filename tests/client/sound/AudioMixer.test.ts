@@ -633,17 +633,12 @@ describe("preview cues", () => {
 });
 
 describe("initAudioMixer", () => {
-  it("runs the one-time audio reset before reading a single volume", () => {
-    // initAudioMixer is the only path both Main.ts and ClientGameRunner take,
-    // so it is where the reset has to land to be guaranteed to run ahead of
-    // the constructor that caches the values it clears. Reading the mixer's
-    // own level is the check that matters: a reset that ran afterwards would
-    // leave it here playing the stale value.
+  it("preserves stored volumes before reading them", () => {
     localStorage.setItem("settings.audio.ambience", "1");
     const created = initAudioMixer(new UserSettings());
     try {
-      expect(localStorage.getItem("settings.audio.ambience")).toBeNull();
-      expect(created.volumeFor("ambience")).toBeCloseTo(perceptualGain(0.4));
+      expect(localStorage.getItem("settings.audio.ambience")).toBe("1");
+      expect(created.volumeFor("ambience")).toBe(1);
     } finally {
       resetAudioMixerForTest();
     }
@@ -662,6 +657,21 @@ describe("initAudioMixer", () => {
 });
 
 describe("music library output", () => {
+  it("explicit Play makes a muted mixer audible and persists that choice", () => {
+    build({ master: 0, music: 0.3, effects: 0 });
+    expect(mixer.musicOutputVolume()).toBe(0);
+    mixer.enableMusic();
+    expect(mixer.musicOutputVolume()).toBeCloseTo(0.9 ** 2 * 0.3 ** 2 * 0.89);
+    expect(settings.audioVolume("master")).toBe(0.9);
+    expect(settings.audioVolume("effects")).toBe(0);
+  });
+
+  it("initializes legacy music without resetting it or enabling effects", () => {
+    localStorage.setItem("settings.backgroundMusicVolume", "0.4");
+    mixer = initAudioMixer(new UserSettings());
+    expect(mixer.musicOutputVolume()).toBeCloseTo(0.9 ** 2 * 0.4 ** 2 * 0.89);
+    expect(mixer.volumeFor("effects")).toBe(0);
+  });
   it("includes the master gain and focus mute", () => {
     build({ master: 0.5, music: 0.5, muteOnBlur: true });
     expect(mixer.musicOutputVolume()).toBeCloseTo(0.25 * 0.25 * 0.89);

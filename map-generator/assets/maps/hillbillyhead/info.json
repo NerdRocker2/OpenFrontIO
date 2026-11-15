@@ -4,6 +4,8 @@
   "name": "Hillbilly Head",
   "translation_key": "map.hillbillyhead",
   "categories": ["north_america"],
+  "author": "Jeff Lawlor",
+  "description": "My very first map",
   "nations": [
     {
       "coordinates": [1204, 996],
